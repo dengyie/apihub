@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -495,6 +496,15 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	}
 	if capabilities.UseDeveloperRole && len(request.Messages) > 0 && request.Messages[0].Role == "system" {
 		request.Messages[0].Role = "developer"
+	}
+
+	// 智能负载参数裁剪：确保在所有推理意图/前缀推导完成后，
+	// 若该渠道需要裁剪参数（如 reasoning_effort、thinking 等），最终出站请求必定已裁剪。
+	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {
+		stripOpenAIParam(request, param)
+	}
+	if slices.Contains(loadbalancer.GetStripParams(info.ChannelId), "reasoning_effort") {
+		info.SetReasoningEffort("")
 	}
 
 	return request, nil

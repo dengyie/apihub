@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
@@ -57,14 +58,16 @@ func SetThinkingStripChannels(ids []int) {
 			paramStripConfig[id] = set
 		}
 		for _, p := range params {
-			set[p] = struct{}{}
+			if n := normalizeParamName(p); n != "" {
+				set[n] = struct{}{}
+			}
 		}
 	}
 }
 
 // GetStripParams 返回某渠道需要裁剪的参数名列表（已去重）
 func GetStripParams(channelID int) []string {
-	if !Enabled() {
+	if !Enabled() || channelID <= 0 {
 		return nil
 	}
 	paramStripMu.RLock()
@@ -88,7 +91,7 @@ func ShouldStripThinking(channelID int) bool {
 // MarkParamUnsupported 标记某渠道不支持某参数（自动学习）
 func MarkParamUnsupported(channelID int, param string) {
 	param = normalizeParamName(param)
-	if param == "" || !Enabled() {
+	if param == "" || !Enabled() || channelID <= 0 {
 		return
 	}
 	paramStripMu.Lock()
@@ -107,7 +110,37 @@ func MarkThinkingUnsupported(channelID int) {
 }
 
 func normalizeParamName(p string) string {
-	return strings.ToLower(strings.TrimSpace(p))
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	// 如果全是纯大写（如 THINKING），直接转为小写
+	hasLower := false
+	for _, r := range p {
+		if unicode.IsLower(r) {
+			hasLower = true
+			break
+		}
+	}
+	if !hasLower {
+		return strings.ToLower(p)
+	}
+
+	// 转换 PascalCase/camelCase 到 snake_case（例如 ReasoningEffort -> reasoning_effort）
+	var b strings.Builder
+	runes := []rune(p)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsUpper(r) {
+			if i > 0 && runes[i-1] != '_' && unicode.IsLower(runes[i-1]) {
+				b.WriteRune('_')
+			}
+			b.WriteRune(unicode.ToLower(r))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // 常见 400 参数不支持错误的模式，用于提取参数名
@@ -122,6 +155,18 @@ var unsupportedParamPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\(\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']\s+was unexpected\s*\)`),
 	// does not support parameter "bar"
 	regexp.MustCompile(`does not support (?:the |parameter\s+)?["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?`),
+	// field ReasoningEffort invalid, should be one of: ... (SenseNova / 商汤系)
+	regexp.MustCompile(`(?i)field\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?\s+invalid`),
+	// parameter 'xxx' is invalid / 'xxx' is invalid
+	regexp.MustCompile(`(?i)(?:parameter\s+)?['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]\s+is invalid`),
+	// unknown parameter / unknown field
+	regexp.MustCompile(`(?i)unknown\s+(?:parameter|field):\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`),
+	// invalid parameter: xxx
+	regexp.MustCompile(`(?i)invalid\s+parameter:\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`),
+	// parameter xxx is not supported
+	regexp.MustCompile(`(?i)parameter\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?\s+is not supported`),
+	// extra fields not permitted ... loc: ['body', 'xxx']
+	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
 }
 
 // IsParamNotSupportedError 判断是否为"参数不支持"的 400 错误，
@@ -130,8 +175,9 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 	if err == nil || err.StatusCode != 400 {
 		return "", false
 	}
+	msg := err.Error()
 	for _, re := range unsupportedParamPatterns {
-		if m := re.FindStringSubmatch(err.Error()); m != nil {
+		if m := re.FindStringSubmatch(msg); m != nil {
 			return normalizeParamName(m[1]), true
 		}
 	}
@@ -153,6 +199,21 @@ func IsCurfewError(err *types.NewAPIError) bool {
 	msg := err.Error()
 	// provider_code=system_curfew 或中文"宵禁"提示
 	return strings.Contains(msg, "system_curfew") || strings.Contains(msg, "宵禁")
+}
+
+// IsEOLError 判断是否为模型已下线 (End of Life) 或永久不可用错误（410 Gone 等）。
+// 这类错误表示该渠道上的该模型已永久退役，应立即熔断该渠道并避免向下游客户端直接透传 410。
+func IsEOLError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode == 410 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "end of life") ||
+		strings.Contains(msg, "no longer available") ||
+		strings.Contains(msg, "has reached its end of life")
 }
 
 // CurfewEndTime 计算宵禁结束时间（上海时间早 8 点）。

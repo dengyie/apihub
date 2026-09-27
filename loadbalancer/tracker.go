@@ -88,6 +88,18 @@ func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 	s.halfOpenProbes.Store(0)
 }
 
+// TripBreaker 立即熔断渠道（开启常规冷却周期）。
+// 适用于明确的确定性或严重上游故障（如 410 EOL）。
+func (t *Tracker) TripBreaker(channelID int) {
+	if !Enabled() || channelID <= 0 {
+		return
+	}
+	s := t.getOrCreate(channelID)
+	s.state.Store(int32(breakerOpen))
+	s.openedAt.Store(time.Now().Unix())
+	s.halfOpenProbes.Store(0)
+}
+
 // RecordFailure 记录一次渠道失败（非流式路径或流开始前的失败）。
 // 增加连续失败计数，达到阈值后熔断该渠道；若渠道处于半开状态，单次探测失败即重新熔断。
 func (t *Tracker) RecordFailure(channelID int) {

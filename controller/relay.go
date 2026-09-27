@@ -87,11 +87,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		defer ws.Close()
 	}
 
-	defer func() {
-		if newAPIError != nil {
-			service.RecordRequestPolicyTermination(c, newAPIError)
-			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+		defer func() {
+			if newAPIError != nil {
+				service.RecordRequestPolicyTermination(c, newAPIError)
+				logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+				// 上游 410 EOL 或永久不可用错误，在网关层重试耗尽后映射为 502 Bad Gateway，
+				// 避免 downstream 客户端 SDK 将 410 判定为 client-side 永久不可重试错误 (retryable=false) 而中止任务。
+				if loadbalancer.IsEOLError(newAPIError) {
+					newAPIError.StatusCode = http.StatusBadGateway
+				}
+				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -215,13 +220,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 400 不计入熔断（参数不支持不代表渠道不健康）。
 		// 流式错误的失败已由 StreamScannerHandler 的 End(failed=true) 记录，
 		// 这里跳过避免双记。
-		if newAPIError.StatusCode != 400 &&
-			!loadbalancer.IsTTFTTimeout(newAPIError) &&
-			!loadbalancer.IsEmptyStream(newAPIError) &&
-			!loadbalancer.IsStreamBroken(newAPIError) {
-			loadbalancer.GlobalTracker().RecordFailure(channel.Id)
-		}
-		// 智能负载参数裁剪：上游明确说不支持某参数时，
+			if newAPIError.StatusCode != 400 &&
+				!loadbalancer.IsTTFTTimeout(newAPIError) &&
+				!loadbalancer.IsEmptyStream(newAPIError) &&
+				!loadbalancer.IsStreamBroken(newAPIError) {
+				loadbalancer.GlobalTracker().RecordFailure(channel.Id)
+			}
+			// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
+			if loadbalancer.IsEOLError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
+			}
+			// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
 			loadbalancer.MarkParamUnsupported(channel.Id, param)

@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -35,6 +36,20 @@ const (
 	// the handler forever.
 	streamWriteTimeout = 30 * time.Second
 )
+
+func isImageRelay(info *relaycommon.RelayInfo, c *gin.Context) bool {
+	if info != nil {
+		if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
+			return true
+		}
+	}
+	if c != nil && c.Request != nil && c.Request.URL != nil {
+		if strings.Contains(c.Request.URL.Path, "/images/") {
+			return true
+		}
+	}
+	return false
+}
 
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
@@ -132,7 +147,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		// 计入硬熔断计数器。注意 controller 层对流错误不再重复调用 RecordFailure，
 		// 避免双记。
 		failed := info.StreamStatus.HasErrors()
-		if !failed && info.StreamStatus.IsNormalEnd() && info.ReceivedContentBytes < 100 {
+		if !failed && info.StreamStatus.IsNormalEnd() && !isImageRelay(info, c) && info.ReceivedContentBytes < 100 {
 			failed = true // 空流视同失败
 		}
 		lbHandle.End(lbTTFTSlow.Load(), failed)
@@ -401,7 +416,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 1. 零内容块（received=0）
 	// 2. 有块无内容（received>0 但总字节数极小，如 gemini 正常结束但 completion_tokens=0）
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() &&
-		(info.ReceivedResponseCount == 0 || info.ReceivedContentBytes < 100) {
+		(info.ReceivedResponseCount == 0 || (!isImageRelay(info, c) && info.ReceivedContentBytes < 100)) {
 		logger.LogError(c, fmt.Sprintf("空流：渠道 #%d 正常结束但零有效内容（块=%d, 字节=%d），触发换渠道重试",
 			channelID, info.ReceivedResponseCount, info.ReceivedContentBytes))
 		return &loadbalancer.EmptyStreamError{ChannelID: channelID}

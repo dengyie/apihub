@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -225,3 +226,90 @@ func TestTTFTTimeoutError(t *testing.T) {
 	assert.False(t, IsTTFTTimeout(nil))
 	assert.False(t, IsTTFTTimeout(errors.New("other")))
 }
+
+func TestNormalizeParamName(t *testing.T) {
+	assert.Equal(t, "reasoning_effort", normalizeParamName("ReasoningEffort"))
+	assert.Equal(t, "reasoning_effort", normalizeParamName("reasoning_effort"))
+	assert.Equal(t, "stream_options", normalizeParamName("streamOptions"))
+	assert.Equal(t, "stream_options", normalizeParamName("StreamOptions"))
+	assert.Equal(t, "thinking", normalizeParamName("thinking"))
+	assert.Equal(t, "thinking", normalizeParamName("THINKING"))
+	assert.Equal(t, "response_format", normalizeParamName("ResponseFormat"))
+}
+
+func TestIsParamNotSupportedError(t *testing.T) {
+	// SenseNova 风格：field ReasoningEffort invalid, should be one of:...
+	err1 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("status_code=400, field ReasoningEffort invalid, should be one of: low, medium, high, xhigh, none"),
+	}
+	p1, ok1 := IsParamNotSupportedError(err1)
+	assert.True(t, ok1)
+	assert.Equal(t, "reasoning_effort", p1)
+
+	// OpenAI 风格：Unsupported parameter: 'reasoning_effort'
+	err2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("Unsupported parameter: 'reasoning_effort'"),
+	}
+	p2, ok2 := IsParamNotSupportedError(err2)
+	assert.True(t, ok2)
+	assert.Equal(t, "reasoning_effort", p2)
+
+	// Thinking 风格
+	err3 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("'thinking' is not supported on /v1/chat/completions"),
+	}
+	p3, ok3 := IsParamNotSupportedError(err3)
+	assert.True(t, ok3)
+	assert.Equal(t, "thinking", p3)
+
+	// 500 不应触发参数裁剪
+	err4 := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("field ReasoningEffort invalid"),
+	}
+	_, ok4 := IsParamNotSupportedError(err4)
+	assert.False(t, ok4)
+}
+
+func TestIsEOLError(t *testing.T) {
+	err410 := &types.NewAPIError{
+		StatusCode: 410,
+		Err:        errors.New("The model 'deepseek-ai/deepseek-v4-flash-0731' has reached its end of life on 2026-09-21T08:00:00Z and is no longer available."),
+	}
+	assert.True(t, IsEOLError(err410))
+
+	errOtherCodeWithEOL := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("Model has reached its end of life"),
+	}
+	assert.True(t, IsEOLError(errOtherCodeWithEOL))
+
+	errNormal := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("Internal server error"),
+	}
+	assert.False(t, IsEOLError(errNormal))
+	assert.False(t, IsEOLError(nil))
+}
+
+func TestTripBreaker(t *testing.T) {
+	old := currentPolicy.Load()
+	currentPolicy.Store(testPolicy())
+	defer currentPolicy.Store(old)
+
+	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+
+	// 初始可用
+	ok, _ := tr.IsAvailable(55)
+	assert.True(t, ok)
+
+	// 立即熔断
+	tr.TripBreaker(55)
+	ok, reason := tr.IsAvailable(55)
+	assert.False(t, ok)
+	assert.Equal(t, "circuit_open", reason)
+}
+
