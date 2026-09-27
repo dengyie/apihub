@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -126,6 +127,50 @@ func TestStreamStatus_HasErrors_NilSafe(t *testing.T) {
 	var s *StreamStatus
 	assert.False(t, s.HasErrors())
 	assert.Equal(t, 0, s.TotalErrorCount())
+}
+
+func TestStreamStatus_HasErrors_VariousCases(t *testing.T) {
+	t.Parallel()
+
+	// Scanner error with EndError
+	s1 := NewStreamStatus()
+	s1.SetEndReason(StreamEndReasonScannerErr, fmt.Errorf("stream error: stream ID 1; INTERNAL_ERROR; received from peer"))
+	assert.True(t, s1.HasErrors())
+
+	// Scanner error without EndError
+	s2 := NewStreamStatus()
+	s2.SetEndReason(StreamEndReasonScannerErr, nil)
+	assert.True(t, s2.HasErrors())
+
+	// Timeout
+	s3 := NewStreamStatus()
+	s3.SetEndReason(StreamEndReasonTimeout, nil)
+	assert.True(t, s3.HasErrors())
+
+	// Panic
+	s4 := NewStreamStatus()
+	s4.SetEndReason(StreamEndReasonPanic, fmt.Errorf("panic"))
+	assert.True(t, s4.HasErrors())
+
+	// ClientGone with context.Canceled is NOT a channel error
+	s5 := NewStreamStatus()
+	s5.SetEndReason(StreamEndReasonClientGone, context.Canceled)
+	assert.False(t, s5.HasErrors())
+
+	// ClientGone with DeadlineExceeded IS an error
+	s6 := NewStreamStatus()
+	s6.SetEndReason(StreamEndReasonClientGone, context.DeadlineExceeded)
+	assert.True(t, s6.HasErrors())
+
+	// Normal Done
+	s7 := NewStreamStatus()
+	s7.SetEndReason(StreamEndReasonDone, nil)
+	assert.False(t, s7.HasErrors())
+
+	// Normal EOF
+	s8 := NewStreamStatus()
+	s8.SetEndReason(StreamEndReasonEOF, nil)
+	assert.False(t, s8.HasErrors())
 }
 
 func TestStreamStatus_IsNormalEnd(t *testing.T) {

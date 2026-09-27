@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -582,4 +583,51 @@ func TestNewStreamScannerCallerLimit(t *testing.T) {
 	require.True(t, scanner.Scan())
 	assert.Equal(t, "data: ok", scanner.Text())
 	require.NoError(t, scanner.Err())
+}
+
+type mockErrorReader struct {
+	data []byte
+	err  error
+}
+
+func (r *mockErrorReader) Read(p []byte) (n int, err error) {
+	if len(r.data) > 0 {
+		n = copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	return 0, r.err
+}
+
+func TestStreamScannerHandler_StreamBroken_PreFirstByte(t *testing.T) {
+	reader := &mockErrorReader{
+		data: nil,
+		err:  fmt.Errorf("stream error: stream ID 1; INTERNAL_ERROR; received from peer"),
+	}
+	c, resp, info := setupStreamTest(t, reader)
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	require.Error(t, err)
+	var brokenErr *loadbalancer.StreamBrokenError
+	require.ErrorAs(t, err, &brokenErr)
+	assert.True(t, info.StreamStatus.HasErrors())
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+}
+
+func TestStreamScannerHandler_StreamBroken_MidStream(t *testing.T) {
+	reader := &mockErrorReader{
+		data: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\\n\\n"),
+		err:  fmt.Errorf("stream error: stream ID 1; INTERNAL_ERROR; received from peer"),
+	}
+	c, resp, info := setupStreamTest(t, reader)
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		info.ReceivedContentBytes += 150
+		info.ReceivedResponseCount++
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, info.StreamStatus.HasErrors())
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
 }

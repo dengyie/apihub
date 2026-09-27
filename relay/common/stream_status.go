@@ -1,6 +1,8 @@
 package common
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -178,7 +180,7 @@ func (s *StreamStatus) OutcomeSnapshot() StreamOutcome {
 	defer s.mu.Unlock()
 	return StreamOutcome{
 		EndReason:        s.EndReason,
-		HasErrors:        s.ErrorCount > 0,
+		HasErrors:        s.hasErrorsLocked(),
 		ExpectsTerminal:  s.expectsTerminal,
 		Response:         s.response,
 		ErrorCode:        s.errorCode,
@@ -194,7 +196,28 @@ func (s *StreamStatus) HasErrors() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ErrorCount > 0
+	return s.hasErrorsLocked()
+}
+
+func (s *StreamStatus) hasErrorsLocked() bool {
+	if s.response == ResponseOutcomeFailed {
+		return true
+	}
+	if s.ErrorCount > 0 {
+		return true
+	}
+	if s.EndError != nil {
+		// client_gone with context.Canceled is client-side cancellation, not upstream error
+		if s.EndReason == StreamEndReasonClientGone && errors.Is(s.EndError, context.Canceled) {
+			return false
+		}
+		return true
+	}
+	switch s.EndReason {
+	case StreamEndReasonScannerErr, StreamEndReasonTimeout, StreamEndReasonPanic:
+		return true
+	}
+	return false
 }
 
 func (s *StreamStatus) TotalErrorCount() int {

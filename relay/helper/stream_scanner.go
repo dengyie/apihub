@@ -143,10 +143,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 	defer func() {
 		// 流结束：上报跟踪。failed 取流状态的真实结果：
-		// 有错误（scanner 错误/超时）或空流（正常结束但无有效内容）都算失败，
+		// 有错误（scanner 错误/超时/panic）或异常结束或空流（正常结束但无有效内容）都算失败，
 		// 计入硬熔断计数器。注意 controller 层对流错误不再重复调用 RecordFailure，
 		// 避免双记。
-		failed := info.StreamStatus.HasErrors()
+		failed := info.StreamStatus.HasErrors() || (!info.StreamStatus.IsNormalEnd() && info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)
 		if !failed && info.StreamStatus.IsNormalEnd() && !isImageRelay(info, c) && info.ReceivedContentBytes < 100 {
 			failed = true // 空流视同失败
 		}
@@ -381,6 +381,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if err != io.EOF {
 				logger.LogError(c, "scanner error: "+err.Error())
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
+				info.StreamStatus.RecordError(err.Error())
 			}
 		}
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
@@ -390,6 +391,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	select {
 	case <-ticker.C:
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+		info.StreamStatus.RecordError("streaming timeout")
 	case <-stopChan:
 		// EndReason already set by the goroutine that triggered stopChan
 	case <-c.Request.Context().Done():
@@ -425,7 +427,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 流中断：上游在传输中途断开（如 HTTP/2 INTERNAL_ERROR、connection reset），
 	// 且客户端尚未收到任何有效内容，触发换渠道重试。
 	// 如果已有内容发出，则无法重试（避免重复），仅记录渠道失败。
-	if info.StreamStatus.HasErrors() && info.ReceivedContentBytes == 0 {
+	if (info.StreamStatus.HasErrors() || !info.StreamStatus.IsNormalEnd()) &&
+		info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone &&
+		(info.ReceivedContentBytes == 0 || info.ReceivedResponseCount == 0) {
 		endReason := info.StreamStatus.Summary()
 		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 在首字节前断开（%s），触发换渠道重试",
 			channelID, endReason))

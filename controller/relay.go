@@ -97,19 +97,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					newAPIError.StatusCode = http.StatusBadGateway
 				}
 				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			switch relayFormat {
-			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, newAPIError.ToOpenAIError())
-			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"type":  "error",
-					"error": newAPIError.ToClaudeError(),
-				})
-			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(),
-				})
-			}
+				if !c.Writer.Written() {
+					switch relayFormat {
+					case types.RelayFormatOpenAIRealtime:
+						helper.WssError(c, ws, newAPIError.ToOpenAIError())
+					case types.RelayFormatClaude:
+						c.JSON(newAPIError.StatusCode, gin.H{
+							"type":  "error",
+							"error": newAPIError.ToClaudeError(),
+						})
+					default:
+						c.JSON(newAPIError.StatusCode, gin.H{
+							"error": newAPIError.ToOpenAIError(),
+						})
+					}
+				}
 		}
 	}()
 
@@ -205,6 +207,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if relayInfo.StreamStatus != nil && (relayInfo.StreamStatus.HasErrors() || (!relayInfo.StreamStatus.IsNormalEnd() && relayInfo.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)) {
+				streamErr := types.NewErrorWithStatusCode(
+					fmt.Errorf("stream interrupted: %s", relayInfo.StreamStatus.Summary()),
+					types.ErrorCodeBadResponseBody,
+					http.StatusBadGateway,
+					types.ErrOptionWithSkipRetry(),
+				)
+				relayInfo.LastError = streamErr
+				decision := service.PolicyDecision{Action: "stop", Reason: "stream_broken_partial", Source: "loadbalancer"}
+				service.RecordPolicyFailure(c, channel.Id, streamErr, decision)
+				processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), streamErr, relayInfo)
+				newAPIError = streamErr
+				return
+			}
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			return
