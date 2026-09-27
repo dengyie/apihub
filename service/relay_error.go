@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -35,11 +36,24 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if types.IsChannelError(err) {
 		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
 	}
-	if types.IsSkipRetryError(err) {
-		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
-	}
+	// 重试预算检查前置：负载类的可重试错误（超时/空流/断流）同样受预算约束
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+	}
+	// 智能负载：首字超时视为可重试，触发切换到下一个渠道
+	if loadbalancer.IsTTFTTimeout(err) {
+		return PolicyDecision{Action: "retry", Reason: "ttft_timeout", Source: "loadbalancer"}
+	}
+	// 智能负载：空流视同渠道失败，换渠道重试（客户端尚未收到任何数据）
+	if loadbalancer.IsEmptyStream(err) {
+		return PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}
+	}
+	// 智能负载：流中断（上游在首字节前断开）视同渠道失败，换渠道重试
+	if loadbalancer.IsStreamBroken(err) {
+		return PolicyDecision{Action: "retry", Reason: "stream_broken", Source: "loadbalancer"}
+	}
+	if types.IsSkipRetryError(err) {
+		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
 	code := err.StatusCode
 	if code >= 200 && code < 300 {
@@ -50,6 +64,11 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	}
 	if operation_setting.IsAlwaysSkipRetryCode(err.GetErrorCode()) || operation_setting.IsAlwaysSkipRetryStatusCode(code) {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
+	}
+	// 智能负载：400 也换渠道重试（不同上游对参数的支持不同，
+	// 如 "thinking" 参数有的上游支持有的不支持），但不计入熔断。
+	if code == 400 {
+		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
 	if operation_setting.ShouldRetryByStatusCode(code) {
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}

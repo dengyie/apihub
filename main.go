@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -302,6 +303,9 @@ func InitResources() error {
 	common.InitEnv()
 
 	logger.SetupLogger()
+
+	// 智能负载：加载策略配置（支持热加载），默认关闭
+	loadbalancer.Init("data/loadbalancer.yaml")
 
 	// Initialize model settings
 	ratio_setting.InitRatioSettings()

@@ -22,6 +22,7 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -310,6 +311,24 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+// 用户定制：渠道测试时从 gin 上下文读取测试 UA 并应用到上游请求。
+// 仅当 controller/channel-test.go 设置了 channel_test_user_agent 时生效，
+// 正常转发流程不受影响。
+func applyChannelTestUserAgent(c *gin.Context, req *http.Request) {
+	if c == nil || req == nil {
+		return
+	}
+	v, ok := c.Get("channel_test_user_agent")
+	if !ok {
+		return
+	}
+	ua, ok := v.(string)
+	if !ok || ua == "" {
+		return
+	}
+	req.Header.Set("User-Agent", ua)
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -326,6 +345,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	// 用户定制：渠道测试时按模型类型设置 UA（绕过部分上游的 UA 拦截，如 nailao）。
+	// 放在 Header Override 之前，渠道管理员显式配置的 header_override 仍优先。
+	applyChannelTestUserAgent(c, req)
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	headerOverride, err := processHeaderOverride(info, c)
@@ -333,6 +355,15 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	// 部分上游（如 ioll.pp.ua）要求 x-opencode-session 头做会话路由，缺失时报 400。
+	// 客户端没带时按 user_id 生成确定性 UUID，保证同一用户的请求有会话粘性。
+	// 客户端已带的保留原值。
+	if req.Header.Get("x-opencode-session") == "" {
+		userID := c.GetInt("id")
+		// UUID v5（SHA-1）：相同 user_id 总是生成相同 UUID，不同用户不同
+		sessionUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("opencode-session-%d", userID)))
+		req.Header.Set("x-opencode-session", sessionUUID.String())
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

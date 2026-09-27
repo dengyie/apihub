@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -151,6 +152,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		ModelName:   relayInfo.OriginModelName,
 		RequestPath: c.Request.URL.Path,
 		Retry:       common.GetPointer(0),
+		// 智能负载：prompt 前缀一致性 hash，同样的 prompt 走同一渠道，提高上游 cache 命中率。
+		// 渠道失败重试时忽略 sticky，走普通选择。
+		StickyKey: loadbalancer.StickyKeyFromRequest(request),
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
@@ -206,6 +210,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
+		// 智能负载：渠道失败时计入熔断器，连续失败达到阈值后自动熔断；
+		// 重试时会跳过已熔断/已用过的渠道，而不是直接把错误返回给客户端。
+		// 400 不计入熔断（参数不支持不代表渠道不健康）。
+		// 流式错误的失败已由 StreamScannerHandler 的 End(failed=true) 记录，
+		// 这里跳过避免双记。
+		if newAPIError.StatusCode != 400 &&
+			!loadbalancer.IsTTFTTimeout(newAPIError) &&
+			!loadbalancer.IsEmptyStream(newAPIError) &&
+			!loadbalancer.IsStreamBroken(newAPIError) {
+			loadbalancer.GlobalTracker().RecordFailure(channel.Id)
+		}
+		// 智能负载参数裁剪：上游明确说不支持某参数时，
+		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
+		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
+			loadbalancer.MarkParamUnsupported(channel.Id, param)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 不支持 %s 参数，已标记自动裁剪", channel.Id, param))
+		}
+		// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。
+		// 403 本身已会触发换渠道重试，这里加的是超长熔断。
+		if loadbalancer.IsCurfewError(newAPIError) {
+			until := loadbalancer.CurfewEndTime(time.Now())
+			loadbalancer.GlobalTracker().TripBreakerUntil(channel.Id, until)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 宵禁中，已熔断到 %s", channel.Id, until.Format("15:04")))
+		}
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
 		if decision.Action != "retry" {
@@ -559,6 +587,10 @@ func executeTaskSubmissionWith(
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
+		// 智能负载：渠道失败时计入熔断器（400 参数问题不计入）
+		if taskAPIError.StatusCode != 400 {
+			loadbalancer.GlobalTracker().RecordFailure(channel.Id)
+		}
 		if !taskErr.LocalError {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
@@ -793,6 +825,16 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 	stop := service.PolicyDecision{Action: "stop", Source: "system"}
 	retry := service.PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "system"}
 	switch {
+	// 宵禁 403 换渠道重试（不能直接返回给客户端），但仍受重试预算约束，
+	// 避免所有渠道都宵禁时无限循环。
+	case taskErr != nil && taskErr.StatusCode == 403 &&
+		(strings.Contains(taskErr.Message, "system_curfew") || strings.Contains(taskErr.Message, "宵禁")):
+		if retryTimes <= 0 {
+			stop.Reason, stop.Source = "attempt_budget_exhausted", "global"
+			return stop
+		}
+		retry.Reason = "curfew_retry"
+		return retry
 	case taskErr == nil:
 		stop.Reason = "request_completed"
 	case taskErr.NoRetry:

@@ -1,0 +1,33 @@
+# new-api 智能负载策略配置
+# 修改后 5 秒内自动热加载生效，无需重启服务。
+#
+# enabled: 总开关，false 时全部逻辑旁路，行为与原生 new-api 一致
+
+enabled: false
+
+# 默认策略（所有渠道生效，可被 channels 中的单渠道配置覆盖）
+default:
+  # 单渠道最大并发请求数，超过后新请求自动跳过该渠道，落到低优先级
+  # 0 = 不限制
+  max_inflight: 50
+
+  # 首字超时（毫秒）：流式请求超过此时长未收到首个 token，
+  # 视为慢请求：计入熔断 + 触发重试到下一个渠道
+  # 0 = 不启用
+  ttft_timeout_ms: 15000
+
+  breaker:
+    # 连续慢请求/失败达到此次数后熔断该渠道
+    failure_threshold: 5
+    # 熔断冷却时间（秒），之后进入半开状态允许探测
+    cooldown_seconds: 60
+    # 半开状态允许的探测请求数
+    half_open_probes: 1
+
+# 单渠道覆盖，key 为渠道 ID
+# 示例：
+# channels:
+#   123:  # cpa-zhe
+#     max_inflight: 20
+#     ttft_timeout_ms: 8000
+channels: {}

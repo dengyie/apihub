@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -47,6 +48,9 @@ type RetryParam struct {
 	ModelName    string
 	RequestPath  string
 	Retry        *int
+	// StickyKey prompt 前缀 hash，用于一致性路由（提高上游 cache 命中率）。
+	// 仅在首次选择（Retry==0）时生效；重试时（渠道失败后）忽略，走普通选择。
+	StickyKey    string
 	resetNextTry bool
 }
 
@@ -152,6 +156,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				param.ModelName,
 				priorityRetry,
 				filters,
+				param.StickyKey,
 			)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
@@ -195,6 +200,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			param.ModelName,
 			param.GetRetry(),
 			filters,
+			param.StickyKey,
 		)
 		if err != nil {
 			return nil, param.TokenGroup, err
@@ -348,7 +354,52 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 	if channel == nil {
 		var err error
-		channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
+		// 智能负载：过载/熔断/本请求已用过的渠道自动跳过，最多尝试 maxLBAttempts 次
+		// 降级渠道（连续慢 3 次）：第一轮跳过，实在没渠道时才用
+		const maxLBAttempts = 5
+		used := retry.Ctx.GetStringSlice("use_channel")
+		usedSet := make(map[string]struct{}, len(used))
+		for _, id := range used {
+			usedSet[id] = struct{}{}
+		}
+		var degradedFallback *model.Channel
+		var degradedSelectGroup string
+		for attempt := 0; attempt < maxLBAttempts; attempt++ {
+			channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
+			if err != nil || channel == nil {
+				break
+			}
+			if _, tried := usedSet[fmt.Sprintf("%d", channel.Id)]; tried {
+				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (already tried in this request)", channel.Id)
+				retry.IncreaseRetry()
+				channel = nil
+				continue
+			}
+			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id); !ok {
+				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (%s)", channel.Id, reason)
+				retry.IncreaseRetry()
+				channel = nil
+				continue
+			}
+			// 降级渠道：先记为备选，优先用非降级渠道
+			if loadbalancer.GlobalTracker().IsDegraded(channel.Id) {
+				if degradedFallback == nil {
+					degradedFallback = channel
+					degradedSelectGroup = selectGroup
+				}
+				logger.LogDebug(retry.Ctx, "loadbalancer: channel #%d is degraded, deprioritized", channel.Id)
+				retry.IncreaseRetry()
+				channel = nil
+				continue
+			}
+			break
+		}
+		// 降级渠道兜底：没找到非降级渠道时，用降级渠道（总比无渠道好）
+		if channel == nil && degradedFallback != nil {
+			channel = degradedFallback
+			selectGroup = degradedSelectGroup
+			logger.LogDebug(retry.Ctx, "loadbalancer: using degraded channel #%d as fallback", channel.Id)
+		}
 		if err != nil {
 			showGroup := usingGroup
 			if usingGroup == "auto" {

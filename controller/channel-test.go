@@ -41,6 +41,47 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+// 用户定制：渠道测试请求的 UA
+// 部分上游（如 nailao）会按 User-Agent 拦截，Python-urllib 等默认 UA 直接 403，
+// 因此测试时统一模拟真实客户端 UA
+const (
+	// 模拟 Codex CLI（gpt 类型 + 默认）
+	channelTestCodexUserAgent = "codex-cli/0.44.0"
+	// 模拟 Claude Code（claude 模型）
+	channelTestClaudeUserAgent = "claude-code/2.0.0"
+	// gin 上下文中传递测试 UA 的 key
+	channelTestUserAgentKey = "channel_test_user_agent"
+)
+
+// 用户定制：根据模型名自动选择测试请求格式
+// - claude 模型 → anthropic 格式（模拟 Claude 客户端请求）
+// - gpt 类型 → openai-response 格式（模拟 Codex 请求）
+// - 其他 → 保持默认（openai 格式），但 UA 统一用 codex UA
+// 仅在未显式指定 endpoint_type 时生效，显式指定优先
+func autoDetectChannelTestEndpoint(testModel string, endpointType string) string {
+	normalized := strings.TrimSpace(endpointType)
+	if normalized != "" {
+		return normalized
+	}
+	modelLower := strings.ToLower(testModel)
+	switch {
+	case strings.Contains(modelLower, "claude"):
+		return string(constant.EndpointTypeAnthropic)
+	case strings.Contains(modelLower, "gpt"):
+		return string(constant.EndpointTypeOpenAIResponse)
+	default:
+		return normalized
+	}
+}
+
+// 用户定制：根据模型名选择测试请求 UA
+func channelTestUserAgent(testModel string) string {
+	if strings.Contains(strings.ToLower(testModel), "claude") {
+		return channelTestClaudeUserAgent
+	}
+	return channelTestCodexUserAgent
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
@@ -109,6 +150,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	endpointType = normalizeChannelTestEndpoint(channel, endpointType)
+
+	// 用户定制：按模型名自动选择测试请求格式（gpt→codex 请求，claude→claude 模拟请求）
+	endpointType = autoDetectChannelTestEndpoint(testModel, endpointType)
+
+	// 用户定制：测试请求 UA 随 gin 上下文传递，DoApiRequest 中应用
+	c.Set(channelTestUserAgentKey, channelTestUserAgent(testModel))
 
 	requestPath := "/v1/chat/completions"
 

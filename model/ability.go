@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/loadbalancer"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -110,6 +111,7 @@ func GetChannel(
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
+	stickyKey string,
 ) (*Channel, error) {
 	var abilities []Ability
 	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
@@ -141,6 +143,14 @@ func GetChannel(
 	}
 	channel := Channel{}
 	if len(abilities) > 0 {
+		// 智能负载：sticky 一致性路由（仅首次选择时）
+		if retry == 0 {
+			if idx := loadbalancer.StickyIndex(stickyKey, len(abilities)); idx >= 0 {
+				channel.Id = abilities[idx].ChannelId
+				err = DB.First(&channel, "id = ?", channel.Id).Error
+				return &channel, err
+			}
+		}
 		// Randomly choose one
 		weightSum := uint(0)
 		for _, ability_ := range abilities {

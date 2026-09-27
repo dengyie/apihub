@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -119,10 +120,11 @@ func GetRandomSatisfiedChannel(
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
+	stickyKey string,
 ) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, filters)
+		return GetChannel(group, model, retry, filters, stickyKey)
 	}
 
 	channelSyncLock.RLock()
@@ -197,6 +199,15 @@ func GetRandomSatisfiedChannel(
 	} else if sumWeight/len(targetChannels) < 10 {
 		// when the average weight is less than 10, set smoothing factor to 100
 		smoothingFactor = 100
+	}
+
+	// 智能负载：sticky 一致性路由。同样的 prompt 前缀总是选同一渠道，
+	// 提高上游 prompt cache 命中率。仅在首次选择（retry==0）时生效；
+	// 重试时（渠道失败后）忽略 sticky，走普通加权随机。
+	if retry == 0 {
+		if idx := loadbalancer.StickyIndex(stickyKey, len(targetChannels)); idx >= 0 {
+			return targetChannels[idx], nil
+		}
 	}
 
 	// Calculate the total weight of all channels up to endIdx

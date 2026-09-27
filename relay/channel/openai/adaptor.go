@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/ai360"
@@ -247,9 +248,68 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	return nil
 }
 
-func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
-	if request == nil {
+// stripOpenAIParam 按参数名裁剪 GeneralOpenAIRequest 的对应字段。
+// 用于上游不支持某些可选参数的渠道，避免 400 透传给客户端。
+func stripOpenAIParam(request *dto.GeneralOpenAIRequest, param string) {
+	switch param {
+	case "thinking":
+		request.THINKING = nil
+	case "reasoning_effort":
+		request.ReasoningEffort = ""
+	case "reasoning":
+		request.Reasoning = nil
+	case "stream_options":
+		request.StreamOptions = nil
+	case "response_format":
+		request.ResponseFormat = nil
+	case "tools":
+		request.Tools = nil
+	case "tool_choice":
+		request.ToolChoice = nil
+	case "parallel_tool_calls":
+		request.ParallelTooCalls = nil
+	case "logprobs":
+		request.LogProbs = nil
+	case "top_logprobs":
+		request.TopLogProbs = nil
+	case "seed":
+		request.Seed = nil
+	case "user":
+		request.User = nil
+	case "metadata":
+		request.Metadata = nil
+	case "store":
+		request.Store = nil
+	case "service_tier":
+		request.ServiceTier = nil
+	case "safety_identifier":
+		request.SafetyIdentifier = nil
+	case "enable_thinking":
+		request.EnableThinking = nil
+	case "thinking_budget":
+		request.ThinkingBudget = nil
+	case "web_search_options":
+		request.WebSearchOptions = nil
+	case "modalities":
+		request.Modalities = nil
+	case "audio":
+		request.Audio = nil
+	case "prediction":
+		request.Prediction = nil
+	case "extra_body":
+		request.ExtraBody = nil
+	case "verbosity":
+		request.Verbosity = nil
+	}
+}
+
+func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {	if request == nil {
 		return nil, errors.New("request is nil")
+	}
+	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
+	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
+	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {
+		stripOpenAIParam(request, param)
 	}
 	if info.ChannelType != constant.ChannelTypeOpenAI && info.ChannelType != constant.ChannelTypeAzure {
 		request.StreamOptions = nil
