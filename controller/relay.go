@@ -248,6 +248,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
 			}
+			// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
+			if loadbalancer.IsUpstreamQuotaError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+			}
+			if loadbalancer.IsUpstreamRoutingError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+			}
 			// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {

@@ -350,3 +350,51 @@ func TestTripBreaker(t *testing.T) {
 	assert.Equal(t, "circuit_open", reason)
 }
 
+
+func TestIsUpstreamQuotaError(t *testing.T) {
+	err1 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("credit insufficient balance: balance=0 required=9952 (request id: 20260928030525807440091c955d568n4BrhQ9s)"),
+	}
+	assert.True(t, IsUpstreamQuotaError(err1))
+
+	err2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("insufficient_user_quota: out of balance"),
+	}
+	assert.True(t, IsUpstreamQuotaError(err2))
+
+	err3 := &types.NewAPIError{
+		StatusCode: 403,
+		Err:        errors.New("You exceeded your current quota, please check your plan and billing details."),
+	}
+	assert.True(t, IsUpstreamQuotaError(err3))
+
+	errNormal400 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("invalid_request_error: max_tokens must be positive"),
+	}
+	assert.False(t, IsUpstreamQuotaError(errNormal400))
+	assert.False(t, IsUpstreamQuotaError(nil))
+}
+
+func TestIsUpstreamRoutingError(t *testing.T) {
+	err1 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("Request is missing x-opencode-session and cannot be routed efficiently. Please see https://***.***.ai/***/***"),
+	}
+	assert.True(t, IsUpstreamRoutingError(err1))
+
+	err2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("MissingSessionID: session header required"),
+	}
+	assert.True(t, IsUpstreamRoutingError(err2))
+
+	errNormal400 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("invalid json body"),
+	}
+	assert.False(t, IsUpstreamRoutingError(errNormal400))
+	assert.False(t, IsUpstreamRoutingError(nil))
+}

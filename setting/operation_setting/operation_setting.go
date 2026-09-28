@@ -13,6 +13,15 @@ var AutomaticDisableKeywords = []string{
 	"The security token included in the request is invalid",
 	"Operation not allowed",
 	"Your account is not authorized",
+	"credit insufficient balance",
+	"insufficient_user_quota",
+	"insufficient_quota",
+	"insufficient balance",
+	"user quota not enough",
+	"quota exhausted",
+	"balance is not enough",
+	"quota_exceeded",
+	"user_quota_exhausted",
 }
 
 func AutomaticDisableKeywordsToString() string {

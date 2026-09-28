@@ -52,6 +52,14 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsStreamBroken(err) {
 		return PolicyDecision{Action: "retry", Reason: "stream_broken", Source: "loadbalancer"}
 	}
+	// 智能负载：上游额度耗尽（即使返回 400/402/403 等，属于渠道不可用，换渠道重试）
+	if loadbalancer.IsUpstreamQuotaError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_quota_exhausted", Source: "loadbalancer"}
+	}
+	// 智能负载：上游路由/会话头缺失（部分网关剥离 x-opencode-session 返回 400，换渠道重试）
+	if loadbalancer.IsUpstreamRoutingError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_routing_error", Source: "loadbalancer"}
+	}
 	if types.IsSkipRetryError(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}

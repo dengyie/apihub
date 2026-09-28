@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -222,4 +223,51 @@ func CurfewEndTime(now time.Time) time.Time {
 		end = end.Add(24 * time.Hour)
 	}
 	return end
+}
+
+// IsUpstreamQuotaError 判断是否为上游中继站或渠道自身的额度耗尽/欠费错误（通常返回 400/402/403/429）。
+// 很多聚合中继站（如 One-API、New-API 等）在上游额度不足时会返回 400 且附带 "credit insufficient balance"
+// 或 "insufficient_user_quota"，这属于渠道侧可用性故障而非客户端 Bad Request，应触发换渠道重试与熔断。
+func IsUpstreamQuotaError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "credit insufficient balance") ||
+		strings.Contains(msg, "insufficient_user_quota") ||
+		strings.Contains(msg, "insufficient_quota") ||
+		strings.Contains(msg, "insufficient balance") ||
+		strings.Contains(msg, "exceeded your current quota") ||
+		strings.Contains(msg, "your credit balance is too low") ||
+		strings.Contains(msg, "user quota not enough") ||
+		strings.Contains(msg, "quota exhausted") ||
+		strings.Contains(msg, "balance is not enough") ||
+		strings.Contains(msg, "quota_exceeded") ||
+		strings.Contains(msg, "user_quota_exhausted") ||
+		strings.Contains(msg, "account_deactivated") {
+		return true
+	}
+	if oe, ok := err.RelayError.(types.OpenAIError); ok {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", oe.Code))
+		typeStr := strings.ToLower(oe.Type)
+		if strings.Contains(codeStr, "insufficient") || strings.Contains(codeStr, "quota") ||
+			strings.Contains(typeStr, "insufficient") || strings.Contains(typeStr, "quota") {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUpstreamRoutingError 判断是否为上游网关会话路由头缺失错误（通常返回 400）。
+// 例如部分中间层中继（如 ioll.pp.ua）未正确透传 x-opencode-session / x-opencode-* 等请求头，
+// 导致目标上游（如 OpenCode）拒绝服务并返回 "Request is missing x-opencode-session and cannot be routed efficiently."
+// 这属于渠道代理配置缺陷而非客户端错误，应触发换渠道重试与熔断。
+func IsUpstreamRoutingError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "x-opencode-session") ||
+		strings.Contains(msg, "missingsessionid") ||
+		strings.Contains(msg, "cannot be routed efficiently")
 }
