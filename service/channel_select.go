@@ -51,6 +51,9 @@ type RetryParam struct {
 	// StickyKey prompt 前缀 hash，用于一致性路由（提高上游 cache 命中率）。
 	// 仅在首次选择（Retry==0）时生效；重试时（渠道失败后）忽略，走普通选择。
 	StickyKey    string
+	// ExcludedIDs 选路时跳过的渠道 ID 集合（如不可用/熔断/降级/本请求已用渠道），
+	// 避免选路循环篡改全局重试计数 Retry。
+	ExcludedIDs  map[int]struct{}
 	resetNextTry bool
 }
 
@@ -151,11 +154,12 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(
+			channel, _ = model.GetRandomSatisfiedChannelWithExcluded(
 				autoGroup,
 				param.ModelName,
 				priorityRetry,
 				filters,
+				param.ExcludedIDs,
 				param.StickyKey,
 			)
 			if channel == nil {
@@ -195,11 +199,12 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(
+		channel, err = model.GetRandomSatisfiedChannelWithExcluded(
 			param.TokenGroup,
 			param.ModelName,
 			param.GetRetry(),
 			filters,
+			param.ExcludedIDs,
 			param.StickyKey,
 		)
 		if err != nil {
@@ -278,6 +283,19 @@ type ChannelSelectError struct {
 	// NoAvailableChannel marks the "no channel for this group and model"
 	// outcome so the distributor can name the claiming task plugin.
 	NoAvailableChannel bool
+}
+
+func (e *ChannelSelectError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.MessageID != "" {
+		return e.MessageID
+	}
+	return "channel select error"
 }
 
 // SelectChannelForRequest resolves the channel for one attempt with the rules
@@ -362,22 +380,36 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		for _, id := range used {
 			usedSet[id] = struct{}{}
 		}
+
+		// 使用本地工作副本，绝不调用 retry.IncreaseRetry() 污染外层请求的重试计数与重试预算
+		retryLocal := *retry
+		retryLocal.ExcludedIDs = make(map[int]struct{}, len(used)+len(retry.ExcludedIDs))
+		for id := range retry.ExcludedIDs {
+			retryLocal.ExcludedIDs[id] = struct{}{}
+		}
+		for _, idStr := range used {
+			var id int
+			if _, parseErr := fmt.Sscanf(idStr, "%d", &id); parseErr == nil && id > 0 {
+				retryLocal.ExcludedIDs[id] = struct{}{}
+			}
+		}
+
 		var degradedFallback *model.Channel
 		var degradedSelectGroup string
 		for attempt := 0; attempt < maxLBAttempts; attempt++ {
-			channel, selectGroup, err = CacheGetRandomSatisfiedChannel(retry)
+			channel, selectGroup, err = CacheGetRandomSatisfiedChannel(&retryLocal)
 			if err != nil || channel == nil {
 				break
 			}
 			if _, tried := usedSet[fmt.Sprintf("%d", channel.Id)]; tried {
 				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (already tried in this request)", channel.Id)
-				retry.IncreaseRetry()
+				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
 				channel = nil
 				continue
 			}
 			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id); !ok {
 				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (%s)", channel.Id, reason)
-				retry.IncreaseRetry()
+				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
 				channel = nil
 				continue
 			}
@@ -388,7 +420,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 					degradedSelectGroup = selectGroup
 				}
 				logger.LogDebug(retry.Ctx, "loadbalancer: channel #%d is degraded, deprioritized", channel.Id)
-				retry.IncreaseRetry()
+				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
 				channel = nil
 				continue
 			}

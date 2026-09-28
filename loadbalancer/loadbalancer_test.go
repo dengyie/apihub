@@ -154,6 +154,43 @@ func TestBreakerHalfOpenProbeFailure(t *testing.T) {
 	assert.True(t, ok, "channel should allow probe again after next cooldown")
 }
 
+func TestTrackerBreakerHalfOpenProbeSuccessRecordSuccess(t *testing.T) {
+	old := currentPolicy.Load()
+	currentPolicy.Store(testPolicy())
+	defer currentPolicy.Store(old)
+
+	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+
+	// 1. 触发硬熔断
+	for i := 0; i < 3; i++ {
+		tr.RecordFailure(200)
+	}
+	s := tr.getOrCreate(200)
+	assert.Equal(t, int32(breakerOpen), s.state.Load())
+
+	// 2. 冷却结束，进入半开
+	s.openedAt.Store(time.Now().Unix() - 61)
+
+	// 3. 放行 1 个探测请求
+	ok, _ := tr.IsAvailable(200)
+	assert.True(t, ok)
+	assert.Equal(t, int32(breakerHalfOpen), s.state.Load())
+	assert.Equal(t, int32(1), s.halfOpenProbes.Load())
+
+	// 4. 请求成功调用 RecordSuccess
+	tr.RecordSuccess(200)
+
+	// 5. 验证熔断器成功闭合，且 halfOpenProbes 重置为 0
+	assert.Equal(t, int32(breakerClosed), s.state.Load(), "state should close to breakerClosed after RecordSuccess")
+	assert.Equal(t, int32(0), s.halfOpenProbes.Load(), "halfOpenProbes should be reset to 0")
+	assert.Equal(t, int32(0), s.consecutiveFailures.Load(), "consecutiveFailures should be reset to 0")
+
+	// 6. 后续请求应该完全可用，不会出现 circuit_half_open_probes_exhausted
+	ok, reason := tr.IsAvailable(200)
+	assert.True(t, ok, "channel should be available after breaker closed")
+	assert.Empty(t, reason)
+}
+
 func TestTrackerIgnoreZeroChannel(t *testing.T) {
 	old := currentPolicy.Load()
 	currentPolicy.Store(testPolicy())

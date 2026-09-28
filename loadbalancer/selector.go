@@ -77,22 +77,3 @@ func IsStreamBroken(err error) bool {
 	return errors.As(err, &brokenErr)
 }
 
-// FilterChannelIDs 过滤渠道 ID 列表，移除不可用的。
-// 输入为 nil 或策略关闭时原样返回。
-func FilterChannelIDs(ids []int) []int {
-	if !Enabled() || len(ids) == 0 {
-		return ids
-	}
-	t := GlobalTracker()
-	out := ids[:0]
-	for _, id := range ids {
-		if ok, _ := t.IsAvailable(id); ok {
-			out = append(out, id)
-		}
-	}
-	// 全部被过滤时返回原列表，避免无渠道可用（降级为不过滤）
-	if len(out) == 0 {
-		return ids
-	}
-	return out
-}

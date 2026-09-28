@@ -49,6 +49,14 @@ func GetPolicy() *Policy {
 	return p
 }
 
+// SetPolicy 设置当前生效策略（用于测试或编程式配置）
+func SetPolicy(p *Policy) {
+	if p == nil {
+		p = DefaultPolicy()
+	}
+	currentPolicy.Store(p)
+}
+
 // Enabled 策略总开关是否打开
 func Enabled() bool {
 	return GetPolicy().Enabled

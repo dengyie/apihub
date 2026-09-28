@@ -111,8 +111,12 @@ func GetChannel(
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
-	stickyKey string,
+	stickyKey ...string,
 ) (*Channel, error) {
+	key := ""
+	if len(stickyKey) > 0 {
+		key = stickyKey[0]
+	}
 	var abilities []Ability
 	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
@@ -145,7 +149,7 @@ func GetChannel(
 	if len(abilities) > 0 {
 		// 智能负载：sticky 一致性路由（仅首次选择时）
 		if retry == 0 {
-			if idx := loadbalancer.StickyIndex(stickyKey, len(abilities)); idx >= 0 {
+			if idx := loadbalancer.StickyIndex(key, len(abilities)); idx >= 0 {
 				channel.Id = abilities[idx].ChannelId
 				err = DB.First(&channel, "id = ?", channel.Id).Error
 				return &channel, err

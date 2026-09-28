@@ -138,8 +138,8 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		want    PolicyDecision
 	}{
 		{name: "retry status matched", err: upstream(http.StatusTooManyRequests), retries: 1, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
-		{name: "status outside retry rules", err: upstream(http.StatusRequestTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}},
-		{name: "bad request retries", err: upstream(http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}},
+		{name: "status outside retry rules", err: upstream(http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}},
+		{name: "unsupported param 400 retries", err: types.NewOpenAIError(errors.New("unsupported parameter: thinking"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}},
 		{name: "stream broken retries", err: types.NewErrorWithStatusCode(&loadbalancer.StreamBrokenError{ChannelID: 1, Reason: "scanner error"}, types.ErrorCodeBadResponseBody, http.StatusBadGateway), retries: 1, want: PolicyDecision{Action: "retry", Reason: "stream_broken", Source: "loadbalancer"}},
 		{name: "attempt budget exhausted", err: upstream(http.StatusTooManyRequests), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		{name: "always skipped status", err: upstream(http.StatusGatewayTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},

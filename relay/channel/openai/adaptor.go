@@ -304,9 +304,13 @@ func stripOpenAIParam(request *dto.GeneralOpenAIRequest, param string) {
 	}
 }
 
-func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {	if request == nil {
+func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
+	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	// 浅拷贝请求对象，避免渠道级参数裁剪或修改破坏外层重试复用的原始请求结构（如 Tools、ReasoningEffort）
+	reqCopy := *request
+	request = &reqCopy
 	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
 	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
 	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {

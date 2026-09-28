@@ -83,11 +83,6 @@ func GetStripParams(channelID int) []string {
 	return out
 }
 
-// ShouldStripThinking 兼容旧接口：该渠道是否需要裁剪 thinking
-func ShouldStripThinking(channelID int) bool {
-	return slices.Contains(GetStripParams(channelID), "thinking")
-}
-
 // MarkParamUnsupported 标记某渠道不支持某参数（自动学习）
 func MarkParamUnsupported(channelID int, param string) {
 	param = normalizeParamName(param)
@@ -102,11 +97,6 @@ func MarkParamUnsupported(channelID int, param string) {
 		paramStripLearned[channelID] = set
 	}
 	set[param] = struct{}{}
-}
-
-// MarkThinkingUnsupported 兼容旧接口
-func MarkThinkingUnsupported(channelID int) {
-	MarkParamUnsupported(channelID, "thinking")
 }
 
 func normalizeParamName(p string) string {

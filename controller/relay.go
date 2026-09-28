@@ -222,6 +222,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
+			loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
 			relayInfo.LastError = nil
 			return
 		}
@@ -606,6 +607,7 @@ func executeTaskSubmissionWith(
 		}
 		if taskErr == nil {
 			diagnostics.attemptSucceeded(retryParam.GetRetry()+1, result)
+			loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
 			break
 		}
 

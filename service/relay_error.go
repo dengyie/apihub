@@ -65,9 +65,9 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if operation_setting.IsAlwaysSkipRetryCode(err.GetErrorCode()) || operation_setting.IsAlwaysSkipRetryStatusCode(code) {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
 	}
-	// 智能负载：400 也换渠道重试（不同上游对参数的支持不同，
-	// 如 "thinking" 参数有的上游支持有的不支持），但不计入熔断。
-	if code == 400 {
+	// 智能负载：参数不支持的 400 错误换渠道重试（不同上游对参数的支持不同，
+	// 如 "thinking" / "reasoning_effort" 等），但不计入熔断。
+	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
 		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
 	if operation_setting.ShouldRetryByStatusCode(code) {

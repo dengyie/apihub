@@ -120,11 +120,26 @@ func GetRandomSatisfiedChannel(
 	model string,
 	retry int,
 	filters []dto.ChannelFilter,
-	stickyKey string,
+	stickyKey ...string,
 ) (*Channel, error) {
+	return GetRandomSatisfiedChannelWithExcluded(group, model, retry, filters, nil, stickyKey...)
+}
+
+func GetRandomSatisfiedChannelWithExcluded(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+	excludedIDs map[int]struct{},
+	stickyKey ...string,
+) (*Channel, error) {
+	key := ""
+	if len(stickyKey) > 0 {
+		key = stickyKey[0]
+	}
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, filters, stickyKey)
+		return GetChannel(group, model, retry, filters, key)
 	}
 
 	channelSyncLock.RLock()
@@ -141,6 +156,20 @@ func GetRandomSatisfiedChannel(
 
 	if len(channels) == 0 {
 		return nil, nil
+	}
+
+	// 排除指定不可用/已用/降级渠道
+	if len(excludedIDs) > 0 {
+		filtered := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			if _, excluded := excludedIDs[channelId]; !excluded {
+				filtered = append(filtered, channelId)
+			}
+		}
+		channels = filtered
+		if len(channels) == 0 {
+			return nil, nil
+		}
 	}
 
 	if len(channels) == 1 {
@@ -205,7 +234,7 @@ func GetRandomSatisfiedChannel(
 	// 提高上游 prompt cache 命中率。仅在首次选择（retry==0）时生效；
 	// 重试时（渠道失败后）忽略 sticky，走普通加权随机。
 	if retry == 0 {
-		if idx := loadbalancer.StickyIndex(stickyKey, len(targetChannels)); idx >= 0 {
+		if idx := loadbalancer.StickyIndex(key, len(targetChannels)); idx >= 0 {
 			return targetChannels[idx], nil
 		}
 	}
