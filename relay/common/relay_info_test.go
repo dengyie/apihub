@@ -329,6 +329,8 @@ func TestInitChannelMetaResetsPerAttemptStreamStateAndPreservesRequestState(t *t
 	require.NoError(t, err)
 
 	info.SendResponseCount = 3
+	info.ReceivedResponseCount = 5
+	info.ReceivedContentBytes = 1024
 	info.ClaudeToChatStreamState = claudeState
 	info.ChatToGeminiStreamState = geminiState
 	info.LastError = types.NewError(assert.AnError, types.ErrorCodeBadResponseBody)
@@ -345,6 +347,8 @@ func TestInitChannelMetaResetsPerAttemptStreamStateAndPreservesRequestState(t *t
 	info.InitChannelMeta(ctx)
 
 	assert.Zero(t, info.SendResponseCount)
+	assert.Zero(t, info.ReceivedResponseCount)
+	assert.Zero(t, info.ReceivedContentBytes)
 	assert.Nil(t, info.ClaudeToChatStreamState)
 	assert.Nil(t, info.ChatToGeminiStreamState)
 

@@ -48,7 +48,7 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsEmptyStream(err) {
 		return PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}
 	}
-	// 智能负载：流中断（上游在首字节前断开）视同渠道失败，换渠道重试
+	// 智能负载：流中断（上游传输异常断开，如 RST_STREAM 等）视同渠道失败，换渠道重试
 	if loadbalancer.IsStreamBroken(err) {
 		return PolicyDecision{Action: "retry", Reason: "stream_broken", Source: "loadbalancer"}
 	}

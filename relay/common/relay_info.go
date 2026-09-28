@@ -254,6 +254,8 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// Per-attempt only. Do not clear StreamStatus, conversion diagnostics,
 	// LastError, or billing accumulators — those are request-scoped.
 	info.SendResponseCount = 0
+	info.ReceivedResponseCount = 0
+	info.ReceivedContentBytes = 0
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)

@@ -627,7 +627,9 @@ func TestStreamScannerHandler_StreamBroken_MidStream(t *testing.T) {
 		info.ReceivedResponseCount++
 	})
 
-	assert.NoError(t, err)
+	require.Error(t, err)
+	var brokenErr *loadbalancer.StreamBrokenError
+	require.ErrorAs(t, err, &brokenErr)
 	assert.True(t, info.StreamStatus.HasErrors())
 	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
 }

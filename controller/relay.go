@@ -124,6 +124,28 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 							"error": newAPIError.ToOpenAIError(),
 						})
 					}
+				} else {
+					// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
+					// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
+					// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
+					var sseErrData string
+					switch relayFormat {
+					case types.RelayFormatClaude:
+						errJSON, _ := common.Marshal(gin.H{
+							"type":  "error",
+							"error": newAPIError.ToClaudeError(),
+						})
+						sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
+					default:
+						openAIErr := newAPIError.ToOpenAIError()
+						openAIErr.Code = newAPIError.StatusCode
+						errJSON, _ := common.Marshal(gin.H{
+							"error": openAIErr,
+						})
+						sseErrData = fmt.Sprintf("data: %s\n\n", string(errJSON))
+					}
+					c.Writer.Write([]byte(sseErrData))
+					c.Writer.Flush()
 				}
 		}
 	}()
@@ -222,22 +244,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError == nil {
 			if relayInfo.StreamStatus != nil && (relayInfo.StreamStatus.HasErrors() || (!relayInfo.StreamStatus.IsNormalEnd() && relayInfo.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)) {
 				streamErr := types.NewErrorWithStatusCode(
-					fmt.Errorf("stream interrupted: %s", relayInfo.StreamStatus.Summary()),
+					&loadbalancer.StreamBrokenError{
+						ChannelID: channel.Id,
+						Reason:    relayInfo.StreamStatus.Summary(),
+					},
 					types.ErrorCodeBadResponseBody,
 					http.StatusBadGateway,
-					types.ErrOptionWithSkipRetry(),
 				)
 				relayInfo.LastError = streamErr
-				decision := service.PolicyDecision{Action: "stop", Reason: "stream_broken_partial", Source: "loadbalancer"}
-				service.RecordPolicyFailure(c, channel.Id, streamErr, decision)
-				processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), streamErr, relayInfo)
 				newAPIError = streamErr
+			} else {
+				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
+				loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
+				relayInfo.LastError = nil
 				return
 			}
-			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
-			loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
-			relayInfo.LastError = nil
-			return
 		}
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
@@ -260,6 +281,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if loadbalancer.IsEOLError(newAPIError) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
+			}
+			// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
+			if loadbalancer.IsStreamBroken(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
 			}
 			// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
 			if loadbalancer.IsUpstreamQuotaError(newAPIError) {

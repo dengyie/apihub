@@ -424,15 +424,15 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		return &loadbalancer.EmptyStreamError{ChannelID: channelID}
 	}
 
-	// 流中断：上游在传输中途断开（如 HTTP/2 INTERNAL_ERROR、connection reset），
-	// 且客户端尚未收到任何有效内容，触发换渠道重试。
-	// 如果已有内容发出，则无法重试（避免重复），仅记录渠道失败。
+	// 流中断：上游在传输中途断开（如 HTTP/2 INTERNAL_ERROR、connection reset 等）。
+	// 无论断开发生在首字节前还是传输中途，均视同渠道失败并返回 StreamBrokenError，
+	// 触发立即熔断渠道并在重试预算内切换至下一个健康渠道重试。
+	// 客户端主动取消（ClientGone）除外。
 	if (info.StreamStatus.HasErrors() || !info.StreamStatus.IsNormalEnd()) &&
-		info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone &&
-		(info.ReceivedContentBytes == 0 || info.ReceivedResponseCount == 0) {
+		info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
 		endReason := info.StreamStatus.Summary()
-		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 在首字节前断开（%s），触发换渠道重试",
-			channelID, endReason))
+		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 传输异常中断（%s, 已收块=%d, 字节=%d），触发换渠道重试并熔断",
+			channelID, endReason, info.ReceivedResponseCount, info.ReceivedContentBytes))
 		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason}
 	}
 	return nil
