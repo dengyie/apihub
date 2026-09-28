@@ -116,6 +116,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 
 		if req, ok := convertedRequest.(*dto.GeneralOpenAIRequest); ok {
+			if req.ReasoningEffort != "" {
+				switch strings.ToLower(strings.TrimSpace(req.ReasoningEffort)) {
+				case "max", "xhigh":
+					req.ReasoningEffort = "high"
+				}
+			}
 			applySystemPromptIfNeeded(c, info, req)
 		}
 

@@ -311,6 +311,20 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	// 浅拷贝请求对象，避免渠道级参数裁剪或修改破坏外层重试复用的原始请求结构（如 Tools、ReasoningEffort）
 	reqCopy := *request
 	request = &reqCopy
+
+	// 规范化 reasoning_effort：标准 OpenAI 仅支持 low / medium / high（以及部分模型的 minimal）。
+	// 客户端（如 ZCode 的 Thought Level Max）常传入 max 或 xhigh，统一规范化为 high，
+	// 避免上游渠道报 400 (level "max" not supported, valid levels: low, medium, high)。
+	if request.ReasoningEffort != "" {
+		effort := strings.ToLower(strings.TrimSpace(request.ReasoningEffort))
+		switch effort {
+		case "max", "xhigh":
+			request.ReasoningEffort = "high"
+		default:
+			request.ReasoningEffort = effort
+		}
+	}
+
 	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
 	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
 	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {
@@ -473,8 +487,13 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			request.Model = baseModel
 		}
 		if canonicalEffort := kitreasoning.EffectiveEffort(currentIntent); canonicalEffort != "" {
-			request.ReasoningEffort = string(canonicalEffort)
-			info.SetReasoningEffort(string(canonicalEffort))
+			effortStr := string(canonicalEffort)
+			switch effortStr {
+			case "max", "xhigh":
+				effortStr = "high"
+			}
+			request.ReasoningEffort = effortStr
+			info.SetReasoningEffort(effortStr)
 		}
 		if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
 			request.Reasoning = nil

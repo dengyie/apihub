@@ -182,3 +182,30 @@ func TestConvertOpenAIRequest_NonDeepSeekWithoutReasoningKeepsNil(t *testing.T) 
 	require.True(t, ok)
 	assert.Nil(t, convertedReq.Messages[1].ReasoningContent, "non-deepseek request without reasoning should leave reasoning_content nil")
 }
+
+
+func TestConvertOpenAIRequest_NormalizesReasoningEffortMaxAndXHigh(t *testing.T) {
+	for _, effort := range []string{"max", "MAX", "xhigh", "XHigh"} {
+		t.Run(effort, func(t *testing.T) {
+			origRequest := &dto.GeneralOpenAIRequest{
+				Model:           "deepseek-v4-flash",
+				ReasoningEffort: effort,
+			}
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelId:         19,
+					ChannelType:       constant.ChannelTypeOpenAI,
+					UpstreamModelName: "deepseek-v4-flash",
+				},
+				OriginModelName: "deepseek-v4-flash",
+			}
+			adaptor := &Adaptor{}
+			converted, err := adaptor.ConvertOpenAIRequest(nil, info, origRequest)
+			require.NoError(t, err)
+			convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
+			require.True(t, ok)
+			assert.Equal(t, "high", convertedReq.ReasoningEffort)
+			assert.Equal(t, effort, origRequest.ReasoningEffort, "original must not be mutated")
+		})
+	}
+}

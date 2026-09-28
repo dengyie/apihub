@@ -63,6 +63,30 @@ func TestUpstreamChannelErrorStatusShielding(t *testing.T) {
 			errMessage:     "用户额度不足, 剩余额度: 0",
 			expectedStatus: http.StatusForbidden,
 		},
+		{
+			name:           "upstream 400 parameter level max not supported mapped to 502",
+			useChannel:     []string{"19"},
+			errorCode:      types.ErrorCodeBadResponseStatusCode,
+			statusCode:     http.StatusBadRequest,
+			errMessage:     `level "max" not supported, valid levels: low, medium, high`,
+			expectedStatus: http.StatusBadGateway,
+		},
+		{
+			name:           "upstream 400 thinking mode history error mapped to 502",
+			useChannel:     []string{"24"},
+			errorCode:      types.ErrorCodeBadResponseStatusCode,
+			statusCode:     http.StatusBadRequest,
+			errMessage:     "The `reasoning_content` in the thinking mode must be passed back to the API.",
+			expectedStatus: http.StatusBadGateway,
+		},
+		{
+			name:           "downstream client malformed request remains 400",
+			useChannel:     nil,
+			errorCode:      types.ErrorCodeInvalidRequest,
+			statusCode:     http.StatusBadRequest,
+			errMessage:     "invalid json body",
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range tests {
@@ -85,9 +109,11 @@ func TestUpstreamChannelErrorStatusShielding(t *testing.T) {
 					loadbalancer.IsUpstreamQuotaError(newAPIError) ||
 					loadbalancer.IsUpstreamRoutingError(newAPIError) ||
 					loadbalancer.IsUpstreamRelayError(newAPIError) ||
+					loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
 					newAPIError.StatusCode == http.StatusForbidden ||
 					newAPIError.StatusCode == http.StatusUnauthorized ||
-					newAPIError.StatusCode == http.StatusGone {
+					newAPIError.StatusCode == http.StatusGone ||
+					newAPIError.StatusCode == http.StatusBadRequest {
 					newAPIError.StatusCode = http.StatusBadGateway
 				}
 			} else if loadbalancer.IsEOLError(newAPIError) {

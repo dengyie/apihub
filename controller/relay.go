@@ -101,9 +101,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 						loadbalancer.IsUpstreamQuotaError(newAPIError) ||
 						loadbalancer.IsUpstreamRoutingError(newAPIError) ||
 						loadbalancer.IsUpstreamRelayError(newAPIError) ||
+						loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
 						newAPIError.StatusCode == http.StatusForbidden ||
 						newAPIError.StatusCode == http.StatusUnauthorized ||
-						newAPIError.StatusCode == http.StatusGone {
+						newAPIError.StatusCode == http.StatusGone ||
+						newAPIError.StatusCode == http.StatusBadRequest {
 						newAPIError.StatusCode = http.StatusBadGateway
 					}
 				} else if loadbalancer.IsEOLError(newAPIError) {

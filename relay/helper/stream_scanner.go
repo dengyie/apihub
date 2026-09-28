@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -400,6 +401,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 	}
 
+	// 客户端断开判定：即使 stopChan 先触发（例如向客户端写响应时检测到 context done），
+	// 只要客户端 context 已取消或记录了 context canceled，最终原因应纠正为 ClientGone。
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+	} else if info.StreamStatus.EndError != nil && (errors.Is(info.StreamStatus.EndError, context.Canceled) || strings.Contains(info.StreamStatus.EndError.Error(), "context canceled")) {
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndError)
+	}
+
 	cleanup()
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
@@ -424,12 +433,30 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		return &loadbalancer.EmptyStreamError{ChannelID: channelID}
 	}
 
-	// 流中断：上游在传输中途断开（如 HTTP/2 INTERNAL_ERROR、connection reset 等）。
-	// 无论断开发生在首字节前还是传输中途，均视同渠道失败并返回 StreamBrokenError，
-	// 触发立即熔断渠道并在重试预算内切换至下一个健康渠道重试。
-	// 客户端主动取消（ClientGone）除外。
-	if (info.StreamStatus.HasErrors() || !info.StreamStatus.IsNormalEnd()) &&
-		info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
+	// 流中断判断：
+	// 1. 客户端主动断开（ClientGone 或 context 取消）除外，不视为上游错误。
+	// 2. 非正常结束（scanner_error、timeout、panic）均为流中断（无论是首字节前还是传输中途）。
+	// 3. handler 异常终止（handler_stop 且有非客户端 end_error）。
+	// 4. 首字节前/未交付任何内容块时出现错误（received == 0 && hasErrors）。
+	isClientGone := info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
+		(c != nil && c.Request != nil && c.Request.Context().Err() != nil) ||
+		(info.StreamStatus.EndError != nil && (errors.Is(info.StreamStatus.EndError, context.Canceled) || strings.Contains(info.StreamStatus.EndError.Error(), "context canceled")))
+
+	streamBroken := false
+	if !isClientGone {
+		if !info.StreamStatus.IsNormalEnd() {
+			// scanner 错误、超时、panic 等异常中断
+			streamBroken = true
+		} else if info.StreamStatus.EndReason == relaycommon.StreamEndReasonHandlerStop && info.StreamStatus.EndError != nil {
+			// handler 主动停止且携带错误
+			streamBroken = true
+		} else if info.ReceivedResponseCount == 0 && info.StreamStatus.HasErrors() {
+			// 首块未交付即发生错误
+			streamBroken = true
+		}
+	}
+
+	if streamBroken {
 		endReason := info.StreamStatus.Summary()
 		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 传输异常中断（%s, 已收块=%d, 字节=%d），触发换渠道重试并熔断",
 			channelID, endReason, info.ReceivedResponseCount, info.ReceivedContentBytes))

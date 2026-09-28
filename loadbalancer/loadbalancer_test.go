@@ -302,6 +302,23 @@ func TestIsParamNotSupportedError(t *testing.T) {
 	assert.True(t, ok3)
 	assert.Equal(t, "thinking", p3)
 
+	// Level not supported 风格（如 cpa-xkool / OpenAI-compatible 拒绝 max/xhigh 级别）：
+	errLevel := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("status_code=400, level \"max\" not supported, valid levels: low, medium, high"),
+	}
+	pLevel, okLevel := IsParamNotSupportedError(errLevel)
+	assert.True(t, okLevel)
+	assert.Equal(t, "reasoning_effort", pLevel)
+
+	errLevel2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("level 'xhigh' not supported"),
+	}
+	pLevel2, okLevel2 := IsParamNotSupportedError(errLevel2)
+	assert.True(t, okLevel2)
+	assert.Equal(t, "reasoning_effort", pLevel2)
+
 	// 500 不应触发参数裁剪
 	err4 := &types.NewAPIError{
 		StatusCode: 500,

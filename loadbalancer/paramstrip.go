@@ -168,6 +168,16 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 		return "", false
 	}
 	msg := err.Error()
+	msgLower := strings.ToLower(msg)
+
+	// 特殊识别 reasoning_effort 等级/参数不支持错误：
+	// 例如：level "max" not supported, valid levels: low, medium, high
+	if strings.Contains(msgLower, "valid levels:") ||
+		(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
+		regexp.MustCompile(`(?i)level\s+["']?[a-zA-Z0-9_]+["']?\s+(?:is\s+)?not supported`).MatchString(msg) {
+		return "reasoning_effort", true
+	}
+
 	for _, re := range unsupportedParamPatterns {
 		if m := re.FindStringSubmatch(msg); m != nil {
 			return normalizeParamName(m[1]), true
