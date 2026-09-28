@@ -1,14 +1,20 @@
 package model
 
 import (
+	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestFilterCandidateIDs(t *testing.T) {
@@ -215,4 +221,156 @@ func TestChannelSatisfiesFilters(t *testing.T) {
 	}})
 	assert.False(t, ok)
 	assert.Equal(t, dto.FilterRequestPath, kind)
+}
+
+// TestChannelCandidatesExclusionDatabaseMode covers the database-backed
+// candidate set, which must honour excluded channels just like the memory
+// cache does: it used to ignore them and re-pick the channel that had just
+// failed.
+func TestChannelCandidatesExclusionDatabaseMode(t *testing.T) {
+	truncateTables(t)
+	originalMemoryCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCache })
+
+	priority10 := int64(10)
+	priority5 := int64(5)
+	weight1 := uint(1)
+	baseURL := "https://example.com"
+	for _, channel := range []Channel{
+		{Id: 800001, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "ch-primary", Models: "gpt-test", Group: "default", Priority: &priority10, Weight: &weight1, BaseURL: &baseURL},
+		{Id: 800002, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "ch-secondary", Models: "gpt-test", Group: "default", Priority: &priority10, Weight: &weight1, BaseURL: &baseURL},
+		{Id: 800003, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "ch-backup", Models: "gpt-test", Group: "default", Priority: &priority5, Weight: &weight1, BaseURL: &baseURL},
+	} {
+		channel := channel
+		require.NoError(t, channel.Insert())
+	}
+
+	pick := func(excluded map[int]struct{}) *Channel {
+		t.Helper()
+		candidates, err := GetChannelCandidates("default", "gpt-test", nil)
+		require.NoError(t, err)
+		return candidates.Pick(0, excluded, "")
+	}
+
+	// Without exclusions the top priority tier wins.
+	assert.Contains(t, []int{800001, 800002}, pick(nil).Id)
+	// Excluding one of them leaves the other.
+	assert.Equal(t, 800002, pick(map[int]struct{}{800001: {}}).Id)
+	// Excluding the whole top tier falls through to the next priority.
+	assert.Equal(t, 800003, pick(map[int]struct{}{800001: {}, 800002: {}}).Id)
+	// Excluding everything exhausts the set rather than erroring.
+	assert.Nil(t, pick(map[int]struct{}{800001: {}, 800002: {}, 800003: {}}))
+}
+
+// TestChannelCandidatesDatabaseMatrix runs the database-backed candidate
+// resolution against real SQLite, MySQL and PostgreSQL instances.
+//
+// The reason this cannot be a SQLite-only test is the reserved-word quoting:
+// abilities are filtered with `commonGroupCol`, which is `"group"` on
+// PostgreSQL and backticked elsewhere. A statement that is valid on SQLite and
+// MySQL is a syntax error on PostgreSQL, so a green SQLite run says nothing
+// about the dialect production actually runs on.
+//
+// The subtests also pin the behaviours the refactor depends on — priority-tier
+// fallthrough, exclusion, exhaustion, and the normalized-model-name fallback —
+// against each dialect rather than only the one the test suite defaults to.
+func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var dialector gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				dialector = sqlite.Open(":memory:")
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				dialector = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				dialector = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(dialector, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "candidates_test_"}})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+
+			previousDB := DB
+			previousMainType := common.MainDatabaseType()
+			previousMemoryCache := common.MemoryCacheEnabled
+			DB = db
+			common.MemoryCacheEnabled = false
+			// initCol derives commonGroupCol from the main database type, so it
+			// has to be re-run for every dialect or the backtick form leaks into
+			// the PostgreSQL subtest and the failure looks like a code bug.
+			switch dialect {
+			case "sqlite":
+				common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+			case "mysql":
+				common.SetMainDatabaseType(common.DatabaseTypeMySQL)
+			case "postgres":
+				common.SetMainDatabaseType(common.DatabaseTypePostgreSQL)
+			}
+			initCol()
+			t.Cleanup(func() {
+				DB = previousDB
+				common.MemoryCacheEnabled = previousMemoryCache
+				common.SetMainDatabaseType(previousMainType)
+				initCol()
+				require.NoError(t, db.Migrator().DropTable(&Channel{}, &Ability{}))
+				require.NoError(t, sqlDB.Close())
+			})
+			require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+
+			var version string
+			versionQuery := "SELECT version()"
+			if dialect == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+
+			priority10 := int64(10)
+			priority5 := int64(5)
+			weight1 := uint(1)
+			baseURL := "https://example.com"
+			for _, channel := range []Channel{
+				{Id: 810001, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "matrix-primary", Models: "gpt-matrix", Group: "default", Priority: &priority10, Weight: &weight1, BaseURL: &baseURL},
+				{Id: 810002, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "matrix-secondary", Models: "gpt-matrix", Group: "default", Priority: &priority10, Weight: &weight1, BaseURL: &baseURL},
+				{Id: 810003, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "matrix-backup", Models: "gpt-matrix", Group: "default", Priority: &priority5, Weight: &weight1, BaseURL: &baseURL},
+			} {
+				channel := channel
+				require.NoError(t, channel.Insert())
+			}
+
+			pick := func(group, modelName string, retry int, excluded map[int]struct{}) *Channel {
+				t.Helper()
+				candidates, err := GetChannelCandidates(group, modelName, nil)
+				require.NoError(t, err)
+				return candidates.Pick(retry, excluded, "")
+			}
+
+			// A group with no abilities resolves to an empty set instead of an
+			// error, so the caller's skip loop terminates rather than retrying.
+			assert.Nil(t, pick("group-without-channels", "gpt-matrix", 0, nil))
+			// The reserved-word `group` filter above only proves anything if it
+			// actually matched rows for the group that does exist.
+			assert.Contains(t, []int{810001, 810002}, pick("default", "gpt-matrix", 0, nil).Id)
+			assert.Equal(t, 810002, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}}).Id)
+			assert.Equal(t, 810003, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}, 810002: {}}).Id)
+			assert.Nil(t, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}, 810002: {}, 810003: {}}))
+			// A second retry tier reaches the lower-priority channel directly.
+			assert.Equal(t, 810003, pick("default", "gpt-matrix", 1, nil).Id)
+
+			// A suffixed model name falls back to its base name, which is what
+			// makes "-high"/"-low" variants routable without per-variant abilities.
+			assert.Contains(t, []int{810001, 810002}, pick("default", "gpt-matrix-high", 0, nil).Id)
+		})
+	}
 }

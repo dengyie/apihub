@@ -1338,9 +1338,9 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 					}
 					common.MemoryCacheEnabled = true
 					model.InitChannelCache()
-					cached, err := model.GetRandomSatisfiedChannel("default", name, 0, nil)
+					candidates, err := model.GetChannelCandidates("default", name, nil)
 					require.NoError(t, err)
-					require.NotNil(t, cached)
+					require.NotNil(t, candidates.Pick(0, nil, ""))
 					baseline, err := model.GetModelPricingSnapshot([]string{name})
 					require.NoError(t, err)
 					require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{{ModelName: name, ExpectedVersion: baseline.EmptyVersion, Pricing: model.PricingValues{"ModelPrice": float64(2)}}}))
@@ -1378,9 +1378,9 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 						require.NoError(t, db.First(&after, original.Id).Error)
 						assert.Equal(t, original, after)
 					}
-					cached, err = model.GetRandomSatisfiedChannel("default", name, 0, nil)
+					afterDelete, err := model.GetChannelCandidates("default", name, nil)
 					require.NoError(t, err)
-					require.NotNil(t, cached)
+					require.NotNil(t, afterDelete.Pick(0, nil, ""))
 					recorder := modelManagementRequest(t, BatchDeleteModelMeta, http.MethodPost, "/api/models/delete", body, &response)
 					require.True(t, response.Success, recorder.Body.String())
 					assert.Equal(t, model.ModelDeleteResult{DeletedCount: 2, UpdatedChannels: 3}, response.Data)
@@ -1407,12 +1407,13 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 						}
 					}
 					for _, group := range []string{"default", "vip", "last-model-group"} {
-						cached, _ = model.GetRandomSatisfiedChannel(group, name, 0, nil)
-						assert.Nil(t, cached)
+						groupCandidates, err := model.GetChannelCandidates(group, name, nil)
+						require.NoError(t, err)
+						assert.Nil(t, groupCandidates.Pick(0, nil, ""))
 					}
-					cached, err = model.GetRandomSatisfiedChannel("default", name+"-keep", 0, nil)
+					keepCandidates, err := model.GetChannelCandidates("default", name+"-keep", nil)
 					require.NoError(t, err)
-					require.NotNil(t, cached)
+					assert.NotNil(t, keepCandidates.Pick(0, nil, ""))
 					pricingAfter, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
 					require.NoError(t, err)
 					assert.Equal(t, pricingBefore, pricingAfter)

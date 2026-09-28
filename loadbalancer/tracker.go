@@ -43,6 +43,22 @@ type ChannelStats struct {
 
 const maxTTFTSamples = 100
 
+// ContextKeyAttempt carries the inflight handle of the relay attempt in
+// flight. The controller creates it at the start of every attempt so streams,
+// non-stream replies and task submissions all count against max_inflight;
+// StreamScannerHandler reuses it instead of opening a second one.
+// RequestHandle.End is idempotent, so whichever layer reports first wins and
+// the other is a no-op.
+const ContextKeyAttempt = "loadbalancer_attempt"
+
+// IsAvailable 拒绝渠道的原因，调用方按常量比较，避免裸字符串。
+const (
+	ReasonCircuitOpen            = "circuit_open"
+	ReasonCircuitBlockedUntil    = "circuit_blocked_until"
+	ReasonHalfOpenProbesExceeded = "circuit_half_open_probes_exhausted"
+	ReasonOverloaded             = "overloaded"
+)
+
 // Tracker 跟踪所有渠道的实时状态
 type Tracker struct {
 	mu       sync.RWMutex
@@ -100,23 +116,6 @@ func (t *Tracker) TripBreaker(channelID int) {
 	s.halfOpenProbes.Store(0)
 }
 
-// RecordFailure 记录一次渠道失败（非流式路径或流开始前的失败）。
-// 增加连续失败计数，达到阈值后熔断该渠道；若渠道处于半开状态，单次探测失败即重新熔断。
-func (t *Tracker) RecordFailure(channelID int) {
-	if !Enabled() || channelID <= 0 {
-		return
-	}
-	s := t.getOrCreate(channelID)
-	policy := GetPolicy().Resolve(channelID)
-	n := s.consecutiveFailures.Add(1)
-	currentState := breakerState(s.state.Load())
-	if currentState == breakerHalfOpen || (policy.Breaker.FailureThreshold > 0 && int(n) >= policy.Breaker.FailureThreshold) {
-		s.state.Store(int32(breakerOpen))
-		s.openedAt.Store(time.Now().Unix())
-		s.halfOpenProbes.Store(0)
-	}
-}
-
 // IsDegraded 判断渠道是否处于降级状态（慢 3 次后的 10 分钟软降级）。
 // 降级渠道仍可用，但在选渠道时排最后。
 func (t *Tracker) IsDegraded(channelID int) bool {
@@ -132,20 +131,6 @@ func (t *Tracker) IsDegraded(channelID int) bool {
 		s.degradedUntil.Store(0)
 	}
 	return false
-}
-
-// RecordSuccess 记录一次渠道成功，重置连续失败计数。
-func (t *Tracker) RecordSuccess(channelID int) {
-	if !Enabled() || channelID <= 0 {
-		return
-	}
-	s := t.getOrCreate(channelID)
-	s.consecutiveFailures.Store(0)
-	s.consecutiveSlowCount.Store(0)
-	if breakerState(s.state.Load()) == breakerHalfOpen {
-		s.state.Store(int32(breakerClosed))
-		s.halfOpenProbes.Store(0)
-	}
 }
 
 // Begin 请求开始：inflight +1，返回一个用于 End 的句柄。
@@ -263,10 +248,10 @@ func (h *RequestHandle) End(slow, failed bool) {
 	} else {
 		h.stats.consecutiveFailures.Store(0)
 		h.stats.consecutiveSlowCount.Store(0)
-		// 半开探测成功，关闭熔断器
+		// 半开探测成功，关闭熔断器并归还探测配额
 		if breakerState(h.stats.state.Load()) == breakerHalfOpen {
 			h.stats.state.Store(int32(breakerClosed))
-			h.stats.consecutiveFailures.Store(0)
+			h.stats.halfOpenProbes.Store(0)
 		}
 	}
 }
@@ -293,7 +278,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 		// 定时熔断（如宵禁）：到期前一律不放行
 		if until := s.blockedUntil.Load(); until > 0 {
 			if time.Now().Unix() < until {
-				return false, "circuit_blocked_until"
+				return false, ReasonCircuitBlockedUntil
 			}
 			// 到期：清除定时，恢复常规冷却逻辑
 			s.blockedUntil.Store(0)
@@ -308,7 +293,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 				s.halfOpenProbes.Store(0)
 			}
 		} else {
-			return false, "circuit_open"
+			return false, ReasonCircuitOpen
 		}
 		// 进入半开后继续走下面的半开逻辑
 		fallthrough
@@ -319,7 +304,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 		}
 		if s.halfOpenProbes.Add(1) > int32(maxProbes) {
 			s.halfOpenProbes.Add(-1)
-			return false, "circuit_half_open_probes_exhausted"
+			return false, ReasonHalfOpenProbesExceeded
 		}
 		// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
 	}
@@ -330,7 +315,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 		if breakerState(s.state.Load()) == breakerHalfOpen {
 			s.halfOpenProbes.Add(-1)
 		}
-		return false, "overloaded"
+		return false, ReasonOverloaded
 	}
 
 	return true, ""

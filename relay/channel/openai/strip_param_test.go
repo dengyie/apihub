@@ -183,7 +183,6 @@ func TestConvertOpenAIRequest_NonDeepSeekWithoutReasoningKeepsNil(t *testing.T) 
 	assert.Nil(t, convertedReq.Messages[1].ReasoningContent, "non-deepseek request without reasoning should leave reasoning_content nil")
 }
 
-
 func TestConvertOpenAIRequest_NormalizesReasoningEffortMaxAndXHigh(t *testing.T) {
 	for _, effort := range []string{"max", "MAX", "xhigh", "XHigh"} {
 		t.Run(effort, func(t *testing.T) {

@@ -4,11 +4,15 @@ import "errors"
 
 // selector.go 提供与 new-api 渠道选择逻辑的集成点。
 //
-// 集成方式（在 service/channel_select.go 中调用）：
-//  1. 选渠道前：调用 FilterAvailable 过滤掉过载/熔断的渠道
+// 集成方式：
+//  1. 选渠道前：调用 GlobalTracker().IsAvailable(channelID) 过滤掉过载/熔断的渠道
 //  2. 请求开始：调用 GlobalTracker().Begin(channelID) 获取句柄
+//     （controller 在每轮 relay 尝试开始时创建，并存入 context 供流式路径复用）
 //  3. 首字到达：调用 handle.MarkFirstByte()
 //  4. 请求结束：调用 handle.End(slow, failed)
+//
+// 成功与失败都由 End 统一上报，没有单独的 RecordSuccess/RecordFailure：
+// 两条上报路径并存时，一次失败会被记两次，熔断阈值也随之被提前触发。
 //
 // TTFT 超时检测由调用方在读取流时实现：
 // 超过 policy.TTFTTimeoutMs 未收到首字时，应主动取消上游请求，
@@ -76,4 +80,3 @@ func IsStreamBroken(err error) bool {
 	var brokenErr *StreamBrokenError
 	return errors.As(err, &brokenErr)
 }
-

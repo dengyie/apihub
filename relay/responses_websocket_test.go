@@ -251,8 +251,9 @@ func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {
 	require.Nil(t, apiErr)
 	require.NotNil(t, channel)
 	assert.Equal(t, enabled.Id, channel.Id)
-	httpChannel, err := model.GetRandomSatisfiedChannel("default", "ws-model", 0, nil)
+	wsCandidates, err := model.GetChannelCandidates("default", "ws-model", nil)
 	require.NoError(t, err)
+	httpChannel := wsCandidates.Pick(0, nil, "")
 	require.NotNil(t, httpChannel)
 	assert.Equal(t, legacy.Id, httpChannel.Id)
 

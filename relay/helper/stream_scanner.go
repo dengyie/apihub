@@ -108,12 +108,18 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 无条件新建 StreamStatus
 	info.StreamStatus = relaycommon.NewStreamStatus()
 
-	// 智能负载：跟踪本次请求的渠道状态
+	// 智能负载：跟踪本次请求的渠道状态。句柄由 controller 在每轮尝试开始时
+	// 创建并存入 context，这里复用同一个，使 inflight 计数对流式与非流式
+	// 一致生效；没有句柄的调用方（如 Responses WebSocket 中继）就地 Begin。
 	channelID := 0
 	if info != nil {
 		channelID = info.GetChannelID()
 	}
-	lbHandle := loadbalancer.GlobalTracker().Begin(channelID)
+	attempt, _ := c.Get(loadbalancer.ContextKeyAttempt)
+	lbHandle, _ := attempt.(*loadbalancer.RequestHandle)
+	if lbHandle == nil {
+		lbHandle = loadbalancer.GlobalTracker().Begin(channelID)
+	}
 	lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
 	var lbTTFTSlow atomic.Bool
 	var lbFirstByteOnce sync.Once
@@ -145,8 +151,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	defer func() {
 		// 流结束：上报跟踪。failed 取流状态的真实结果：
 		// 有错误（scanner 错误/超时/panic）或异常结束或空流（正常结束但无有效内容）都算失败，
-		// 计入硬熔断计数器。注意 controller 层对流错误不再重复调用 RecordFailure，
-		// 避免双记。
+		// 计入硬熔断计数器。controller 用同一个（幂等）句柄收尾，
+		// 先到者生效，不会双记。
 		failed := info.StreamStatus.HasErrors() || (!info.StreamStatus.IsNormalEnd() && info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)
 		if !failed && info.StreamStatus.IsNormalEnd() && !isImageRelay(info, c) && info.ReceivedContentBytes < 100 {
 			failed = true // 空流视同失败

@@ -87,68 +87,68 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		defer ws.Close()
 	}
 
-		defer func() {
-			if newAPIError != nil {
-				service.RecordRequestPolicyTermination(c, newAPIError)
-				logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-				// 终端状态码保护：上游渠道的 401/403/410/TokenPlan/中继报错，在网关层重试耗尽后映射为 502 Bad Gateway，
-				// 避免 downstream 客户端 SDK 将其判定为 client-side 永久不可重试凭证错误 (auth_failed status=403 retryable=false) 而中止会话。
-				// 注意：排除客户端自身的额度不足（ErrorCodeInsufficientUserQuota 发生在渠道请求前）。
-				isUpstreamChannelError := len(c.GetStringSlice("use_channel")) > 0
-				if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-					if loadbalancer.IsEOLError(newAPIError) ||
-						loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-						loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-						loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-						loadbalancer.IsUpstreamRelayError(newAPIError) ||
-						loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
-						newAPIError.StatusCode == http.StatusForbidden ||
-						newAPIError.StatusCode == http.StatusUnauthorized ||
-						newAPIError.StatusCode == http.StatusGone ||
-						newAPIError.StatusCode == http.StatusBadRequest {
-						newAPIError.StatusCode = http.StatusBadGateway
-					}
-				} else if loadbalancer.IsEOLError(newAPIError) {
+	defer func() {
+		if newAPIError != nil {
+			service.RecordRequestPolicyTermination(c, newAPIError)
+			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			// 终端状态码保护：上游渠道的 401/403/410/TokenPlan/中继报错，在网关层重试耗尽后映射为 502 Bad Gateway，
+			// 避免 downstream 客户端 SDK 将其判定为 client-side 永久不可重试凭证错误 (auth_failed status=403 retryable=false) 而中止会话。
+			// 注意：排除客户端自身的额度不足（ErrorCodeInsufficientUserQuota 发生在渠道请求前）。
+			isUpstreamChannelError := len(c.GetStringSlice("use_channel")) > 0
+			if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
+				if loadbalancer.IsEOLError(newAPIError) ||
+					loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+					loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+					loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+					loadbalancer.IsUpstreamRelayError(newAPIError) ||
+					loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+					newAPIError.StatusCode == http.StatusForbidden ||
+					newAPIError.StatusCode == http.StatusUnauthorized ||
+					newAPIError.StatusCode == http.StatusGone ||
+					newAPIError.StatusCode == http.StatusBadRequest {
 					newAPIError.StatusCode = http.StatusBadGateway
 				}
-				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-				if !c.Writer.Written() {
-					switch relayFormat {
-					case types.RelayFormatOpenAIRealtime:
-						helper.WssError(c, ws, newAPIError.ToOpenAIError())
-					case types.RelayFormatClaude:
-						c.JSON(newAPIError.StatusCode, gin.H{
-							"type":  "error",
-							"error": newAPIError.ToClaudeError(),
-						})
-					default:
-						c.JSON(newAPIError.StatusCode, gin.H{
-							"error": newAPIError.ToOpenAIError(),
-						})
-					}
-				} else {
-					// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
-					// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
-					// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
-					var sseErrData string
-					switch relayFormat {
-					case types.RelayFormatClaude:
-						errJSON, _ := common.Marshal(gin.H{
-							"type":  "error",
-							"error": newAPIError.ToClaudeError(),
-						})
-						sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
-					default:
-						openAIErr := newAPIError.ToOpenAIError()
-						openAIErr.Code = newAPIError.StatusCode
-						errJSON, _ := common.Marshal(gin.H{
-							"error": openAIErr,
-						})
-						sseErrData = fmt.Sprintf("data: %s\n\n", string(errJSON))
-					}
-					c.Writer.Write([]byte(sseErrData))
-					c.Writer.Flush()
+			} else if loadbalancer.IsEOLError(newAPIError) {
+				newAPIError.StatusCode = http.StatusBadGateway
+			}
+			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			if !c.Writer.Written() {
+				switch relayFormat {
+				case types.RelayFormatOpenAIRealtime:
+					helper.WssError(c, ws, newAPIError.ToOpenAIError())
+				case types.RelayFormatClaude:
+					c.JSON(newAPIError.StatusCode, gin.H{
+						"type":  "error",
+						"error": newAPIError.ToClaudeError(),
+					})
+				default:
+					c.JSON(newAPIError.StatusCode, gin.H{
+						"error": newAPIError.ToOpenAIError(),
+					})
 				}
+			} else {
+				// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
+				// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
+				// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
+				var sseErrData string
+				switch relayFormat {
+				case types.RelayFormatClaude:
+					errJSON, _ := common.Marshal(gin.H{
+						"type":  "error",
+						"error": newAPIError.ToClaudeError(),
+					})
+					sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
+				default:
+					openAIErr := newAPIError.ToOpenAIError()
+					openAIErr.Code = newAPIError.StatusCode
+					errJSON, _ := common.Marshal(gin.H{
+						"error": openAIErr,
+					})
+					sseErrData = fmt.Sprintf("data: %s\n\n", string(errJSON))
+				}
+				c.Writer.Write([]byte(sseErrData))
+				c.Writer.Flush()
+			}
 		}
 	}()
 
@@ -214,8 +214,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		// 智能负载：本轮尝试计入 inflight。原先只有流式路径在 scanner 里
+		// Begin/End，非流式与任务请求对 max_inflight 完全不可见，并发上限形同
+		// 虚设。句柄存入 context 供 StreamScannerHandler 复用同一个计数器。
+		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
+		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		service.AppendUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+			// 计费准备失败发生在请求上游之前，渠道本身无过错
+			lbAttempt.End(false, false)
 			newAPIError = billingErr
 			break
 		}
@@ -228,6 +235,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			} else {
 				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
+			// 读请求体失败同样发生在请求上游之前
+			lbAttempt.End(false, false)
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -257,7 +266,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				newAPIError = streamErr
 			} else {
 				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
-				loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
+				// 流式路径已由 StreamScannerHandler 上报（幂等），这里收尾非流式
+				lbAttempt.End(false, false)
 				relayInfo.LastError = nil
 				return
 			}
@@ -268,52 +278,52 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
-		// 智能负载：渠道失败时计入熔断器，连续失败达到阈值后自动熔断；
-		// 重试时会跳过已熔断/已用过的渠道，而不是直接把错误返回给客户端。
-		// 400 不计入熔断（参数不支持不代表渠道不健康）。
-		// 流式错误的失败已由 StreamScannerHandler 的 End(failed=true) 记录，
-		// 这里跳过避免双记。
-			if newAPIError.StatusCode != 400 &&
+		// 智能负载：本轮尝试收尾——归还 inflight，并决定是否计入熔断计数。
+		// 流式失败的计数已由 StreamScannerHandler 用同一个（幂等）句柄上报，
+		// 这里的 End 不会双记；只有没有流状态的失败（首字节前的错误、非流式）
+		// 才由本层补记。400 不计入（参数不支持不代表渠道不健康）。
+		// 无论是否计入都必须 End，否则 inflight 不归还，并发上限会被永久占满。
+		lbAttempt.End(false,
+			relayInfo.StreamStatus == nil &&
+				newAPIError.StatusCode != 400 &&
 				!loadbalancer.IsTTFTTimeout(newAPIError) &&
 				!loadbalancer.IsEmptyStream(newAPIError) &&
-				!loadbalancer.IsStreamBroken(newAPIError) {
-				loadbalancer.GlobalTracker().RecordFailure(channel.Id)
-			}
-			// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
-			if loadbalancer.IsEOLError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
-			}
-			// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
-			if loadbalancer.IsStreamBroken(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
-			}
-			// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
-			if loadbalancer.IsUpstreamQuotaError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-			}
-			if loadbalancer.IsUpstreamRoutingError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-			}
-			// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
-			if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-			}
-			// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
-			if loadbalancer.IsUpstreamRelayError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-			}
-			// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
-			if loadbalancer.IsUpstreamPermissionError(newAPIError) {
-				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-			}
-			// 智能负载参数裁剪：上游明确说不支持某参数时，
+				!loadbalancer.IsStreamBroken(newAPIError))
+		// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
+		if loadbalancer.IsEOLError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
+		}
+		// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
+		if loadbalancer.IsStreamBroken(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
+		}
+		// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
+		if loadbalancer.IsUpstreamQuotaError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+		}
+		if loadbalancer.IsUpstreamRoutingError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+		}
+		// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
+		if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+		}
+		// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
+		if loadbalancer.IsUpstreamRelayError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+		}
+		// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
+		if loadbalancer.IsUpstreamPermissionError(newAPIError) {
+			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+		}
+		// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
 			loadbalancer.MarkParamUnsupported(channel.Id, param)
@@ -650,6 +660,9 @@ func executeTaskSubmissionWith(
 		}
 		diagnostics.attempt(retryParam.GetRetry()+1, channel, relayInfo.LockedChannel != nil)
 
+		// 智能负载：任务提交同样计入 inflight（见 Relay 中的同名注释）
+		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
+		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		service.AppendUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
@@ -659,6 +672,7 @@ func executeTaskSubmissionWith(
 			} else {
 				taskErr = service.TaskErrorWrapperLocal(bodyErr, "read_request_body_failed", http.StatusBadRequest)
 			}
+			lbAttempt.End(false, false)
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -668,11 +682,12 @@ func executeTaskSubmissionWith(
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
+			lbAttempt.End(false, false)
 			break
 		}
 		if taskErr == nil {
 			diagnostics.attemptSucceeded(retryParam.GetRetry()+1, result)
-			loadbalancer.GlobalTracker().RecordSuccess(channel.Id)
+			lbAttempt.End(false, false)
 			break
 		}
 
@@ -680,10 +695,9 @@ func executeTaskSubmissionWith(
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
-		// 智能负载：渠道失败时计入熔断器（400 参数问题不计入）
-		if taskAPIError.StatusCode != 400 {
-			loadbalancer.GlobalTracker().RecordFailure(channel.Id)
-		}
+		// 智能负载：渠道失败计入熔断器（400 参数问题不计入）。
+		// 任务提交不经过流式扫描器，失败一律由本层上报。
+		lbAttempt.End(false, taskAPIError.StatusCode != 400)
 		if !taskErr.LocalError {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,

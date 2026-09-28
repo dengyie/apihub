@@ -154,7 +154,7 @@ func TestBreakerHalfOpenProbeFailure(t *testing.T) {
 	assert.True(t, ok, "channel should allow probe again after next cooldown")
 }
 
-func TestTrackerBreakerHalfOpenProbeSuccessRecordSuccess(t *testing.T) {
+func TestTrackerBreakerHalfOpenProbeSuccessClosesBreaker(t *testing.T) {
 	old := currentPolicy.Load()
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
@@ -163,7 +163,7 @@ func TestTrackerBreakerHalfOpenProbeSuccessRecordSuccess(t *testing.T) {
 
 	// 1. 触发硬熔断
 	for i := 0; i < 3; i++ {
-		tr.RecordFailure(200)
+		tr.Begin(200).End(false, true)
 	}
 	s := tr.getOrCreate(200)
 	assert.Equal(t, int32(breakerOpen), s.state.Load())
@@ -177,11 +177,11 @@ func TestTrackerBreakerHalfOpenProbeSuccessRecordSuccess(t *testing.T) {
 	assert.Equal(t, int32(breakerHalfOpen), s.state.Load())
 	assert.Equal(t, int32(1), s.halfOpenProbes.Load())
 
-	// 4. 请求成功调用 RecordSuccess
-	tr.RecordSuccess(200)
+	// 4. 探测请求成功结束
+	tr.Begin(200).End(false, false)
 
 	// 5. 验证熔断器成功闭合，且 halfOpenProbes 重置为 0
-	assert.Equal(t, int32(breakerClosed), s.state.Load(), "state should close to breakerClosed after RecordSuccess")
+	assert.Equal(t, int32(breakerClosed), s.state.Load(), "state should close to breakerClosed after a successful probe")
 	assert.Equal(t, int32(0), s.halfOpenProbes.Load(), "halfOpenProbes should be reset to 0")
 	assert.Equal(t, int32(0), s.consecutiveFailures.Load(), "consecutiveFailures should be reset to 0")
 
@@ -209,9 +209,6 @@ func TestTrackerIgnoreZeroChannel(t *testing.T) {
 	assert.False(t, tr.IsDegraded(0))
 	ok, _ := tr.IsAvailable(0)
 	assert.True(t, ok)
-
-	tr.RecordFailure(0)
-	tr.RecordSuccess(0)
 }
 
 func TestOverloadSkip(t *testing.T) {
@@ -366,7 +363,6 @@ func TestTripBreaker(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, "circuit_open", reason)
 }
-
 
 func TestIsUpstreamQuotaError(t *testing.T) {
 	err1 := &types.NewAPIError{

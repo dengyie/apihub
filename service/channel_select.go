@@ -84,8 +84,40 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
-// CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
-// 尝试获取一个满足要求的随机渠道。
+// channelCandidates memoizes the candidate set of every group a request may be
+// routed to. The set is resolved once per group and then picked from in memory,
+// so the caller's skip loop — which excludes a channel per pass — issues no
+// further queries. Resolving per attempt instead cost two queries per skip and
+// reached 150 statements on a 57-channel model.
+type channelCandidates struct {
+	param   *RetryParam
+	filters []dto.ChannelFilter
+	byGroup map[string]*model.ChannelCandidates
+}
+
+func newChannelCandidates(param *RetryParam) *channelCandidates {
+	return &channelCandidates{
+		param:   param,
+		filters: GetChannelConstraints(param.Ctx).Filters,
+		byGroup: make(map[string]*model.ChannelCandidates, 2),
+	}
+}
+
+func (r *channelCandidates) pick(group string, retry int) (*model.Channel, error) {
+	candidates, ok := r.byGroup[group]
+	if !ok {
+		resolved, err := model.GetChannelCandidates(group, r.param.ModelName, r.filters)
+		if err != nil {
+			return nil, err
+		}
+		r.byGroup[group] = resolved
+		candidates = resolved
+	}
+	return candidates.Pick(retry, r.param.ExcludedIDs, r.param.StickyKey), nil
+}
+
+// select tries to get a channel that satisfies the requirements.
+// 尝试获取一个满足要求的渠道。
 //
 // For "auto" tokenGroup with cross-group Retry enabled:
 // 对于启用了跨分组重试的 "auto" tokenGroup：
@@ -102,8 +134,8 @@ func (p *RetryParam) ResetRetryNextTry() {
 //   - priorityRetry = Retry - startRetryIndex, represents the priority level within current group.
 //     priorityRetry = Retry - startRetryIndex，表示当前分组内的优先级级别。
 //
-//   - When GetRandomSatisfiedChannel returns nil (priorities exhausted), moves to next group.
-//     当 GetRandomSatisfiedChannel 返回 nil（优先级用完）时，切换到下一个分组。
+//   - When select returns nil (priorities exhausted), moves to next group.
+//     当 select 返回 nil（优先级用完）时，切换到下一个分组。
 //
 // Example flow (2 groups, each with 2 priorities, RetryTimes=3):
 // 示例流程（2个分组，每个有2个优先级，RetryTimes=3）：
@@ -119,12 +151,12 @@ func (p *RetryParam) ResetRetryNextTry() {
 //
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
-func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+func (r *channelCandidates) resolve() (*model.Channel, string, error) {
+	param := r.param
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
-	filters := GetChannelConstraints(param.Ctx).Filters
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -155,14 +187,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelWithExcluded(
-				autoGroup,
-				param.ModelName,
-				priorityRetry,
-				filters,
-				param.ExcludedIDs,
-				param.StickyKey,
-			)
+			channel, _ = r.pick(autoGroup, priorityRetry)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -200,19 +225,19 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelWithExcluded(
-			param.TokenGroup,
-			param.ModelName,
-			param.GetRetry(),
-			filters,
-			param.ExcludedIDs,
-			param.StickyKey,
-		)
+		channel, err = r.pick(param.TokenGroup, param.GetRetry())
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
 	}
 	return channel, selectGroup, nil
+}
+
+// CacheGetRandomSatisfiedChannel resolves one channel for a single attempt.
+// Callers that loop over attempts should hold a channelCandidates instead, so
+// the candidate set is resolved once rather than per attempt.
+func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	return newChannelCandidates(param).resolve()
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
@@ -373,10 +398,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 	if channel == nil {
 		var err error
-		// 智能负载：过载/熔断/本请求已用过的渠道自动跳过，最多尝试 maxLBAttempts 次
-		// 降级渠道（连续慢 3 次）：第一轮跳过，实在没渠道时才用
-		// 渠道池较大时（如 deepseek-v4-flash 达 57 个渠道），扩容尝试上限避免因个别渠道过载过早中断
-		const maxLBAttempts = 50
+		// 智能负载：过载/熔断/本请求已用过的渠道自动跳过。
+		// 候选集合整轮只解析一次；每跳过一个渠道就多排除一个，候选耗尽时
+		// pick 返回 nil，循环因此在至多「渠道总数」轮内自然终止，无需人为
+		// 设定尝试上限（过小的上限会让大渠道池因个别过载渠道过早中断）。
+		// 降级渠道（连续慢 3 次）与过载渠道（达到并发上限）都先记为备选：
+		// 过载只是瞬时并发占满，降级是已证实的持续慢，所以过载兜底优先。
 		used := retry.Ctx.GetStringSlice("use_channel")
 		usedSet := make(map[string]struct{}, len(used))
 		for _, id := range used {
@@ -396,13 +423,15 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 		}
 
+		// 候选集合按分组缓存；本函数被重试循环反复调用时也只解析一次
+		candidates := newChannelCandidates(&retryLocal)
 		var degradedFallback *model.Channel
 		var degradedSelectGroup string
 		var overloadedFallback *model.Channel
 		var overloadedSelectGroup string
 		minOverloadedInflight := math.MaxInt
-		for attempt := 0; attempt < maxLBAttempts; attempt++ {
-			channel, selectGroup, err = CacheGetRandomSatisfiedChannel(&retryLocal)
+		for {
+			channel, selectGroup, err = candidates.resolve()
 			if err != nil || channel == nil {
 				break
 			}
@@ -414,7 +443,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id); !ok {
 				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (%s)", channel.Id, reason)
-				if reason == "overloaded" {
+				if reason == loadbalancer.ReasonOverloaded {
 					inflight := loadbalancer.GlobalTracker().Inflight(channel.Id)
 					if inflight < minOverloadedInflight {
 						minOverloadedInflight = inflight
@@ -439,17 +468,21 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 			break
 		}
+		// 过载兜底：当所有可用渠道均达到并发上限且无其他健康渠道时，选取负载
+		// 最低（inflight 最小）的渠道兜底放行，避免因并发保护而假死报 503。
+		// 过载是瞬时状态，降级是已证实的慢，故排在降级兜底之前。
+		if channel == nil && overloadedFallback != nil {
+			channel = overloadedFallback
+			selectGroup = overloadedSelectGroup
+			logger.LogWarn(retry.Ctx, fmt.Sprintf(
+				"loadbalancer: every candidate channel is overloaded, using least-loaded channel #%d (inflight=%d, max_inflight=%d) as fallback",
+				channel.Id, minOverloadedInflight, loadbalancer.GetPolicy().Resolve(channel.Id).MaxInflight))
+		}
 		// 降级渠道兜底：没找到非降级渠道时，用降级渠道（总比无渠道好）
 		if channel == nil && degradedFallback != nil {
 			channel = degradedFallback
 			selectGroup = degradedSelectGroup
 			logger.LogDebug(retry.Ctx, "loadbalancer: using degraded channel #%d as fallback", channel.Id)
-		}
-		// 过载渠道兜底：当所有可用渠道均达到并发上限且无其他健康渠道时，选取负载最低（inflight 最小）的渠道兜底放行，避免假死报 503
-		if channel == nil && overloadedFallback != nil {
-			channel = overloadedFallback
-			selectGroup = overloadedSelectGroup
-			logger.LogDebug(retry.Ctx, "loadbalancer: all channels overloaded, using least-loaded channel #%d (inflight=%d) as fallback", channel.Id, minOverloadedInflight)
 		}
 		if err != nil {
 			showGroup := usingGroup
@@ -482,7 +515,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 // channel from a malformed request.
 func pinnedChannelUnavailable(pin dto.ChannelPin, statusCode int, messageID string) *ChannelSelectError {
 	if pin.Source == dto.PinSourceOriginTask {
-		return &ChannelSelectError{StatusCode: http.StatusBadRequest, Code: "origin_task_channel_disabled", Message: "origin_task_channel_disabled"}
+		return &ChannelSelectError{StatusCode: http.StatusBadRequest, Message: "origin_task_channel_disabled", Code: "origin_task_channel_disabled"}
 	}
 	return &ChannelSelectError{StatusCode: statusCode, MessageID: messageID}
 }

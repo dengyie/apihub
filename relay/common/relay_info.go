@@ -135,8 +135,8 @@ type RelayInfo struct {
 	// ReceivedContentBytes 流式响应累计内容字节数（去 SSE 帧头后）。
 	// 用于检测"有块无内容"的空流：正常结束但字节数极小（如只有空 delta），
 	// 视为上游空响应，触发换渠道重试。
-	ReceivedContentBytes    int
-	FinalPreConsumedQuota   int // 最终预消耗的配额
+	ReceivedContentBytes  int
+	FinalPreConsumedQuota int // 最终预消耗的配额
 	// ForcePreConsume 为 true 时禁用 BillingSession 的信任额度旁路，
 	// 强制预扣全额。用于异步任务（视频/音乐生成等），因为请求返回后任务仍在运行，
 	// 必须在提交前锁定全额。

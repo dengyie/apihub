@@ -24,7 +24,9 @@ func TestStreamBrokenRetryDecisionAndBreakerTrip(t *testing.T) {
 
 	channelID := 46
 	tracker := loadbalancer.GlobalTracker()
-	tracker.RecordSuccess(channelID)
+	// Start from a healthy channel: a successful attempt resets the counters
+	// and closes a half-open breaker.
+	tracker.Begin(channelID).End(false, false)
 
 	brokenErr := &loadbalancer.StreamBrokenError{
 		ChannelID: channelID,

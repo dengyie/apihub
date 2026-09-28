@@ -40,10 +40,6 @@ func jsonScanBytes(value any) []byte {
 	}
 }
 
-func init() {
-	initCol()
-}
-
 func InitCol() {
 	initCol()
 }

@@ -1,8 +1,8 @@
 package loadbalancer
 
 import (
-	"net/http"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"

@@ -28,23 +28,27 @@ func TestTaskPluginChannelSelectionFiltersBothCachePaths(t *testing.T) {
 		require.NoError(t, channels[i].Insert())
 	}
 
-	selected, err := GetChannel("default", "shared", 0, identityFilters("alpha", nil))
-	require.NoError(t, err)
+	// GetChannelCandidates reads the database directly, whichever source the
+	// process is configured to select from.
+	pick := func(group string, modelName string, retry int, filters []dto.ChannelFilter) *Channel {
+		t.Helper()
+		candidates, err := GetChannelCandidates(group, modelName, filters)
+		require.NoError(t, err)
+		return candidates.Pick(retry, nil, "")
+	}
+
+	selected := pick("default", "shared", 0, identityFilters("alpha", nil))
 	require.NotNil(t, selected)
 	assert.Equal(t, "alpha", selected.Name)
-	selected, err = GetChannel("default", "shared", 0, identityFilters("", nil))
-	require.NoError(t, err)
+	selected = pick("default", "shared", 0, identityFilters("", nil))
 	assert.Nil(t, selected)
-	selected, err = GetChannel("default", "ordinary", 0, identityFilters("", nil))
-	require.NoError(t, err)
+	selected = pick("default", "ordinary", 0, identityFilters("", nil))
 	require.NotNil(t, selected)
 	assert.Equal(t, "ordinary", selected.Name)
-	selected, err = GetChannel("default", "legacy", 0, identityFilters("legacy-alpha", []int{constant.ChannelTypeKling}))
-	require.NoError(t, err)
+	selected = pick("default", "legacy", 0, identityFilters("legacy-alpha", []int{constant.ChannelTypeKling}))
 	require.NotNil(t, selected)
 	assert.Equal(t, "legacy-alpha", selected.Name)
-	selected, err = GetChannel("default", "legacy", 0, identityFilters("legacy-alpha", []int{constant.ChannelTypeKling, constant.ChannelTypeJimeng}))
-	require.NoError(t, err)
+	selected = pick("default", "legacy", 0, identityFilters("legacy-alpha", []int{constant.ChannelTypeKling, constant.ChannelTypeJimeng}))
 	require.NotNil(t, selected)
 	assert.Contains(t, []string{"legacy-alpha", "legacy-beta"}, selected.Name)
 }
@@ -63,16 +67,26 @@ func TestSharedPluginKeysFilterBothChannelSources(t *testing.T) {
 	common.MemoryCacheEnabled = true
 	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCache; InitChannelCache() })
 	filters := []dto.ChannelFilter{{Kind: dto.FilterTaskPluginIdentity, TaskPluginKey: "alpha", TaskPluginKeys: []string{"alpha", "beta"}}}
-	var abilities []Ability
 	for index, key := range []string{"alpha", "beta", "unrelated"} {
 		setting := `{"task_plugin_key":"` + key + `"}`
 		channel := Channel{Id: 910001 + index, Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled, Name: key, Models: "shared", Group: "default", Setting: &setting}
 		require.NoError(t, channel.Insert())
-		abilities = append(abilities, Ability{ChannelId: channel.Id, Model: "shared", Group: "default", Enabled: true})
 		matches, _ := ChannelSatisfiesFilters(&channel, "shared", filters)
 		assert.Equal(t, index < 2, matches)
 	}
-	assert.Equal(t, abilities[:2], filterAbilitiesByConstraints(abilities, "shared", filters))
+
+	// The database-backed source applies the same identity filter; without it a
+	// request could be routed to a channel that does not serve the plugin.
+	common.MemoryCacheEnabled = false
+	candidates, err := GetChannelCandidates("default", "shared", filters)
+	require.NoError(t, err)
+	databaseKept := make([]int, 0, len(candidates.channels))
+	for _, channel := range candidates.channels {
+		databaseKept = append(databaseKept, channel.Id)
+	}
+	assert.ElementsMatch(t, []int{910001, 910002}, databaseKept)
+
+	common.MemoryCacheEnabled = true
 	InitChannelCache()
 	channelSyncLock.RLock()
 	kept, emptied := filterCandidateIDs([]int{910001, 910002, 910003}, "shared", filters)
@@ -96,24 +110,26 @@ func TestNewAPIChannelServesExtendedTaskPlugins(t *testing.T) {
 		require.NoError(t, channels[i].Insert())
 	}
 
-	selected, err := GetChannel("default", "shared", 0, identityFilters("alpha", nil))
-	require.NoError(t, err)
+	pick := func(group string, modelName string, retry int, filters []dto.ChannelFilter) *Channel {
+		t.Helper()
+		candidates, err := GetChannelCandidates(group, modelName, filters)
+		require.NoError(t, err)
+		return candidates.Pick(retry, nil, "")
+	}
+
+	selected := pick("default", "shared", 0, identityFilters("alpha", nil))
 	require.NotNil(t, selected)
 	assert.Equal(t, "gateway", selected.Name)
-	selected, err = GetChannel("default", "shared", 0, identityFilters("delta", nil))
-	require.NoError(t, err)
+	selected = pick("default", "shared", 0, identityFilters("delta", nil))
 	require.NotNil(t, selected)
 	assert.Equal(t, "gateway-single", selected.Name, "a single task_plugin_key still binds a New API channel")
-	selected, err = GetChannel("default", "shared", 0, identityFilters("beta", nil))
-	require.NoError(t, err)
+	selected = pick("default", "shared", 0, identityFilters("beta", nil))
 	assert.Nil(t, selected, "unbound plugins never reach the gateway channel")
 	shared := []dto.ChannelFilter{{Kind: dto.FilterTaskPluginIdentity, TaskPluginKey: "beta", TaskPluginKeys: []string{"beta", "gamma"}}}
-	selected, err = GetChannel("default", "shared", 0, shared)
-	require.NoError(t, err)
+	selected = pick("default", "shared", 0, shared)
 	require.NotNil(t, selected)
 	assert.Equal(t, "gateway", selected.Name, "a bound shared-model candidate admits the channel")
-	selected, err = GetChannel("default", "chat", 0, identityFilters("", nil))
-	require.NoError(t, err)
+	selected = pick("default", "chat", 0, identityFilters("", nil))
 	require.NotNil(t, selected)
 	assert.Equal(t, "gateway", selected.Name, "requests without a pinned plugin keep using the gateway")
 }
