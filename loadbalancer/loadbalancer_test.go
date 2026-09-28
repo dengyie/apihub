@@ -431,4 +431,32 @@ func TestIsUpstreamRelayError(t *testing.T) {
 	}
 	assert.False(t, IsUpstreamRelayError(errNormal400))
 	assert.False(t, IsUpstreamRelayError(nil))
+
+	// 思考模式历史 reasoning_content 缺失的 400 错误也归入上游中继失效与即时熔断
+	errReasoning := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"),
+	}
+	assert.True(t, IsUpstreamRelayError(errReasoning))
+}
+
+func TestIsThinkingModeHistoryError(t *testing.T) {
+	err1 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"),
+	}
+	assert.True(t, IsThinkingModeHistoryError(err1))
+
+	err2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("The content[].thinking in the thinking mode must be passed back to the API."),
+	}
+	assert.True(t, IsThinkingModeHistoryError(err2))
+
+	errNormal400 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("invalid json payload"),
+	}
+	assert.False(t, IsThinkingModeHistoryError(errNormal400))
+	assert.False(t, IsThinkingModeHistoryError(nil))
 }

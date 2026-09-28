@@ -257,6 +257,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
 			}
+			// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
+			if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+			}
 			// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
 			if loadbalancer.IsUpstreamRelayError(newAPIError) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)

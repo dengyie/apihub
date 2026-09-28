@@ -78,6 +78,10 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
 		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
+	// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
+	if loadbalancer.IsThinkingModeHistoryError(err) {
+		return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
+	}
 	// 智能负载：上游中继站报告代理异常（如 "来自上游渠道的报错: bad response status code 400"，换渠道重试）
 	if loadbalancer.IsUpstreamRelayError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}

@@ -272,6 +272,20 @@ func IsUpstreamRoutingError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "cannot be routed efficiently")
 }
 
+// IsThinkingModeHistoryError 判断是否为上游思考模式历史消息校验错误（通常返回 400）。
+// 例如 SiliconFlow 等上游在 thinking mode 下严格要求多轮对话中历史 assistant 消息必须回传 reasoning_content，
+// 而标准客户端 SDK（如 ZCode、OpenCode 等）历史消息未持久化该字段，导致特定渠道拒绝请求。
+// 这属于渠道特性不兼容/上游校验错误，应触发换渠道重试与熔断隔离。
+func IsThinkingModeHistoryError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return (strings.Contains(msg, "reasoning_content") && strings.Contains(msg, "thinking mode")) ||
+		strings.Contains(msg, "thinking mode must be passed back") ||
+		strings.Contains(msg, "content[].thinking in the thinking mode must be passed back")
+}
+
 // IsUpstreamRelayError 判断是否为上游聚合中继站（如 One-API、New-API 等）自身代理转发失败的报错（通常返回 400/404/500/502 等）。
 // 很多聚合中继站向上游发送请求失败时，会将上游状态码包装并返回 HTTP 400，带有 "来自上游渠道的报错: bad response status code 400"
 // 或 "bad response status code"、"unknown provider for model"、"[上游问题]"、"[渠道出错]" 等特征。
@@ -284,6 +298,9 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 	if _, ok := IsParamNotSupportedError(err); ok {
 		return false
 	}
+	if IsThinkingModeHistoryError(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "来自上游渠道") ||
 		strings.Contains(msg, "bad response status code") ||
@@ -293,7 +310,9 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "upstream request failed") ||
 		strings.Contains(msg, "error from provider") ||
 		strings.Contains(msg, "unknown provider for model") ||
-		strings.Contains(msg, "no available channel for model") {
+		strings.Contains(msg, "no available channel for model") ||
+		strings.Contains(msg, "reasoning_content") ||
+		strings.Contains(msg, "thinking mode must be passed back") {
 		return true
 	}
 	if oe, ok := err.RelayError.(types.OpenAIError); ok {
