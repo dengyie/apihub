@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -43,14 +44,14 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 }
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
+	Ctx         *gin.Context
+	TokenGroup  string
+	ModelName   string
+	RequestPath string
+	Retry       *int
 	// StickyKey prompt 前缀 hash，用于一致性路由（提高上游 cache 命中率）。
 	// 仅在首次选择（Retry==0）时生效；重试时（渠道失败后）忽略，走普通选择。
-	StickyKey    string
+	StickyKey string
 	// ExcludedIDs 选路时跳过的渠道 ID 集合（如不可用/熔断/降级/本请求已用渠道），
 	// 避免选路循环篡改全局重试计数 Retry。
 	ExcludedIDs  map[int]struct{}
@@ -374,7 +375,8 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		var err error
 		// 智能负载：过载/熔断/本请求已用过的渠道自动跳过，最多尝试 maxLBAttempts 次
 		// 降级渠道（连续慢 3 次）：第一轮跳过，实在没渠道时才用
-		const maxLBAttempts = 5
+		// 渠道池较大时（如 deepseek-v4-flash 达 57 个渠道），扩容尝试上限避免因个别渠道过载过早中断
+		const maxLBAttempts = 50
 		used := retry.Ctx.GetStringSlice("use_channel")
 		usedSet := make(map[string]struct{}, len(used))
 		for _, id := range used {
@@ -396,6 +398,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 		var degradedFallback *model.Channel
 		var degradedSelectGroup string
+		var overloadedFallback *model.Channel
+		var overloadedSelectGroup string
+		minOverloadedInflight := math.MaxInt
 		for attempt := 0; attempt < maxLBAttempts; attempt++ {
 			channel, selectGroup, err = CacheGetRandomSatisfiedChannel(&retryLocal)
 			if err != nil || channel == nil {
@@ -409,6 +414,14 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id); !ok {
 				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (%s)", channel.Id, reason)
+				if reason == "overloaded" {
+					inflight := loadbalancer.GlobalTracker().Inflight(channel.Id)
+					if inflight < minOverloadedInflight {
+						minOverloadedInflight = inflight
+						overloadedFallback = channel
+						overloadedSelectGroup = selectGroup
+					}
+				}
 				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
 				channel = nil
 				continue
@@ -431,6 +444,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			channel = degradedFallback
 			selectGroup = degradedSelectGroup
 			logger.LogDebug(retry.Ctx, "loadbalancer: using degraded channel #%d as fallback", channel.Id)
+		}
+		// 过载渠道兜底：当所有可用渠道均达到并发上限且无其他健康渠道时，选取负载最低（inflight 最小）的渠道兜底放行，避免假死报 503
+		if channel == nil && overloadedFallback != nil {
+			channel = overloadedFallback
+			selectGroup = overloadedSelectGroup
+			logger.LogDebug(retry.Ctx, "loadbalancer: all channels overloaded, using least-loaded channel #%d (inflight=%d) as fallback", channel.Id, minOverloadedInflight)
 		}
 		if err != nil {
 			showGroup := usingGroup

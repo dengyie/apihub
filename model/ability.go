@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/loadbalancer"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -113,6 +114,17 @@ func GetChannel(
 	filters []dto.ChannelFilter,
 	stickyKey ...string,
 ) (*Channel, error) {
+	return GetChannelWithExcluded(group, model, retry, filters, nil, stickyKey...)
+}
+
+func GetChannelWithExcluded(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+	excludedIDs map[int]struct{},
+	stickyKey ...string,
+) (*Channel, error) {
 	key := ""
 	if len(stickyKey) > 0 {
 		key = stickyKey[0]
@@ -122,29 +134,54 @@ func GetChannel(
 	if err != nil {
 		return nil, err
 	}
-	abilities = filterAbilitiesByConstraints(abilities, model, filters)
-	if len(abilities) > 0 {
-		priorities := make([]int64, 0)
-		seen := make(map[int64]bool)
-		for _, ability := range abilities {
-			priority := int64(0)
-			if ability.Priority != nil {
-				priority = *ability.Priority
-			}
-			if !seen[priority] {
-				seen[priority] = true
-				priorities = append(priorities, priority)
+	if len(abilities) == 0 {
+		normalizedModel := ratio_setting.RoutingMatchModelName(model)
+		if normalizedModel != model {
+			err = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalizedModel, true).Order("priority DESC, weight DESC").Find(&abilities).Error
+			if err != nil {
+				return nil, err
 			}
 		}
-		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
-		if retry >= len(priorities) {
-			retry = len(priorities) - 1
-		}
-		targetPriority := priorities[retry]
-		abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
-			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
-		})
 	}
+	// 排除指定不可用/已用/过载渠道
+	if len(excludedIDs) > 0 && len(abilities) > 0 {
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, excluded := excludedIDs[ability.ChannelId]; !excluded {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	abilities = filterAbilitiesByConstraints(abilities, model, filters)
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	priorities := make([]int64, 0)
+	seen := make(map[int64]bool)
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if !seen[priority] {
+			seen[priority] = true
+			priorities = append(priorities, priority)
+		}
+	}
+	sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	targetPriority := priorities[retry]
+	abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
+		return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
+	})
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// 智能负载：sticky 一致性路由（仅首次选择时）
@@ -164,7 +201,6 @@ func GetChannel(
 		weight := common.GetRandomInt(int(weightSum))
 		for _, ability_ := range abilities {
 			weight -= int(ability_.Weight) + 10
-			//log.Printf("weight: %d, ability weight: %d", weight, *ability_.Weight)
 			if weight <= 0 {
 				channel.Id = ability_.ChannelId
 				break

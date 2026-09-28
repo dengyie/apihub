@@ -40,6 +40,14 @@ func jsonScanBytes(value any) []byte {
 	}
 }
 
+func init() {
+	initCol()
+}
+
+func InitCol() {
+	initCol()
+}
+
 func initCol() {
 	// init common column names
 	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {

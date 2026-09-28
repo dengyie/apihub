@@ -139,7 +139,7 @@ func GetRandomSatisfiedChannelWithExcluded(
 	}
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, filters, key)
+		return GetChannelWithExcluded(group, model, retry, filters, excludedIDs, key)
 	}
 
 	channelSyncLock.RLock()
