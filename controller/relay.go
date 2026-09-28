@@ -257,6 +257,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
 			}
+			// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
+			if loadbalancer.IsUpstreamRelayError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+			}
 			// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {

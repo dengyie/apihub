@@ -271,3 +271,45 @@ func IsUpstreamRoutingError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "missingsessionid") ||
 		strings.Contains(msg, "cannot be routed efficiently")
 }
+
+// IsUpstreamRelayError 判断是否为上游聚合中继站（如 One-API、New-API 等）自身代理转发失败的报错（通常返回 400/404/500/502 等）。
+// 很多聚合中继站向上游发送请求失败时，会将上游状态码包装并返回 HTTP 400，带有 "来自上游渠道的报错: bad response status code 400"
+// 或 "bad response status code"、"unknown provider for model"、"[上游问题]"、"[渠道出错]" 等特征。
+// 这属于渠道代理侧的可用性故障，而非客户端请求本身格式错误（Bad Request），应触发换渠道重试与即时熔断。
+func IsUpstreamRelayError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	// 若为参数不支持类的 400 错误（如 thinking、reasoning_effort 等），优先由参数裁剪机制处理，不计入上游中继失效熔断
+	if _, ok := IsParamNotSupportedError(err); ok {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "来自上游渠道") ||
+		strings.Contains(msg, "bad response status code") ||
+		strings.Contains(msg, "bad_response_status_code") ||
+		strings.Contains(msg, "上游问题") ||
+		strings.Contains(msg, "渠道出错") ||
+		strings.Contains(msg, "upstream request failed") ||
+		strings.Contains(msg, "error from provider") ||
+		strings.Contains(msg, "unknown provider for model") ||
+		strings.Contains(msg, "no available channel for model") {
+		return true
+	}
+	if oe, ok := err.RelayError.(types.OpenAIError); ok {
+		typeStr := strings.ToLower(oe.Type)
+		if strings.Contains(typeStr, "upstream_error") ||
+			strings.Contains(typeStr, "one_api_error") ||
+			strings.Contains(typeStr, "new_api_error") {
+			return true
+		}
+	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
+		typeStr := strings.ToLower(poe.Type)
+		if strings.Contains(typeStr, "upstream_error") ||
+			strings.Contains(typeStr, "one_api_error") ||
+			strings.Contains(typeStr, "new_api_error") {
+			return true
+		}
+	}
+	return false
+}

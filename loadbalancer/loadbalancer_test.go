@@ -398,3 +398,37 @@ func TestIsUpstreamRoutingError(t *testing.T) {
 	assert.False(t, IsUpstreamRoutingError(errNormal400))
 	assert.False(t, IsUpstreamRoutingError(nil))
 }
+
+func TestIsUpstreamRelayError(t *testing.T) {
+	err1 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("来自上游渠道的报错: bad response status code 400 (request id: 202609281247566269176407PebRmdX)"),
+	}
+	assert.True(t, IsUpstreamRelayError(err1))
+
+	err2 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("unknown provider for model deepseek-v4-flash"),
+	}
+	assert.True(t, IsUpstreamRelayError(err2))
+
+	err3 := &types.NewAPIError{
+		StatusCode: 502,
+		Err:        errors.New("upstream request failed"),
+	}
+	assert.True(t, IsUpstreamRelayError(err3))
+
+	// thinking 不支持错误应优先由参数裁剪处理，不被判定为中继失效
+	errThinking := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New(`来自上游渠道的报错: "thinking" is not supported on /v1/chat/completions and was not applied. Use "reasoning_effort" (or "***.effort") to control thinking.`),
+	}
+	assert.False(t, IsUpstreamRelayError(errThinking))
+
+	errNormal400 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("invalid json payload: unexpected EOF"),
+	}
+	assert.False(t, IsUpstreamRelayError(errNormal400))
+	assert.False(t, IsUpstreamRelayError(nil))
+}
