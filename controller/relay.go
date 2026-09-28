@@ -91,9 +91,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if newAPIError != nil {
 				service.RecordRequestPolicyTermination(c, newAPIError)
 				logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-				// 上游 410 EOL 或永久不可用错误，在网关层重试耗尽后映射为 502 Bad Gateway，
-				// 避免 downstream 客户端 SDK 将 410 判定为 client-side 永久不可重试错误 (retryable=false) 而中止任务。
-				if loadbalancer.IsEOLError(newAPIError) {
+				// 终端状态码保护：上游渠道的 401/403/410/TokenPlan/中继报错，在网关层重试耗尽后映射为 502 Bad Gateway，
+				// 避免 downstream 客户端 SDK 将其判定为 client-side 永久不可重试凭证错误 (auth_failed status=403 retryable=false) 而中止会话。
+				// 注意：排除客户端自身的额度不足（ErrorCodeInsufficientUserQuota 发生在渠道请求前）。
+				isUpstreamChannelError := len(c.GetStringSlice("use_channel")) > 0
+				if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
+					if loadbalancer.IsEOLError(newAPIError) ||
+						loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+						loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+						loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+						loadbalancer.IsUpstreamRelayError(newAPIError) ||
+						newAPIError.StatusCode == http.StatusForbidden ||
+						newAPIError.StatusCode == http.StatusUnauthorized ||
+						newAPIError.StatusCode == http.StatusGone {
+						newAPIError.StatusCode = http.StatusBadGateway
+					}
+				} else if loadbalancer.IsEOLError(newAPIError) {
 					newAPIError.StatusCode = http.StatusBadGateway
 				}
 				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
@@ -266,6 +279,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if loadbalancer.IsUpstreamRelayError(newAPIError) {
 				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+			}
+			// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
+			if loadbalancer.IsUpstreamPermissionError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
 			}
 			// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。

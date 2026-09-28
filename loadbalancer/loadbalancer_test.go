@@ -460,3 +460,52 @@ func TestIsThinkingModeHistoryError(t *testing.T) {
 	assert.False(t, IsThinkingModeHistoryError(errNormal400))
 	assert.False(t, IsThinkingModeHistoryError(nil))
 }
+
+func TestIsUpstreamPermissionError(t *testing.T) {
+	err1 := &types.NewAPIError{
+		StatusCode: 403,
+		Err:        errors.New("无权访问 按量分组 分组 (request id: 202609280523093326619788268d9d6owlmt1Nf)"),
+	}
+	assert.True(t, IsUpstreamPermissionError(err1))
+
+	err2 := &types.NewAPIError{
+		StatusCode: 404,
+		Err:        errors.New("deepseek-v4-flash is not supported by TokenPlan"),
+	}
+	assert.True(t, IsUpstreamPermissionError(err2))
+
+	err3 := &types.NewAPIError{
+		StatusCode: 403,
+		Err:        errors.New("user_group_no_permission"),
+	}
+	assert.True(t, IsUpstreamPermissionError(err3))
+
+	err4 := &types.NewAPIError{
+		StatusCode: 403,
+		Err:        errors.New("当前分组本时段不可调用"),
+	}
+	assert.True(t, IsUpstreamPermissionError(err4))
+
+	err5 := &types.NewAPIError{
+		StatusCode: 403,
+		Err:        errors.New("Forbidden"),
+	}
+	assert.True(t, IsUpstreamPermissionError(err5))
+
+	errRelay := &types.NewAPIError{
+		StatusCode: 400,
+		RelayError: types.OpenAIError{
+			Code:    "user_group_no_permission",
+			Message: "not authorized for this group",
+		},
+		Err: errors.New("upstream error"),
+	}
+	assert.True(t, IsUpstreamPermissionError(errRelay))
+
+	errNormal400 := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("invalid json payload"),
+	}
+	assert.False(t, IsUpstreamPermissionError(errNormal400))
+	assert.False(t, IsUpstreamPermissionError(nil))
+}

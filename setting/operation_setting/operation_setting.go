@@ -22,6 +22,11 @@ var AutomaticDisableKeywords = []string{
 	"balance is not enough",
 	"quota_exceeded",
 	"user_quota_exhausted",
+	"无权访问",
+	"当前分组",
+	"not supported by tokenplan",
+	"is not supported by tokenplan",
+	"user_group_no_permission",
 }
 
 func AutomaticDisableKeywordsToString() string {

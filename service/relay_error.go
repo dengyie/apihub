@@ -60,6 +60,10 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsUpstreamRoutingError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_routing_error", Source: "loadbalancer"}
 	}
+	// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持（换渠道重试）
+	if loadbalancer.IsUpstreamPermissionError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}
+	}
 	if types.IsSkipRetryError(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}

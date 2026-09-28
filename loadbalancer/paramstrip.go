@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"net/http"
 	"fmt"
 	"regexp"
 	"slices"
@@ -286,6 +287,67 @@ func IsThinkingModeHistoryError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "content[].thinking in the thinking mode must be passed back")
 }
 
+// IsUpstreamPermissionError 判断是否为上游渠道权限/分组无权访问/TokenPlan不支持等错误（通常返回 403 或 404）。
+// 例如聚合中继站（One-API/New-API 等）返回 "无权访问 按量分组 分组"、"user_group_no_permission"、
+// "当前分组本时段不可调用"、"当前分组无可用渠道"，或订阅计划返回 "deepseek-v4-flash is not supported by TokenPlan"。
+// 这类错误属于上游渠道配置、分组或套餐权限缺陷，而非下游客户端认证失败。
+// 应触发换渠道重试与即时熔断隔离，并在透传保护中映射为 502 Bad Gateway 避免客户端终止会话。
+func IsUpstreamPermissionError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode == http.StatusForbidden {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "无权访问") ||
+		strings.Contains(msg, "按量分组") ||
+		strings.Contains(msg, "user_group_no_permission") ||
+		strings.Contains(msg, "group_no_permission") ||
+		strings.Contains(msg, "not authorized for this group") ||
+		strings.Contains(msg, "not supported by tokenplan") ||
+		strings.Contains(msg, "not supported by token plan") ||
+		strings.Contains(msg, "is not supported by tokenplan") ||
+		strings.Contains(msg, "is not supported by token plan") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "permission_denied") ||
+		strings.Contains(msg, "operation not allowed") ||
+		strings.Contains(msg, "your account is not authorized") ||
+		(strings.Contains(msg, "当前分组") && (strings.Contains(msg, "不可调用") || strings.Contains(msg, "无可用渠道") || strings.Contains(msg, "无权"))) {
+		return true
+	}
+	if oe, ok := err.RelayError.(types.OpenAIError); ok {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", oe.Code))
+		typeStr := strings.ToLower(oe.Type)
+		msgStr := strings.ToLower(oe.Message)
+		if strings.Contains(codeStr, "group_no_permission") ||
+			strings.Contains(codeStr, "user_group_no_permission") ||
+			strings.Contains(codeStr, "permission_denied") ||
+			strings.Contains(typeStr, "group_no_permission") ||
+			strings.Contains(typeStr, "permission_denied") ||
+			strings.Contains(msgStr, "无权访问") ||
+			strings.Contains(msgStr, "not supported by tokenplan") ||
+			strings.Contains(msgStr, "is not supported by tokenplan") {
+			return true
+		}
+	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", poe.Code))
+		typeStr := strings.ToLower(poe.Type)
+		msgStr := strings.ToLower(poe.Message)
+		if strings.Contains(codeStr, "group_no_permission") ||
+			strings.Contains(codeStr, "user_group_no_permission") ||
+			strings.Contains(codeStr, "permission_denied") ||
+			strings.Contains(typeStr, "group_no_permission") ||
+			strings.Contains(typeStr, "permission_denied") ||
+			strings.Contains(msgStr, "无权访问") ||
+			strings.Contains(msgStr, "not supported by tokenplan") ||
+			strings.Contains(msgStr, "is not supported by tokenplan") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsUpstreamRelayError 判断是否为上游聚合中继站（如 One-API、New-API 等）自身代理转发失败的报错（通常返回 400/404/500/502 等）。
 // 很多聚合中继站向上游发送请求失败时，会将上游状态码包装并返回 HTTP 400，带有 "来自上游渠道的报错: bad response status code 400"
 // 或 "bad response status code"、"unknown provider for model"、"[上游问题]"、"[渠道出错]" 等特征。
@@ -299,6 +361,9 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		return false
 	}
 	if IsThinkingModeHistoryError(err) {
+		return true
+	}
+	if IsUpstreamPermissionError(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
