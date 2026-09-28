@@ -148,3 +148,12 @@ func TestImageModelBuiltinPricesAndOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestAllBuiltinBillingExpressionsSmokeTest(t *testing.T) {
+	for model, expr := range billing_setting.GetBuiltinBillingExprCopy() {
+		t.Run(model, func(t *testing.T) {
+			err := billing_setting.SmokeTestExpr(expr)
+			require.NoError(t, err, "model %s expression %q failed smoke test", model, expr)
+		})
+	}
+}
