@@ -94,6 +94,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		sendResponsesStreamData(c, streamResponse, data)
 		accumulator.Observe(&streamResponse)
 	})); streamErr != nil {
+		// 上游故障导致的流中断：客户端已经收到了中断前的部分输出。结算不能跟着
+		// 错误一起被丢弃，否则每一次中断的流都是免费的（WebSocket 路径在空闲
+		// 超时和客户端断开时都会结算同一份部分用量）。是否真的结算由 controller
+		// 在整轮重试失败后决定，避免重试成功时同一次请求结算两次。
+		if info.ReceivedResponseCount > 0 {
+			info.InterruptedStreamUsage = accumulator.Finish()
+		}
 		return nil, streamErr
 	}
 

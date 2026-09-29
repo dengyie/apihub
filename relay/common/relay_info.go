@@ -197,6 +197,14 @@ type RelayInfo struct {
 	FinalRequestRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
+	// InterruptedStreamUsage holds the partial usage of an attempt whose stream
+	// was interrupted by an upstream fault. The relay handler normally settles
+	// usage itself, but an interrupted stream returns an error instead, which
+	// would skip settlement even though the client already received the partial
+	// output — the WebSocket path settles exactly that case on idle timeout. The
+	// controller settles it only after the whole retry loop has failed, so a
+	// successful retry bills the full attempt rather than the fragment.
+	InterruptedStreamUsage *dto.Usage
 	// PerformanceOutputTokens is captured by settlement and sampled once at
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64

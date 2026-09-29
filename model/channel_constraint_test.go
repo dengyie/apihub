@@ -371,6 +371,22 @@ func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
 			// A suffixed model name falls back to its base name, which is what
 			// makes "-high"/"-low" variants routable without per-variant abilities.
 			assert.Contains(t, []int{810001, 810002}, pick("default", "gpt-matrix-high", 0, nil).Id)
+
+			// A channel disabled in channels must not be selectable even when its
+			// abilities row is stale. UpdateChannelStatus syncs abilities from a
+			// defer whose error is only logged, so the two tables can diverge; the
+			// memory-cache path filters on channel.Status and the database path
+			// has to agree with it. Runs last because it mutates shared rows.
+			require.NoError(t, DB.Model(&Channel{}).Where("id = ?", 810003).
+				Update("status", common.ChannelStatusManuallyDisabled).Error)
+			for retry := range 3 {
+				picked := pick("default", "gpt-matrix", retry, nil)
+				if picked == nil {
+					continue
+				}
+				assert.NotEqual(t, 810003, picked.Id,
+					"a channel disabled in channels must not be picked even with a stale enabled ability")
+			}
 		})
 	}
 }

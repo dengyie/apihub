@@ -36,6 +36,16 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if types.IsChannelError(err) {
 		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
 	}
+	// skipRetry 是错误构造点留下的「此错误重试无意义」显式标记（本地参数校验、
+	// 额度不足、令牌无权使用该模型等），必须先于负载类启发式判断。否则任何命中
+	// 启发式的本地错误都会被反复换渠道重试：例如网关自身的 403（令牌模型白名单
+	// 拒绝）会被 IsUpstreamPermissionError 的「403 即上游权限错误」规则当作上游
+	// 故障，白白烧完整轮重试预算、消耗半开探测配额，最后返回的还是同一个 403。
+	// 负载类错误（TTFT 超时/空流/断流）由 ToNewAPIError 构造，从不携带该标记，
+	// 因此前移不影响它们的换渠道重试。
+	if types.IsSkipRetryError(err) {
+		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
+	}
 	// 重试预算检查前置：负载类的可重试错误（超时/空流/断流）同样受预算约束
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
@@ -63,9 +73,6 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持（换渠道重试）
 	if loadbalancer.IsUpstreamPermissionError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}
-	}
-	if types.IsSkipRetryError(err) {
-		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
 	code := err.StatusCode
 	if code >= 200 && code < 300 {

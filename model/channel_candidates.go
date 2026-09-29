@@ -163,8 +163,15 @@ func dbChannelCandidates(group string, modelName string, filters []dto.ChannelFi
 		ids = append(ids, ability.ChannelId)
 	}
 
+	// Re-check the live channel status rather than trusting abilities.enabled.
+	// The two tables are not updated in one transaction: UpdateChannelStatus
+	// updates abilities from a defer whose error is only logged, so a failure
+	// there leaves a disabled channel with a stale enabled row. The memory-cache
+	// path already filters on channel.Status (InitChannelCache), and the two
+	// sources are documented as producing the same candidate set, so the
+	// database path has to defend itself the same way.
 	var rows []*Channel
-	if err := DB.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+	if err := DB.Where("id IN ? and status = ?", ids, common.ChannelStatusEnabled).Find(&rows).Error; err != nil {
 		// A task-plugin identity is a hard requirement: fail closed rather than
 		// routing to a channel that may not implement the plugin.
 		if identityFilterRequiresKey(filters) {

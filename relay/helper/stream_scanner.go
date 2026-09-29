@@ -17,7 +17,6 @@ import (
 	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -37,20 +36,6 @@ const (
 	// the handler forever.
 	streamWriteTimeout = 30 * time.Second
 )
-
-func isImageRelay(info *relaycommon.RelayInfo, c *gin.Context) bool {
-	if info != nil {
-		if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
-			return true
-		}
-	}
-	if c != nil && c.Request != nil && c.Request.URL != nil {
-		if strings.Contains(c.Request.URL.Path, "/images/") {
-			return true
-		}
-	}
-	return false
-}
 
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
@@ -150,12 +135,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 	defer func() {
 		// 流结束：上报跟踪。failed 取流状态的真实结果：
-		// 有错误（scanner 错误/超时/panic）或异常结束或空流（正常结束但无有效内容）都算失败，
-		// 计入硬熔断计数器。controller 用同一个（幂等）句柄收尾，
-		// 先到者生效，不会双记。
+		// 有错误（scanner 错误/超时/panic）或异常结束都算失败，计入硬熔断计数器。
+		// controller 用同一个（幂等）句柄收尾，先到者生效，不会双记。
 		failed := info.StreamStatus.HasErrors() || (!info.StreamStatus.IsNormalEnd() && info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)
-		if !failed && info.StreamStatus.IsNormalEnd() && !isImageRelay(info, c) && info.ReceivedContentBytes < 100 {
-			failed = true // 空流视同失败
+		// 零块流视同失败：上游正常结束却一个内容块都没发，渠道确实没干活。
+		// 判据与下面的 EmptyStreamError 一致，只看块数不看字节数。
+		if !failed && info.StreamStatus.IsNormalEnd() && info.ReceivedResponseCount == 0 {
+			failed = true
 		}
 		lbHandle.End(lbTTFTSlow.Load(), failed)
 	}()
@@ -429,11 +415,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 空流：上游正常结束但一个有效内容块都没发，视同渠道失败。
 	// 此时客户端尚未收到任何数据，返回可透明重试的错误，触发换渠道重试，
 	// 而不是把空 200 返回给客户端。
-	// 两种空流：
-	// 1. 零内容块（received=0）
-	// 2. 有块无内容（received>0 但总字节数极小，如 gemini 正常结束但 completion_tokens=0）
-	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() &&
-		(info.ReceivedResponseCount == 0 || (!isImageRelay(info, c) && info.ReceivedContentBytes < 100)) {
+	//
+	// 判据只能是「零块」，不能掺入对累计字节数的阈值判断。累计字节数衡量的是
+	// 整个 SSE JSON 信封的长度，不是模型产出的内容长度，两者在短回复下无法
+	// 区分：`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}`
+	// 是 60 字节的合法内容，而 `{"candidates":[{"content":{"role":"model","parts":[{}]}}],"usageMetadata":{}}`
+	// 是 66 字节的零内容帧。任何固定阈值都会把阈值之下的合法短回复判成空流，
+	// 让客户端拿到 502 并烧光整轮换渠道重试预算。
+	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() && info.ReceivedResponseCount == 0 {
 		logger.LogError(c, fmt.Sprintf("空流：渠道 #%d 正常结束但零有效内容（块=%d, 字节=%d），触发换渠道重试",
 			channelID, info.ReceivedResponseCount, info.ReceivedContentBytes))
 		return &loadbalancer.EmptyStreamError{ChannelID: channelID}

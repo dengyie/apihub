@@ -343,6 +343,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}
 
+	// 整轮重试都失败时，结算最后一次中断流的部分产出。客户端已经收到了这份输出，
+	// 不结算就等于中断的流全部免费。放在循环外而不是 handler 里，是为了保证同一
+	// 请求只结算一次：任何一轮重试成功时，成功那轮的结算已经覆盖整次请求，
+	// 这里直接跳过（BillingSession 的 settled 守卫会把迟到的第二次结算静默吞掉，
+	// 那会变成少收钱，同样不能放任发生）。
+	if newAPIError != nil && relayInfo.InterruptedStreamUsage != nil {
+		relay.ConsumeResponsesQuota(c, relayInfo, relayInfo.InterruptedStreamUsage)
+		relayInfo.InterruptedStreamUsage = nil
+	}
+
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))

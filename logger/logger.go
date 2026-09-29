@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -26,9 +27,9 @@ const (
 
 const maxLogCount = 1000000
 
-var logCount int
+var logCount atomic.Int64
 var setupLogLock sync.Mutex
-var setupLogWorking bool
+var setupLogWorking atomic.Bool
 var currentLogPath string
 var currentLogPathMu sync.RWMutex
 var currentLogFile *os.File
@@ -41,7 +42,7 @@ func GetCurrentLogPath() string {
 
 func SetupLogger() {
 	defer func() {
-		setupLogWorking = false
+		setupLogWorking.Store(false)
 	}()
 	if *common.LogDir != "" {
 		ok := setupLogLock.TryLock()
@@ -112,10 +113,15 @@ func logHelper(ctx context.Context, level string, msg string) {
 	}
 	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
 	common.LogWriterMu.RUnlock()
-	logCount++ // we don't need accurate count, so no lock here
-	if logCount > maxLogCount && !setupLogWorking {
-		logCount = 0
-		setupLogWorking = true
+	// The count only decides when to roll the log file, so losing an occasional
+	// update is harmless — but a plain ++ is a data race all the same, because
+	// every concurrent request logs through here. The trigger has to be a
+	// compare-and-swap for the same reason: a read-then-set lets two goroutines
+	// both see "not working" and both spawn a re-setup, and the loser's early
+	// return (TryLock) still runs the deferred reset above, clearing the flag
+	// while the winner is still swapping log files.
+	if logCount.Add(1) > maxLogCount && setupLogWorking.CompareAndSwap(false, true) {
+		logCount.Store(0)
 		gopool.Go(func() {
 			SetupLogger()
 		})

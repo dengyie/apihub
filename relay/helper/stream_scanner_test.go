@@ -633,3 +633,41 @@ func TestStreamScannerHandler_StreamBroken_MidStream(t *testing.T) {
 	assert.True(t, info.StreamStatus.HasErrors())
 	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
 }
+
+// A stream whose only frame is shorter than any plausible byte threshold still
+// carries model output. The scanner measures SSE envelope size, not content, so
+// a length heuristic reports it as an empty stream, the client gets a 502, and
+// the whole cross-channel retry budget is burned on a healthy channel.
+func TestStreamScannerHandler_ShortValidStreamIsNotEmpty(t *testing.T) {
+	t.Parallel()
+
+	// 60 bytes of payload — a well-formed one-word Gemini answer.
+	frame := `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}`
+	body := frame + "\n" + "data: [DONE]\n"
+	require.Less(t, len(frame)-len("data: "), 100, "precondition: the frame must sit below any length heuristic")
+
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	var got []string
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		got = append(got, data)
+	})
+
+	require.NoError(t, err, "a short but valid stream must not be reported as empty")
+	require.Len(t, got, 1)
+	assert.Equal(t, info.ReceivedResponseCount, 1)
+}
+
+// The zero-frame case is the one the empty-stream retry exists for: the upstream
+// ended cleanly without ever emitting a data frame.
+func TestStreamScannerHandler_ZeroFrameStreamIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	c, resp, info := setupStreamTest(t, strings.NewReader("data: [DONE]\n"))
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	var emptyErr *loadbalancer.EmptyStreamError
+	require.ErrorAs(t, err, &emptyErr)
+	assert.Equal(t, 0, info.ReceivedResponseCount)
+}

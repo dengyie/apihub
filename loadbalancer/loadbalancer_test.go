@@ -522,3 +522,135 @@ func TestIsUpstreamPermissionError(t *testing.T) {
 	assert.False(t, IsUpstreamPermissionError(errNormal400))
 	assert.False(t, IsUpstreamPermissionError(nil))
 }
+
+// --- 半开探测配额租约 ---
+//
+// IsAvailable 以副作用预占半开探测配额，只有真正发出请求并 End 才归还。
+// 现实中大量路径「检查通过但请求从未发出」，没有租约时一次泄漏就让渠道
+// 永久停在半开耗尽状态。以下用例锁定自愈行为，同时锁定租约不得反过来
+// 削弱半开限流。
+// ageHalfOpen 把半开轮次的租约时钟往前拨，模拟「探测配额泄漏后过去了很久」。
+func ageHalfOpen(tracker *Tracker, id int, d time.Duration) {
+	s := tracker.getOrCreate(id)
+	s.openedAt.Store(time.Now().Add(-d).Unix())
+	s.halfOpenSince.Store(time.Now().Add(-d).UnixNano())
+}
+
+func TestProbeLeakAfterAbandonedRequest(t *testing.T) {
+	SetPolicy(testPolicy())
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const id = 4242
+
+	tracker.TripBreaker(id)
+	ageHalfOpen(tracker, id, 10*time.Minute)
+
+	// 第一次检查通过（预占 1 个探测配额）
+	ok, reason := tracker.IsAvailable(id)
+	require.True(t, ok, "first probe should be admitted, got %q", reason)
+
+	// 模拟请求在 Begin/End 之前被放弃：客户端断开、计费准备失败，
+	// 或 Responses WebSocket 中继根本不调用 End。租约过去后必须自愈。
+	ageHalfOpen(tracker, id, 10*time.Minute)
+
+	ok, reason = tracker.IsAvailable(id)
+	assert.True(t, ok, "channel must self-heal once the abandoned probe's lease expires, got %q", reason)
+}
+
+func TestProbeLeakCannotPermanentlyDisableChannel(t *testing.T) {
+	p := testPolicy()
+	p.Default.Breaker.HalfOpenProbes = 2
+	SetPolicy(p)
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const id = 4343
+
+	tracker.TripBreaker(id)
+	// 进入半开后不再拨动时钟：模拟同一时间窗内连续到来的若干请求，
+	// 它们全部「检查通过但请求被放弃」，配额只增不减。
+	ageHalfOpen(tracker, id, 10*time.Minute)
+	for range 3 {
+		_, _ = tracker.IsAvailable(id)
+	}
+	require.EqualValues(t, 2, tracker.getOrCreate(id).halfOpenProbes.Load(),
+		"precondition: probes accumulated to the budget without any End")
+
+	// 配额用尽后必须被限流——否则半开保护形同虚设
+	ok, reason := tracker.IsAvailable(id)
+	assert.False(t, ok)
+	assert.Equal(t, ReasonHalfOpenProbesExceeded, reason)
+
+	// 修复前：熔断器既没回 closed 也没再 open，没有任何东西会重置这个
+	// 计数，渠道在此永久不可用。租约到期后必须重新放行探测。
+	ageHalfOpen(tracker, id, 10*time.Minute)
+	ok, reason = tracker.IsAvailable(id)
+	assert.True(t, ok, "channel must not be permanently disabled, got %q", reason)
+}
+
+// 租约未到期时不能过早放行，否则熔断器形同虚设。
+func TestProbeLeaseDoesNotFireEarly(t *testing.T) {
+	p := testPolicy()
+	p.Default.Breaker.HalfOpenProbes = 1
+	SetPolicy(p)
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const id = 4444
+
+	tracker.TripBreaker(id)
+	ageHalfOpen(tracker, id, 10*time.Minute)
+	require.True(t, func() bool { ok, _ := tracker.IsAvailable(id); return ok }())
+
+	// 租约内：仍应被拒，否则熔断保护形同虚设
+	ok, reason := tracker.IsAvailable(id)
+	assert.False(t, ok)
+	assert.Equal(t, ReasonHalfOpenProbesExceeded, reason)
+
+	// 超过租约：重新放行
+	ageHalfOpen(tracker, id, halfOpenProbeLease+time.Second)
+	ok, reason = tracker.IsAvailable(id)
+	assert.True(t, ok, "probe must be re-admitted after the lease, got %q", reason)
+}
+
+// 正常的探测成功必须立即关闭熔断器，不受租约影响。
+func TestProbeLeaseDoesNotDelaySuccessfulRecovery(t *testing.T) {
+	SetPolicy(testPolicy())
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const id = 4545
+
+	tracker.TripBreaker(id)
+	ageHalfOpen(tracker, id, 10*time.Minute)
+	ok, _ := tracker.IsAvailable(id)
+	require.True(t, ok)
+
+	// 探测真的发出了请求并成功
+	tracker.Begin(id).End(false, false)
+
+	assert.Equal(t, breakerClosed, breakerState(tracker.getOrCreate(id).state.Load()))
+	// 关闭后 IsAvailable 不再受探测配额限制
+	ok, reason := tracker.IsAvailable(id)
+	assert.True(t, ok, "recovered channel should be available, got %q", reason)
+}
+
+// 并发上限检查失败时要归还本次预占的配额，且计数不能被扣成负数。
+// 重读熔断状态来判断是否归还是不安全的：状态可能在两步之间被并发 End 改掉。
+func TestOverloadRefundKeepsProbeCountNonNegative(t *testing.T) {
+	p := testPolicy()
+	p.Default.MaxInflight = 1
+	SetPolicy(p)
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const id = 4646
+
+	tracker.TripBreaker(id)
+	ageHalfOpen(tracker, id, 10*time.Minute)
+
+	// 占满 inflight，使并发上限检查必然失败
+	tracker.Begin(id)
+	require.Equal(t, 1, tracker.Inflight(id))
+
+	ok, reason := tracker.IsAvailable(id)
+	assert.False(t, ok)
+	assert.Equal(t, ReasonOverloaded, reason)
+	assert.EqualValues(t, 0, tracker.getOrCreate(id).halfOpenProbes.Load(),
+		"an overload rejection must refund the probe it just reserved")
+
+	tracker.getOrCreate(id).inflight.Store(0)
+	ok, reason = tracker.IsAvailable(id)
+	assert.True(t, ok, "refunded probe must be re-admittable, got %q", reason)
+}

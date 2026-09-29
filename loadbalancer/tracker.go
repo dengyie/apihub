@@ -36,12 +36,28 @@ type ChannelStats struct {
 	consecutiveSlowCount atomic.Int32
 	// halfOpenProbes 半开状态已放行的探测数
 	halfOpenProbes atomic.Int32
+	// halfOpenSince 本轮半开的起始时刻（Unix 纳秒），0=未进入过半开。
+	// 用于探测配额租约回收，见 halfOpenProbeLease。
+	halfOpenSince atomic.Int64
 	// ttftSamples 首字时间滑动窗口（毫秒），只保留最近 N 个
 	mu          sync.Mutex
 	ttftSamples []int64
 }
 
 const maxTTFTSamples = 100
+
+// halfOpenProbeLease 是半开探测配额的租约时长。
+//
+// IsAvailable 名为「检查」，却在半开状态下以副作用方式预占一个探测配额；
+// 该配额只有真正发出请求并走到 RequestHandle.End 才会归还。现实中存在大量
+// 「检查通过但请求从未发出」的路径：客户端在选路后立刻断开、计费准备失败、
+// Responses WebSocket 中继根本不调用 End。没有租约时，一次泄漏就会让渠道
+// 永久停在半开耗尽状态——熔断器再也回不到 closed，该渠道彻底死掉且无任何
+// 日志。租约让「没有结论的半开轮次」在有限时间后自动作废重来。
+//
+// 取值与熔断冷却同量级：远大于任何一次真实探测的时长（首字超时默认 5s），
+// 不会误伤正常探测；又足够短，泄漏后渠道能在一分钟内自愈。
+const halfOpenProbeLease = 60 * time.Second
 
 // ContextKeyAttempt carries the inflight handle of the relay attempt in
 // flight. The controller creates it at the start of every attempt so streams,
@@ -102,6 +118,7 @@ func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 	s.openedAt.Store(time.Now().Unix())
 	s.blockedUntil.Store(until.Unix())
 	s.halfOpenProbes.Store(0)
+	s.halfOpenSince.Store(0)
 }
 
 // TripBreaker 立即熔断渠道（开启常规冷却周期）。
@@ -114,6 +131,7 @@ func (t *Tracker) TripBreaker(channelID int) {
 	s.state.Store(int32(breakerOpen))
 	s.openedAt.Store(time.Now().Unix())
 	s.halfOpenProbes.Store(0)
+	s.halfOpenSince.Store(0)
 }
 
 // IsDegraded 判断渠道是否处于降级状态（慢 3 次后的 10 分钟软降级）。
@@ -252,6 +270,7 @@ func (h *RequestHandle) End(slow, failed bool) {
 		if breakerState(h.stats.state.Load()) == breakerHalfOpen {
 			h.stats.state.Store(int32(breakerClosed))
 			h.stats.halfOpenProbes.Store(0)
+			h.stats.halfOpenSince.Store(0)
 		}
 	}
 }
@@ -261,6 +280,7 @@ func (h *RequestHandle) tripBreaker() {
 	h.stats.state.Store(int32(breakerOpen))
 	h.stats.openedAt.Store(time.Now().Unix())
 	h.stats.halfOpenProbes.Store(0)
+	h.stats.halfOpenSince.Store(0)
 }
 
 // IsAvailable 检查渠道当前是否可用（未过载、未熔断）
@@ -273,6 +293,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 	s := t.getOrCreate(channelID)
 
 	// 熔断器检查
+	reservedProbe := false
 	switch state := breakerState(s.state.Load()); state {
 	case breakerOpen:
 		// 定时熔断（如宵禁）：到期前一律不放行
@@ -291,6 +312,7 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 			// 进入半开状态
 			if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
 				s.halfOpenProbes.Store(0)
+				s.halfOpenSince.Store(time.Now().UnixNano())
 			}
 		} else {
 			return false, ReasonCircuitOpen
@@ -302,21 +324,46 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 		if maxProbes <= 0 {
 			maxProbes = 1
 		}
+		s.reclaimExpiredProbes()
 		if s.halfOpenProbes.Add(1) > int32(maxProbes) {
 			s.halfOpenProbes.Add(-1)
 			return false, ReasonHalfOpenProbesExceeded
 		}
+		reservedProbe = true
 		// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
 	}
 
 	// 并发上限检查
 	if max := policy.MaxInflight; max > 0 && int(s.inflight.Load()) >= max {
-		// 半开探测已占用的名额要归还
-		if breakerState(s.state.Load()) == breakerHalfOpen {
+		// 归还本次调用自己预占的探测配额。用局部标志而不是重读熔断状态：
+		// 状态可能在两步之间被并发的 End 改成 open，那时重读会漏还或多还。
+		if reservedProbe {
 			s.halfOpenProbes.Add(-1)
 		}
 		return false, ReasonOverloaded
 	}
 
 	return true, ""
+}
+
+// reclaimExpiredProbes 回收「已预占但从未归还」的半开探测配额。
+//
+// 上一轮半开在租约内没有给出任何结论，说明放行的探测请求没有走到 End
+// （客户端断开、计费准备失败、Responses WebSocket 中继根本不调用 End）。
+// 与其让渠道永久停在耗尽状态，不如把这轮作废、重新放行探测。
+func (s *ChannelStats) reclaimExpiredProbes() {
+	if s.halfOpenProbes.Load() <= 0 {
+		return
+	}
+	since := s.halfOpenSince.Load()
+	if since <= 0 {
+		return
+	}
+	if time.Since(time.Unix(0, since)) > halfOpenProbeLease {
+		// 同时把租约时钟拨回现在：这一轮从此刻重新计时。否则时钟停留在过期值上，
+		// 之后每一次 IsAvailable 都会再次触发回收，探测配额上限形同虚设——
+		// 本该被限流的半开渠道会被无限放行。
+		s.halfOpenProbes.Store(0)
+		s.halfOpenSince.Store(time.Now().UnixNano())
+	}
 }
