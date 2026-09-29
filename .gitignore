@@ -44,3 +44,7 @@ relaykit/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
+
+# macOS 同步产物（AppleDouble 资源叉文件），见同步命令 COPYFILE_DISABLE=1
+._*
+.DS_Store

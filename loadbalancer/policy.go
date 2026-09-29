@@ -1,5 +1,15 @@
 package loadbalancer
 
+import "time"
+
+// DefaultRequestTimeoutMs 非流式请求的整请求预算默认值（毫秒）。
+//
+// 非流式的上游响应是「算完才来」：TTFT 定时器只覆盖流式的首字等待，非流式
+// 此前没有任何网关侧边界，单次尝试可以一直挂到上游或其前置网关（Cloudflare
+// ~100s）判死，跨渠道重试叠加时总等待无上界。180s 对合法长生成足够宽松，
+// 又能在系统性慢上游时把总等待封住。
+const DefaultRequestTimeoutMs = 180000
+
 // Policy 定义智能负载的全部策略参数。
 // 策略支持热加载：修改 YAML 配置文件后自动生效，无需重启服务。
 type Policy struct {
@@ -10,6 +20,13 @@ type Policy struct {
 	// 0 表示不重试。修改后热加载生效。
 	MaxRetries int `yaml:"max_retries"`
 
+	// RequestTimeoutMs 非流式请求的整请求预算（毫秒），所有重试尝试共享同一
+	// 预算，到期后停止重试并以 504 返回。
+	//
+	// 指针三态：缺省（yaml 未写该键）用 DefaultRequestTimeoutMs；显式 0 表示
+	// 关闭。流式请求不受它约束——首字等待归 ttft_timeout_ms，长流是合法形态。
+	RequestTimeoutMs *int `yaml:"request_timeout_ms"`
+
 	// StripThinkingChannels 需要裁剪 thinking 参数的渠道 ID 列表（兼容旧配置）。
 	// 这些渠道的上游不支持 thinking 参数，转发时会自动去掉。
 	// 新配置请用 StripParams，可指定任意参数。
@@ -19,6 +36,25 @@ type Policy struct {
 	// 例如：140: [thinking, reasoning_effort]
 	// 不填则靠运行时自动学习（收到 400 参数不支持错误后自动标记）。
 	StripParams map[int][]string `yaml:"strip_params"`
+}
+
+// RequestTimeout 返回非流式请求的整请求预算；0 表示禁用。
+func (p *Policy) RequestTimeout() time.Duration {
+	if p == nil {
+		return time.Duration(DefaultRequestTimeoutMs) * time.Millisecond
+	}
+	if p.RequestTimeoutMs == nil {
+		return time.Duration(DefaultRequestTimeoutMs) * time.Millisecond
+	}
+	if *p.RequestTimeoutMs <= 0 {
+		return 0
+	}
+	return time.Duration(*p.RequestTimeoutMs) * time.Millisecond
+}
+
+// GetRequestTimeout 返回当前生效策略的非流式整请求预算。
+func GetRequestTimeout() time.Duration {
+	return GetPolicy().RequestTimeout()
 }
 
 // ChannelPolicy 单个渠道的策略参数。

@@ -1,8 +1,11 @@
 package operation_setting
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,13 +39,10 @@ func TestParseHTTPStatusCodeRanges_NoComma_IsInvalid(t *testing.T) {
 }
 
 func TestShouldDisableByStatusCode(t *testing.T) {
-	orig := AutomaticDisableStatusCodeRanges
-	t.Cleanup(func() { AutomaticDisableStatusCodeRanges = orig })
+	orig := AutomaticDisableStatusCodesToString()
+	t.Cleanup(func() { require.NoError(t, AutomaticDisableStatusCodesFromString(orig)) })
 
-	AutomaticDisableStatusCodeRanges = []StatusCodeRange{
-		{Start: 401, End: 403},
-		{Start: 500, End: 599},
-	}
+	require.NoError(t, AutomaticDisableStatusCodesFromString("401-403,500-599"))
 
 	require.True(t, ShouldDisableByStatusCode(401))
 	require.True(t, ShouldDisableByStatusCode(403))
@@ -52,13 +52,10 @@ func TestShouldDisableByStatusCode(t *testing.T) {
 }
 
 func TestShouldRetryByStatusCode(t *testing.T) {
-	orig := AutomaticRetryStatusCodeRanges
-	t.Cleanup(func() { AutomaticRetryStatusCodeRanges = orig })
+	orig := AutomaticRetryStatusCodesToString()
+	t.Cleanup(func() { require.NoError(t, AutomaticRetryStatusCodesFromString(orig)) })
 
-	AutomaticRetryStatusCodeRanges = []StatusCodeRange{
-		{Start: 429, End: 429},
-		{Start: 500, End: 599},
-	}
+	require.NoError(t, AutomaticRetryStatusCodesFromString("429,500-599"))
 
 	require.True(t, ShouldRetryByStatusCode(429))
 	require.True(t, ShouldRetryByStatusCode(500))
@@ -88,4 +85,55 @@ func TestIsAlwaysSkipRetryStatusCode(t *testing.T) {
 	require.False(t, IsAlwaysSkipRetryStatusCode(504))
 	require.False(t, IsAlwaysSkipRetryStatusCode(524))
 	require.False(t, IsAlwaysSkipRetryStatusCode(500))
+}
+
+// TestStatusCodeRulesConcurrentAccess pins the atomicity of the status-code
+// rule snapshot.
+//
+// The rules are written at runtime through the admin option API and read on
+// the relay hot path (every failed request walks DecideRelayRetry). They used
+// to be plain package variables: writes happened under OptionMapRWMutex, but
+// hot-path readers took no lock at all — a genuine data race the race detector
+// flags the moment this test runs against the old implementation.
+func TestStatusCodeRulesConcurrentAccess(t *testing.T) {
+	origRetry := AutomaticRetryStatusCodesToString()
+	origDisable := AutomaticDisableStatusCodesToString()
+	t.Cleanup(func() {
+		require.NoError(t, AutomaticRetryStatusCodesFromString(origRetry))
+		require.NoError(t, AutomaticDisableStatusCodesFromString(origDisable))
+	})
+
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				require.NoError(t, AutomaticRetryStatusCodesFromString(fmt.Sprintf("%d,%d-599", 500+w, 505+i%50)))
+				require.NoError(t, AutomaticDisableStatusCodesFromString("401,403"))
+			}
+		}(w)
+	}
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				// 读取结果本身无所谓：这一步在 -race 下验证的是
+				// 「读侧永远看到完整一致的快照，绝不与写侧撕裂」。
+				ShouldRetryByStatusCode(500)
+				ShouldRetryByStatusCode(504)
+				ShouldDisableByStatusCode(401)
+				IsAlwaysSkipRetryStatusCode(504)
+				IsAlwaysSkipRetryCode(types.ErrorCodeBadResponseBody)
+				AutomaticRetryStatusCodesToString()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// 并发写全部落地后，最后一次写必须可见。
+	require.NoError(t, AutomaticRetryStatusCodesFromString("504,524"))
+	require.True(t, ShouldRetryByStatusCode(504))
+	require.True(t, ShouldRetryByStatusCode(524))
 }

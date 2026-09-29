@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -203,6 +204,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	// 智能负载：非流式请求的整请求预算。
+	//
+	// 非流式的上游响应是「算完才来」：TTFT 定时器只覆盖流式的首字等待，非流式
+	// 此前没有任何网关侧边界，单次尝试可以一直挂到上游或其前置网关判死，跨渠道
+	// 重试叠加时总等待无上界（v29.4 review 遗留 P2 的根子）。出站请求继承本
+	// request 的 context（api_request.go 用 c.Request.Context() 构造上游请求），
+	// 所以在这里给 context 套上预算，所有重试尝试共享同一个总额。
+	// 流式与 realtime 不受约束：首字等待归 ttft_timeout_ms，长流是合法形态。
+	requestBudgetCtx, cancelRequestBudget := armRequestBudget(c, relayInfo.IsStream, relayFormat)
+	if cancelRequestBudget != nil {
+		defer cancelRequestBudget()
+	}
+
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
@@ -261,6 +275,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = geminiRelayHandler(c, relayInfo)
 		default:
 			newAPIError = relayHandler(c, relayInfo)
+		}
+
+		// 智能负载：请求预算耗尽导致的失败，重写为可观测的网关超时语义。
+		// 预算到期时出站请求以 context.DeadlineExceeded 失败（客户端断开产生的
+		// 是 context.Canceled，二者可区分）。判据以「预算 ctx 是否已到期」为准而
+		// 不是 errors.Is(newAPIError.Err, DeadlineExceeded)：OpenAIError 构造路径
+		// 只保留 err.Error() 字符串、不保留 Unwrap 链，依赖错误链会在包装处静默
+		// 失效；预算到期是请求级事实，且尝试返回与本次检查之间只有微秒级窗口，
+		// 误判代价仅是终端错误文案。复用 TTFT 超时类型：语义相同（预算内没等到
+		// 可用响应——非流式下响应整体即「首字」），且天然接入既有分类——不计入
+		// 熔断硬失败（慢≠不健康），按 ttft_timeout 换渠道重试。
+		if requestBudgetCtx != nil && errors.Is(requestBudgetCtx.Err(), context.DeadlineExceeded) &&
+			newAPIError != nil {
+			newAPIError = types.NewErrorWithStatusCode(
+				&loadbalancer.TTFTTimeoutError{ChannelID: channel.Id},
+				types.ErrorCodeChannelResponseTimeExceeded,
+				http.StatusGatewayTimeout)
 		}
 
 		if newAPIError == nil {
@@ -354,11 +385,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if decision.Action != "retry" {
 			break
 		}
-		// 客户端已经断开：换渠道重试只是为一个不在的接收方消耗真实上游额度。
-		// 该记的账在上面已经记完（RecordPolicyFailure / 熔断 / processChannelError），
-		// 这里只停重试——渠道该坏还是坏，只是不再为一个死掉的请求去烧钱。
-		if c.Request != nil && c.Request.Context().Err() != nil {
-			logger.LogInfo(c, "客户端已断开，停止重试")
+		// 客户端已经断开 / 请求预算耗尽：换渠道重试只是为一个不在的接收方消耗
+		// 真实上游额度。该记的账在上面已经记完（RecordPolicyFailure / 熔断 /
+		// processChannelError），这里只停重试——渠道该坏还是坏，只是不再为一个
+		// 死掉的请求去烧钱。客户端断开产生 context.Canceled；网关侧整请求预算
+		// 耗尽产生 context.DeadlineExceeded，二者在此区分以便排障归因。
+		if ctxErr := c.Request.Context().Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				logger.LogInfo(c, "请求预算耗尽（网关侧总超时），停止重试")
+			} else {
+				logger.LogInfo(c, "客户端已断开，停止重试")
+			}
 			break
 		}
 	}
@@ -417,6 +454,26 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // 允许跨域
 	},
+}
+
+// armRequestBudget 为非流式请求套上整请求预算（所有重试尝试共享同一总额）。
+//
+// 预算取自策略 request_timeout_ms（缺省 DefaultRequestTimeoutMs，显式 0 关闭）。
+// 出站请求用 c.Request.Context() 构造（见 api_request.go），所以替换 request 的
+// context 即可让预算传导到上游调用；父 context 的取值与取消（客户端断开）全部
+// 保留。流式与 realtime 返回 (nil, nil)——它们各有自己的时间语义，长流是合法
+// 形态，绝不能被整请求预算误杀。
+func armRequestBudget(c *gin.Context, isStream bool, relayFormat types.RelayFormat) (context.Context, context.CancelFunc) {
+	if c == nil || c.Request == nil || isStream || relayFormat == types.RelayFormatOpenAIRealtime {
+		return nil, nil
+	}
+	budget := loadbalancer.GetRequestTimeout()
+	if budget <= 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), budget)
+	c.Request = c.Request.WithContext(ctx)
+	return ctx, cancel
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
@@ -991,7 +1048,9 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 	case taskErr.StatusCode == http.StatusTooManyRequests, taskErr.StatusCode == 307:
 		return retry
 	case taskErr.StatusCode/100 == 5:
-		// 超时不重试
+		// 5xx 全部换渠道重试。必跳过清单（v29.4 起）默认为空——504/524 网关
+		// 超时同样重试；下面这个 if 保留作运行期开关，管理员可通过选项把
+		// 特定状态码重新拉回「必跳过」。
 		if operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) {
 			stop.Reason = "system_retry_exclusion"
 			break

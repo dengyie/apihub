@@ -83,3 +83,59 @@ func TestWrittenStreamTerminalSSEError(t *testing.T) {
 	assert.True(t, strings.Contains(body, "\"code\":502"))
 	assert.True(t, strings.Contains(body, "INTERNAL_ERROR"))
 }
+
+// TestArmRequestBudget pins which requests get the gateway-side budget.
+//
+// The budget is the root fix for the v29.4 review's residual risk: a
+// non-stream upstream response "arrives all at once", the TTFT timer only
+// bounds stream first-byte waits, and cross-channel retries stacked the
+// unbounded per-attempt hangs without limit. Streaming and realtime sessions
+// must NEVER be bounded by it (a long stream is legitimate); everything else
+// gets a deadline the outbound request inherits, because the relay builds
+// upstream requests from c.Request.Context() (api_request.go).
+func TestArmRequestBudget(t *testing.T) {
+	old := loadbalancer.GetPolicy()
+	policy := loadbalancer.DefaultPolicy()
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(old)
+
+	gin.SetMode(gin.TestMode)
+	newCtx := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return c
+	}
+
+	// 非流式：context 被替换为带 deadline 的子 context，父链保留。
+	c := newCtx()
+	parent := c.Request.Context()
+	budgetCtx, cancel := armRequestBudget(c, false, types.RelayFormatOpenAI)
+	require.NotNil(t, cancel)
+	defer cancel()
+	_, hasDeadline := budgetCtx.Deadline()
+	require.True(t, hasDeadline, "non-stream request must carry the gateway budget deadline")
+	require.True(t, c.Request.Context() == budgetCtx, "c.Request must be swapped so the outbound call inherits the budget")
+	require.NotNil(t, parent, "父 context 链保留：出站请求同时继承预算与客户端断开信号")
+
+	// 流式：绝不加预算。
+	c2 := newCtx()
+	before := c2.Request
+	budgetCtx2, cancel2 := armRequestBudget(c2, true, types.RelayFormatOpenAI)
+	require.Nil(t, budgetCtx2)
+	require.Nil(t, cancel2)
+	require.True(t, c2.Request == before, "stream request context must stay untouched")
+
+	// realtime：绝不加预算（长会话）。
+	c3 := newCtx()
+	budgetCtx3, cancel3 := armRequestBudget(c3, false, types.RelayFormatOpenAIRealtime)
+	require.Nil(t, budgetCtx3)
+	require.Nil(t, cancel3)
+
+	// 预算显式关闭（request_timeout_ms: 0）：不加。
+	off := 0
+	policy.RequestTimeoutMs = &off
+	c4 := newCtx()
+	budgetCtx4, cancel4 := armRequestBudget(c4, false, types.RelayFormatOpenAI)
+	require.Nil(t, budgetCtx4)
+	require.Nil(t, cancel4)
+}

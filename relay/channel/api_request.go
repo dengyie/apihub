@@ -335,7 +335,12 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	// 出站请求必须继承本请求的 context：客户端断开（context.Canceled）与
+	// 网关侧整请求预算（context.DeadlineExceeded，见 controller 的
+	// armRequestBudget）都靠它传导到上游调用。此前用 http.NewRequest 挂在
+	// context.Background() 上，请求生命周期与上游调用完全脱钩——客户端早已
+	// 离开，上游调用仍在烧真实额度；非流式请求也没有任何时间边界。
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -377,7 +382,12 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	// 出站请求必须继承本请求的 context：客户端断开（context.Canceled）与
+	// 网关侧整请求预算（context.DeadlineExceeded，见 controller 的
+	// armRequestBudget）都靠它传导到上游调用。此前用 http.NewRequest 挂在
+	// context.Background() 上，请求生命周期与上游调用完全脱钩——客户端早已
+	// 离开，上游调用仍在烧真实额度；非流式请求也没有任何时间边界。
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}

@@ -747,3 +747,32 @@ func TestTrackerInflightReturnedOnPanic(t *testing.T) {
 	assert.Zero(t, tr.channels[channelID].consecutiveFailures.Load(),
 		"the panic guard must not add breaker failures of its own")
 }
+
+// TestRequestTimeoutPolicy pins the tri-state semantics of the non-stream
+// request budget (request_timeout_ms).
+//
+// The budget exists because a non-stream upstream response "arrives all at
+// once": the TTFT timer only bounds stream first-byte waits, so without a
+// request-level budget a non-stream attempt could hang until the upstream (or
+// its fronting gateway) decided to answer, and cross-channel retries stacked
+// those waits without limit.
+func TestRequestTimeoutPolicy(t *testing.T) {
+	// 缺省（yaml 未写该键）：使用内置默认值。
+	var omitted Policy
+	assert.Equal(t, time.Duration(DefaultRequestTimeoutMs)*time.Millisecond, omitted.RequestTimeout())
+	assert.Equal(t, 180*time.Second, DefaultPolicy().RequestTimeout())
+
+	// 显式 0：关闭。
+	off := 0
+	omitted.RequestTimeoutMs = &off
+	assert.Equal(t, time.Duration(0), omitted.RequestTimeout())
+
+	// 显式正值：按配置生效。
+	custom := 45000
+	omitted.RequestTimeoutMs = &custom
+	assert.Equal(t, 45*time.Second, omitted.RequestTimeout())
+
+	// nil 接收者不 panic（GetPolicy 的兜底路径）。
+	var nilPolicy *Policy
+	assert.NotZero(t, nilPolicy.RequestTimeout())
+}
