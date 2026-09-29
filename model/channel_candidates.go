@@ -42,6 +42,16 @@ func (c *ChannelCandidates) Pick(retry int, excludedIDs map[int]struct{}, sticky
 		return nil
 	}
 
+	// firstAttempt 必须在下面的 clamp 之前取值。
+	//
+	// 只有单一优先级分层的渠道池里 len(tiers)==1，任何 retry>0 都会被 clamp 回 0；
+	// 若按 clamp 之后的值判断「retry==0 就走 sticky」，重试就会用同一个
+	// StickyKey 确定性地选回刚刚失败的那个渠道——「换渠道重试」退化成对同一个
+	// 坏渠道的重复调用，整轮重试预算全部烧在同一次失败上。sticky 的语义是
+	// 「同一个 prompt 稳定命中同一渠道以命中上游缓存」，它与「换个渠道试试」
+	// 本来就互斥，必须以调用方传入的原始 attempt 序号为准。
+	firstAttempt := retry == 0
+
 	tiers := priorityTiers(pool)
 	if retry >= len(tiers) {
 		retry = len(tiers) - 1
@@ -57,8 +67,8 @@ func (c *ChannelCandidates) Pick(retry int, excludedIDs map[int]struct{}, sticky
 	}
 
 	// 智能负载：sticky 一致性路由。同样的 prompt 前缀总是选同一渠道，
-	// 提高上游 prompt cache 命中率。仅在首次选择（retry==0）时生效。
-	if retry == 0 {
+	// 提高上游 prompt cache 命中率。仅在首次选择时生效。
+	if firstAttempt {
 		if idx := loadbalancer.StickyIndex(stickyKey, len(tier)); idx >= 0 {
 			return tier[idx]
 		}

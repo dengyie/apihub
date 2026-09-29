@@ -151,7 +151,14 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "always skipped status", err: upstream(http.StatusGatewayTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
 		{name: "success status never retries", err: upstream(http.StatusOK), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
 		{name: "skip retry error", err: types.NewErrorWithStatusCode(errors.New("local"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry()), retries: 1, want: PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}},
-		{name: "channel error retries without budget", err: types.NewError(errors.New("no key"), types.ErrorCodeChannelNoAvailableKey), retries: 0, want: PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}},
+		{name: "channel error retries", err: types.NewError(errors.New("no key"), types.ErrorCodeChannelNoAvailableKey), retries: 1, want: PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}},
+		// "channel:" 前缀错误曾经无条件换渠道重试，绕过了上面两道闸门。
+		{name: "channel error respects budget", err: types.NewError(errors.New("no key"), types.ErrorCodeChannelNoAvailableKey), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
+		{name: "channel error respects skip retry", err: types.NewError(errors.New("local override rejected"), types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry()), retries: 1, want: PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}},
+		// TTFT 超时的错误码就是 channel:response_time_exceeded（IsChannelError 判前缀），
+		// 它此前被 channel_error 分支抢先命中，导致 ttft_timeout 永不可达。
+		{name: "ttft timeout reports its own reason", err: types.NewErrorWithStatusCode(&loadbalancer.TTFTTimeoutError{ChannelID: 1, TimeoutMs: 30000}, types.ErrorCodeChannelResponseTimeExceeded, http.StatusGatewayTimeout), retries: 2, want: PolicyDecision{Action: "retry", Reason: "ttft_timeout", Source: "loadbalancer"}},
+		{name: "ttft timeout respects budget", err: types.NewErrorWithStatusCode(&loadbalancer.TTFTTimeoutError{ChannelID: 1, TimeoutMs: 30000}, types.ErrorCodeChannelResponseTimeExceeded, http.StatusGatewayTimeout), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		{name: "single attempt pin", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
 			GetChannelConstraints(c).AddPin(dto.ChannelPin{ChannelId: 1, Source: dto.PinSourceToken, Rank: dto.PinRankToken, RetryMode: dto.PinRetrySingleAttempt})
 		}, want: PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}},

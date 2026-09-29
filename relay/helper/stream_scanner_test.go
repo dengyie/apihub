@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -671,3 +672,92 @@ func TestStreamScannerHandler_ZeroFrameStreamIsEmpty(t *testing.T) {
 	require.ErrorAs(t, err, &emptyErr)
 	assert.Equal(t, 0, info.ReceivedResponseCount)
 }
+
+// ---------- 客户端主动断开不得被当成上游流故障 ----------
+
+// blockedBody 在 Read 上一直阻塞，直到 Close 被调用才返回一个读错误——复刻生产上
+// 「客户端断开 → 我们收尾关闭上游 body → scanner 报 read on closed response body」
+// 这条路径。
+//
+// 必须绕过 setupStreamTest：它用 io.NopCloser 包一层，而 NopCloser 的 Close 是空
+// 实现，阻塞中的 Read 永远醒不过来，cleanup 的 wg.Wait() 会一直挂到测试超时。
+// 真实 http.Response.Body 的 Close 保证会解除挂起的 Read，测试替身必须保证同一件事。
+type blockedBody struct {
+	closed  chan struct{}
+	closeMu sync.Once
+}
+
+func newBlockedBody() *blockedBody { return &blockedBody{closed: make(chan struct{})} }
+
+func (b *blockedBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, errors.New("http: read on closed response body")
+}
+
+func (b *blockedBody) Close() error {
+	b.closeMu.Do(func() { close(b.closed) })
+	return nil
+}
+
+// setupBlockingStreamTest 造一个上游一直不出数据、直到我们收尾才断的流。
+func setupBlockingStreamTest(t *testing.T) (*gin.Context, *http.Response, *relaycommon.RelayInfo) {
+	t.Helper()
+	c, resp, info := setupStreamTest(t, strings.NewReader(""))
+	resp.Body = newBlockedBody()
+	return c, resp, info
+}
+
+// TestStreamScannerHandler_ClientAbortIsNotAStreamError 覆盖 v29.2 review 发现的
+// 真实生产缺陷：客户端按 ESC 放弃请求时，我们收尾关闭 body 产生的读错误被记成流
+// 错误，控制器据此把健康渠道判成「上游流中断」并立即熔断，还为这个已经没人接收的
+// 请求继续换渠道重试。实测一天 112 次误熔断（渠道 #4 独占 54 次）、35 次白烧的
+// 上游调用、$3.27 计费对应客户端从未收到的输出。
+func TestStreamScannerHandler_ClientAbortIsNotAStreamError(t *testing.T) {
+	t.Parallel()
+
+	c, resp, info := setupBlockingStreamTest(t)
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(ctx)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	require.NoError(t, err, "客户端断开不得升级成可重试的渠道错误")
+	assert.True(t, info.StreamStatus.IsClientAbort(), "precondition: 应判定为客户端断开")
+	assert.Equal(t, 0, info.ReceivedResponseCount)
+
+	// 判别力断言：收尾期我们自己关闭 body 产生的读错误不能进 ErrorCount。
+	// 这条错误是本缺陷的触发器——hasErrorsLocked 的客户端豁免只写在 EndError 分支，
+	// 会被前面的 ErrorCount>0 短路掉。
+	assert.Equal(t, 0, info.StreamStatus.TotalErrorCount(),
+		"我们主动关闭上游 body 引发的读错误不得计为流错误，实际记录: %s", info.StreamStatus.Summary())
+	assert.False(t, info.StreamStatus.HasErrors(),
+		"客户端断开不得让 HasErrors() 为真，实际: %s", info.StreamStatus.Summary())
+	assert.False(t, info.StreamStatus.IsUpstreamStreamFault(),
+		"客户端断开不得被归因为上游流故障")
+}
+
+// TestStreamScannerHandler_UpstreamScanErrorStillRecorded 反向验证：真实的上游读
+// 错误（不是我们收尾引发的）仍然必须被记录并触发换渠道重试。
+func TestStreamScannerHandler_UpstreamScanErrorStillRecorded(t *testing.T) {
+	t.Parallel()
+
+	c, resp, info := setupStreamTest(t, errBody{errors.New("stream error: stream ID 5; INTERNAL_ERROR; received from peer")})
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	var brokenErr *loadbalancer.StreamBrokenError
+	require.ErrorAs(t, err, &brokenErr, "真实的上游读错误必须触发换渠道重试")
+	assert.False(t, info.StreamStatus.IsClientAbort())
+	assert.Greater(t, info.StreamStatus.TotalErrorCount(), 0, "真实读错误必须留痕")
+	assert.True(t, info.StreamStatus.IsUpstreamStreamFault())
+}
+
+// errBody 直接返回错误、不产出任何数据，模拟上游在传输中途断开。
+type errBody struct{ err error }
+
+func (b errBody) Read([]byte) (int, error) { return 0, b.err }
+func (b errBody) Close() error             { return nil }

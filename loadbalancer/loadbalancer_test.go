@@ -654,3 +654,96 @@ func TestOverloadRefundKeepsProbeCountNonNegative(t *testing.T) {
 	ok, reason = tracker.IsAvailable(id)
 	assert.True(t, ok, "refunded probe must be re-admittable, got %q", reason)
 }
+
+// TestIsUpstreamModelUnavailableError 覆盖生产实测到的两类永不自愈的上游失效：
+// 模型映射失效（一天 101 次，集中在 4 个渠道）与 OAuth 凭据刷新失效（一天 42 次）。
+// 默认自动禁用状态码只有 401，覆盖不到 404 的「模型不存在」，这些渠道因此永远
+// 留在池子里，每次命中都白烧一轮换渠道重试。
+func TestIsUpstreamModelUnavailableError(t *testing.T) {
+	deterministic := []*types.NewAPIError{
+		{StatusCode: 404, Err: errors.New("模型不存在")},
+		{StatusCode: 404, Err: errors.New("status_code=404, 模型不存在")},
+		{StatusCode: 404, Err: errors.New("The model `grok-4.6` does not exist")},
+		{StatusCode: 400, Err: errors.New("model_not_found: unknown model")},
+		{StatusCode: 404, Err: errors.New("no such model: deepseek-v4-flash")},
+		{StatusCode: 400, Err: errors.New("failed to get access token: oauth2: cannot fetch token: 400 Bad Request")},
+	}
+	for i, err := range deterministic {
+		assert.True(t, IsUpstreamModelUnavailableError(err), "case %d 应当判为永不恢复的上游失效: %v", i, err)
+	}
+	assert.False(t, IsUpstreamModelUnavailableError(nil))
+
+	// 会自愈的一律不得误判：限流、额度耗尽、5xx、参数问题都只是瞬时故障，
+	// 误禁用会把健康渠道踢出池子。
+	selfHealing := []*types.NewAPIError{
+		{StatusCode: 429, Err: errors.New("rate limit exceeded, please retry after 3 seconds")},
+		{StatusCode: 429, Err: errors.New("API key 额度已用完")},
+		{StatusCode: 500, Err: errors.New("internal server error")},
+		{StatusCode: 502, Err: errors.New("bad response status code 502")},
+		{StatusCode: 400, Err: errors.New("Invalid request: unexpected EOF")},
+		{StatusCode: 400, Err: errors.New("field ReasoningEffort invalid, should be one of: low, medium, high")},
+	}
+	for i, err := range selfHealing {
+		assert.False(t, IsUpstreamModelUnavailableError(err), "case %d 是瞬时故障，不得判为永不恢复: %v", i, err)
+	}
+}
+
+// TestIsUpstreamModelUnavailableError_NoFalsePositives 确认组合判据不误伤。
+func TestIsUpstreamModelUnavailableError_NoFalsePositives(t *testing.T) {
+	unrelated := []*types.NewAPIError{
+		{StatusCode: 404, Err: errors.New("session does not exist")},
+		{StatusCode: 404, Err: errors.New("the requested resource does not exist")},
+		{StatusCode: 404, Err: errors.New("Not Found")},
+	}
+	for i, err := range unrelated {
+		assert.False(t, IsUpstreamModelUnavailableError(err), "case %d 与模型无关，不得判为模型失效: %v", i, err)
+	}
+}
+
+// TestTrackerInflightReturnedOnPanic pins the property the relay retry loop
+// depends on for its panic guard.
+//
+// The loop in controller/relay.go registers `defer lbAttempt.End(false, false)`
+// inside a for body, which is normally a no-op: a defer registered in a loop
+// runs when the *function* exits, not when the iteration does. It is not a
+// no-op on the panic path, because unwinding out of the panicking function is
+// itself a function exit — every iteration's defer runs, in LIFO order, and the
+// panicking attempt's handle is among them.
+//
+// Without that, a panic skips every explicit End on the way out and the
+// channel's inflight slot is never returned: the concurrency budget for that
+// channel is permanently one lower for the life of the process.
+func TestTrackerInflightReturnedOnPanic(t *testing.T) {
+	old := currentPolicy.Load()
+	currentPolicy.Store(testPolicy())
+	defer currentPolicy.Store(old)
+
+	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	const channelID = 7
+
+	// Two attempts succeed normally, the third panics partway through — the
+	// same shape as relay: Begin, do work, End, and the End is skipped when the
+	// work panics.
+	attempts := func() {
+		for i := 0; i < 3; i++ {
+			h := tr.Begin(channelID)
+			defer h.End(false, false)
+			if i == 2 {
+				panic("upstream handler blew up")
+			}
+			h.End(false, false)
+		}
+	}
+
+	func() {
+		defer func() { assert.Equal(t, "upstream handler blew up", recover()) }()
+		attempts()
+	}()
+
+	assert.Equal(t, 0, tr.Inflight(channelID), "a panicking attempt must still return its inflight slot")
+
+	// The same guard must not double-count the attempts that did reach their
+	// own End, or a single panic would inflate the failure count instead.
+	assert.Zero(t, tr.channels[channelID].consecutiveFailures.Load(),
+		"the panic guard must not add breaker failures of its own")
+}

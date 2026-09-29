@@ -137,7 +137,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		// 流结束：上报跟踪。failed 取流状态的真实结果：
 		// 有错误（scanner 错误/超时/panic）或异常结束都算失败，计入硬熔断计数器。
 		// controller 用同一个（幂等）句柄收尾，先到者生效，不会双记。
-		failed := info.StreamStatus.HasErrors() || (!info.StreamStatus.IsNormalEnd() && info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)
+		// 客户端主动断开是下游行为，不算渠道故障。
+		failed := info.StreamStatus.IsUpstreamStreamFault()
 		// 零块流视同失败：上游正常结束却一个内容块都没发，渠道确实没干活。
 		// 判据与下面的 EmptyStreamError 一致，只看块数不看字节数。
 		if !failed && info.StreamStatus.IsNormalEnd() && info.ReceivedResponseCount == 0 {
@@ -370,8 +371,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			if err != io.EOF {
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			// 收尾时我们会主动关闭上游 body 来解除 scanner 的阻塞（cleanup 里的
+			// resp.Body.Close()，以及首字超时定时器里的那次），scanner 随之报出的
+			// 读错误是收尾的副作用而不是上游传输故障。把它记进 ErrorCount 会经
+			// HasErrors() 把「客户端主动断开」升级成「上游流中断」，控制器随即
+			// 熔断一个健康渠道并为一个早已放弃的请求继续换渠道重试。
+			// 收尾方总是先设定终止原因、再关闭 body（主循环与 TTFT 定时器都是
+			// 这个顺序），所以这里读到的原因就是发起收尾的那一方。
+			if teardownOwnedByUs(c, info) {
+				logger.LogDebug(c, "scanner 随收尾退出，不计为流错误: %s", err.Error())
+			} else {
 				logger.LogError(c, "scanner error: "+err.Error())
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 				info.StreamStatus.RecordError(err.Error())
@@ -402,9 +412,15 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
-	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+	switch {
+	case info.StreamStatus.IsClientAbort():
+		// 客户端主动放弃是下游行为，按 Error 记会把正常现象混进故障视图里
+		// （实测一天 112 条，且此前正是靠这些噪声定位到的误熔断）。
+		logger.LogInfo(c, fmt.Sprintf("客户端断开，流终止: %s, received=%d",
+			info.StreamStatus.Summary(), info.ReceivedResponseCount))
+	case info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors():
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
-	} else {
+	default:
 		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	}
 
@@ -429,13 +445,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	// 流中断判断：
-	// 1. 客户端主动断开（ClientGone 或 context 取消）除外，不视为上游错误。
+	// 1. 客户端主动断开除外，不视为上游错误。
 	// 2. 非正常结束（scanner_error、timeout、panic）均为流中断（无论是首字节前还是传输中途）。
 	// 3. handler 异常终止（handler_stop 且有非客户端 end_error）。
 	// 4. 首字节前/未交付任何内容块时出现错误（received == 0 && hasErrors）。
-	isClientGone := info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone ||
-		(c != nil && c.Request != nil && c.Request.Context().Err() != nil) ||
-		(info.StreamStatus.EndError != nil && (errors.Is(info.StreamStatus.EndError, context.Canceled) || strings.Contains(info.StreamStatus.EndError.Error(), "context canceled")))
+	//
+	// 注意这里不能用 IsUpstreamStreamFault()：那个判据回答的是「该不该给这次尝试
+	// 记一次渠道失败」，而这里回答的是「该不该把一个已经正常收尾的流升级成可重试
+	// 的渠道错误」。两者宽窄不同——图片中继会把上游错误事件作为数据帧内联交付后
+	// 正常 EOF 收尾（soft_errors=1, received>0），那是成功路径，不该重试。
+	isClientGone := info.StreamStatus.IsClientAbort() ||
+		(c != nil && c.Request != nil && c.Request.Context().Err() != nil)
 
 	streamBroken := false
 	if !isClientGone {
@@ -458,6 +478,25 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason}
 	}
 	return nil
+}
+
+// teardownOwnedByUs 判断 scanner 退出时的读错误是否由我们自己的收尾动作造成。
+//
+// 我们会在三种时机主动关闭上游 body 来解除 scanner 阻塞：客户端断开、首字超时
+// 定时器到期、数据 handler 判定流已结束（Done/Stop）或 ping 写失败。这几种都
+// 不是上游传输故障，读错误只是关闭 body 的必然反应。
+func teardownOwnedByUs(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if info != nil && info.StreamStatus != nil {
+		switch info.StreamStatus.EndReason {
+		case relaycommon.StreamEndReasonClientGone,
+			relaycommon.StreamEndReasonTimeout,
+			relaycommon.StreamEndReasonHandlerStop,
+			relaycommon.StreamEndReasonDone,
+			relaycommon.StreamEndReasonPingFail:
+			return true
+		}
+	}
+	return c != nil && c.Request != nil && c.Request.Context().Err() != nil
 }
 
 // ToNewAPIError 将 StreamScannerHandler 返回的错误转换为 *types.NewAPIError。

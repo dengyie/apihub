@@ -1,12 +1,14 @@
 package model
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -389,4 +391,50 @@ func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChannelCandidatesRetryLeavesStickyChannel pins the boundary between
+// sticky routing and channel failover.
+//
+// Sticky routing hashes the prompt prefix to a fixed index so repeat requests
+// hit one channel and reuse the upstream prompt cache. That is the right
+// behaviour for the first attempt and exactly wrong for a retry: after a
+// channel fails, "pick consistently" means "pick the channel that just failed
+// again", deterministically, for every remaining retry in the budget.
+//
+// It used to happen because the retry index was clamped into range before the
+// sticky check. A pool with a single priority tier has len(tiers)==1, so every
+// retry>0 was clamped back to 0 and re-entered the sticky branch.
+func TestChannelCandidatesRetryLeavesStickyChannel(t *testing.T) {
+	priority := int64(10)
+	// Weight 0 on the sticky channel and 100 on the other one makes the
+	// weighted-random branch deterministic: with sumWeight=100 the zero-weight
+	// channel never wins the draw. Without the fix this test would instead get
+	// the sticky channel every time, so the assertion below discriminates.
+	stickyWeight := uint(0)
+	otherWeight := uint(100)
+	candidates := &ChannelCandidates{channels: []*Channel{
+		{Id: 1, Priority: &priority, Weight: &stickyWeight},
+		{Id: 2, Priority: &priority, Weight: &otherWeight},
+	}}
+
+	// Pick a prompt prefix whose sticky index is the first channel, so that a
+	// retry which wrongly reuses sticky routing is visibly returning channel 1.
+	stickyKey := ""
+	for i := 0; i < 1000 && stickyKey == ""; i++ {
+		if key := fmt.Sprintf("prompt-%d", i); loadbalancer.StickyIndex(key, 2) == 0 {
+			stickyKey = key
+		}
+	}
+	require.NotEmpty(t, stickyKey, "no sticky key maps to index 0 of a 2-channel tier")
+
+	assert.Equal(t, 1, candidates.Pick(0, nil, stickyKey).Id, "first attempt must honour sticky routing")
+	assert.Equal(t, 2, candidates.Pick(1, nil, stickyKey).Id, "a retry must leave the sticky channel it failed on")
+	assert.Equal(t, 2, candidates.Pick(3, nil, stickyKey).Id, "clamping into range must not re-arm sticky routing")
+
+	// A retry still lands on a usable channel when the sticky one is excluded,
+	// and a pool of one still resolves rather than dead-ending the retry loop.
+	assert.Equal(t, 2, candidates.Pick(1, map[int]struct{}{1: {}}, stickyKey).Id)
+	sole := &ChannelCandidates{channels: []*Channel{{Id: 9, Priority: &priority, Weight: &otherWeight}}}
+	assert.Equal(t, 9, sole.Pick(2, nil, stickyKey).Id, "exhausting the sticky preference must not return nil")
 }

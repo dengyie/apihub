@@ -545,9 +545,19 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	fastFirst := seedPollingTask(t, fastChannelID, "task_public_fast_1", "upstream_fast_parallel_1")
 	fastSecond := seedPollingTask(t, fastChannelID, "task_public_fast_2", "upstream_fast_parallel_2")
 
+	// Snapshot the upstream IDs before the poller goroutine starts. The poller
+	// writes these very structs back through GORM — UpdateWithStatus issues
+	// Select("*").Updates(t), which assigns every converted column onto *t —
+	// so a GetUpstreamTaskID() call made while it runs reads fields another
+	// goroutine is writing. The IDs are fixed inputs, so capturing them up
+	// front costs nothing and keeps the assertions off the shared structs.
+	slowUpstreamID := slowTask.GetUpstreamTaskID()
+	fastFirstUpstreamID := fastFirst.GetUpstreamTaskID()
+	fastSecondUpstreamID := fastSecond.GetUpstreamTaskID()
+
 	adaptor := &taskPollingFetchAdaptor{
 		fetched:      make(chan string, 4),
-		blockTaskID:  slowTask.GetUpstreamTaskID(),
+		blockTaskID:  slowUpstreamID,
 		blockStarted: make(chan struct{}),
 		releaseBlock: make(chan struct{}),
 	}
@@ -565,17 +575,12 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	errCh := make(chan error, 1)
 	gopool.Go(func() {
 		errCh <- UpdateVideoTasks(context.Background(), constant.TaskPlatform("kling"), map[int][]string{
-			slowChannelID: {
-				slowTask.GetUpstreamTaskID(),
-			},
-			fastChannelID: {
-				fastFirst.GetUpstreamTaskID(),
-				fastSecond.GetUpstreamTaskID(),
-			},
+			slowChannelID: {slowUpstreamID},
+			fastChannelID: {fastFirstUpstreamID, fastSecondUpstreamID},
 		}, map[string]*model.Task{
-			slowTask.GetUpstreamTaskID():   slowTask,
-			fastFirst.GetUpstreamTaskID():  fastFirst,
-			fastSecond.GetUpstreamTaskID(): fastSecond,
+			slowUpstreamID:       slowTask,
+			fastFirstUpstreamID:  fastFirst,
+			fastSecondUpstreamID: fastSecond,
 		})
 	})
 
@@ -588,16 +593,16 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	require.Eventually(t, func() bool {
 		fetchedTaskIDs := adaptor.fetchedTaskIDs()
 		return len(fetchedTaskIDs) == 2 &&
-			fetchedTaskIDs[0] == fastFirst.GetUpstreamTaskID() &&
-			fetchedTaskIDs[1] == fastSecond.GetUpstreamTaskID()
+			fetchedTaskIDs[0] == fastFirstUpstreamID &&
+			fetchedTaskIDs[1] == fastSecondUpstreamID
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
 	releaseBlockedTask()
 	require.NoError(t, <-errCh)
 	assert.ElementsMatch(t, []string{
-		slowTask.GetUpstreamTaskID(),
-		fastFirst.GetUpstreamTaskID(),
-		fastSecond.GetUpstreamTaskID(),
+		slowUpstreamID,
+		fastFirstUpstreamID,
+		fastSecondUpstreamID,
 	}, adaptor.fetchedTaskIDs())
 }
 

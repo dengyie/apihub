@@ -451,3 +451,95 @@ func TestSelectChannelForRequestFallsBackToNormalizedModelName(t *testing.T) {
 	require.NotNil(t, selected)
 	assert.Equal(t, 7401, selected.Id)
 }
+
+// The retry path is what "fail over to another channel" actually means, and it
+// used to run the bare CacheGetRandomSatisfiedChannel. That helper only resolves
+// by group/priority/weight: it never read use_channel and never consulted the
+// loadbalancer. So the channel that had just failed stayed in the running, and
+// with sticky routing on — the production default for chat traffic — the same
+// StickyKey deterministically selected it again, burning the whole retry budget
+// on one known-bad channel.
+func TestSelectRetryChannelLeavesTheFailedChannel(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-retry-not-sticky-model"
+
+	const chID1, chID2 = 7301, 7302
+	createTestChannelForSelect(t, db, chID1, "default", modelName)
+	createTestChannelForSelect(t, db, chID2, "default", modelName)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	// A sticky key landing on the first channel of the tier, so a retry that
+	// wrongly reuses sticky routing visibly returns the channel that failed.
+	stickyKey := ""
+	for i := 0; i < 1000 && stickyKey == ""; i++ {
+		if key := fmt.Sprintf("prompt-%d", i); loadbalancer.StickyIndex(key, 2) == 0 {
+			stickyKey = key
+		}
+	}
+	require.NotEmpty(t, stickyKey)
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	retry.StickyKey = stickyKey
+	// use_channel is the authoritative record of what this request already
+	// tried: the first attempt appended its channel through
+	// SetupContextForSelectedChannel.
+	c.Set("use_channel", []string{fmt.Sprintf("%d", chID1)})
+	retry.SetRetry(1)
+
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, chID2, selected.Id, "a retry must not land on the channel that just failed")
+	assert.Contains(t, retry.ExcludedIDs, chID1, "a failed channel stays excluded for the remaining attempts")
+}
+
+// The retry path has to honour the breaker too. Without it a channel whose
+// breaker is open is still eligible, so the very next attempt can be spent on
+// the channel that was just confirmed unhealthy.
+func TestSelectRetryChannelSkipsUnhealthyChannels(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-retry-skips-breaker-model"
+
+	const chID1, chID2, chID3 = 7311, 7312, 7313
+	createTestChannelForSelect(t, db, chID1, "default", modelName)
+	createTestChannelForSelect(t, db, chID2, "default", modelName)
+	createTestChannelForSelect(t, db, chID3, "default", modelName)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 3600, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	tracker := loadbalancer.GlobalTracker()
+	tracker.TripBreaker(chID1)
+	tracker.TripBreaker(chID2)
+
+	_, retry := newSelectRetryParam(modelName, nil)
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, chID3, selected.Id, "a retry must not spend an attempt on a channel whose breaker is open")
+
+	// With every candidate tripped there is nothing left to try. Returning nil
+	// is what lets the caller stop cleanly instead of calling a known-bad
+	// channel one more time.
+	tracker.TripBreaker(chID3)
+	_, retry2 := newSelectRetryParam(modelName, nil)
+	selected, _, err = SelectRetryChannel(retry2)
+	require.NoError(t, err)
+	assert.Nil(t, selected, "an all-unhealthy pool must report exhaustion, not a channel")
+}

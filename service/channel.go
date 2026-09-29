@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -60,6 +61,12 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	}
 	if err == nil {
 		return false
+	}
+	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
+	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
+	// 覆盖不到 404「模型不存在」这类返回码。
+	if loadbalancer.IsUpstreamModelUnavailableError(err) {
+		return true
 	}
 	if types.IsChannelError(err) {
 		return true

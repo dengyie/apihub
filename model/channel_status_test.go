@@ -1,6 +1,8 @@
 package model
 
 import (
+	"errors"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -86,7 +88,7 @@ func TestSaveStatusStateFromSingleKeySnapshotPreservesUnownedColumns(t *testing.
 		"status_reason": "manual operation",
 		"status_time":   int64(1234),
 	})
-	require.NoError(t, stale.saveStatusState())
+	require.NoError(t, stale.saveStatusState(DB))
 
 	var stored Channel
 	require.NoError(t, DB.First(&stored, channel.Id).Error)
@@ -99,4 +101,49 @@ func TestSaveStatusStateFromSingleKeySnapshotPreservesUnownedColumns(t *testing.
 	otherInfo := stored.GetOtherInfo()
 	assert.Equal(t, "manual operation", otherInfo["status_reason"])
 	assert.Equal(t, float64(1234), otherInfo["status_time"])
+}
+
+// TestUpdateChannelStatusRollsBackWhenAbilitiesWriteFails 证明 channels 与
+// abilities 写在同一个事务里。
+//
+// 这两张表是同一份事实的两张表。之前 abilities 的更新挂在 defer 上、失败只打
+// 日志（common.SysLog），于是 channels.status 已经禁用、abilities.enabled 仍为
+// true 的漂移可以永久留存：数据库选路读到那条陈旧的 enabled 能力行，就会继续
+// 选中一个已经禁用的渠道。读路径的二次校验只能兜住这一次，写路径才是根因。
+func TestUpdateChannelStatusRollsBackWhenAbilitiesWriteFails(t *testing.T) {
+	setupChannelStatusTest(t)
+
+	channel := Channel{
+		Name:        "transactional-status",
+		Key:         "key",
+		Status:      common.ChannelStatusEnabled,
+		Models:      "tx-model",
+		Group:       "default",
+		ChannelInfo: ChannelInfo{},
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+	require.NoError(t, DB.Create(&Ability{Group: "default", Model: "tx-model", ChannelId: channel.Id, Enabled: true}).Error)
+
+	// 让 abilities 更新失败：只在下一条 ability 更新上报错。
+	injected := errors.New("injected abilities write failure")
+	var once sync.Once
+	const name = "test:fail_ability_update"
+	require.NoError(t, DB.Callback().Update().After("gorm:update").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table == "abilities" {
+			once.Do(func() { tx.AddError(injected) })
+		}
+	}))
+	t.Cleanup(func() { _ = DB.Callback().Update().Remove(name) })
+
+	changed := UpdateChannelStatus(channel.Id, "", common.ChannelStatusAutoDisabled, "upstream auth rejected")
+	assert.False(t, changed, "事务失败必须让整次状态变更失败")
+
+	var stored Channel
+	require.NoError(t, DB.First(&stored, channel.Id).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, stored.Status,
+		"abilities 写失败时 channels.status 必须回滚，否则两张表漂移")
+
+	var ability Ability
+	require.NoError(t, DB.Where("channel_id = ?", channel.Id).First(&ability).Error)
+	assert.True(t, ability.Enabled, "回滚后能力行必须保持原状")
 }

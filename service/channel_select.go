@@ -240,6 +240,63 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	return newChannelCandidates(param).resolve()
 }
 
+// SelectRetryChannel 为「换渠道重试」挑选下一个渠道。
+//
+// 重试路径此前直接调用 CacheGetRandomSatisfiedChannel，而它只按分组/优先级/
+// 权重选路，比首轮选路少了两道过滤，于是「换渠道重试」在很多部署里名不副实：
+//
+//  1. 不知道本请求已经用过哪些渠道。RetryParam.ExcludedIDs 在重试路径上从未被
+//     填充，唯一的真实记录 use_channel（每次 SetupContextForSelectedChannel 追加）
+//     只有首轮选路的 SelectChannelForRequest 会读。所以刚失败的那个渠道在下一轮
+//     仍然在候选池里，而配合 sticky 路由（同一 StickyKey → 同一索引）就是
+//     确定性地再打一次同一个坏渠道。
+//  2. 不看负载均衡状态。熔断已打开、并发已打满的渠道照样会被选中，于是首轮刚
+//     确认失败的渠道下一轮又回来了，熔断形同虚设。
+//
+// 排除集写回 param 并跨轮次累积：一个渠道只要在本请求内被证明不可用（试过了或
+// 被 tracker 判死），后续轮次就不再参与。终止性由 Pick 保证——候选被排除干净时
+// 它返回 nil，resolve 随之返回「无可用渠道」错误，循环最迟在候选耗尽的那一轮
+// 结束，无需人为设定尝试上限。
+func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
+	if param == nil || param.Ctx == nil {
+		return nil, "", errors.New("retry param is nil")
+	}
+
+	// 本请求已试过的渠道。use_channel 记录每一次 SetupContextForSelectedChannel
+	// 的结果，首轮由中间件写入、重试轮由 getChannel 追加。
+	used := param.Ctx.GetStringSlice("use_channel")
+	if len(used) > 0 || param.ExcludedIDs == nil {
+		excluded := make(map[int]struct{}, len(used)+len(param.ExcludedIDs))
+		for id := range param.ExcludedIDs {
+			excluded[id] = struct{}{}
+		}
+		for _, idStr := range used {
+			var id int
+			if _, parseErr := fmt.Sscanf(idStr, "%d", &id); parseErr == nil && id > 0 {
+				excluded[id] = struct{}{}
+			}
+		}
+		param.ExcludedIDs = excluded
+	}
+
+	tracker := loadbalancer.GlobalTracker()
+	for {
+		channel, selectGroup, err := CacheGetRandomSatisfiedChannel(param)
+		if err != nil {
+			return nil, selectGroup, err
+		}
+		if channel == nil {
+			return nil, selectGroup, nil
+		}
+		if ok, reason := tracker.IsAvailable(channel.Id); !ok {
+			logger.LogDebug(param.Ctx, "loadbalancer: retry 跳过渠道 #%d (%s)", channel.Id, reason)
+			param.ExcludedIDs[channel.Id] = struct{}{}
+			continue
+		}
+		return channel, selectGroup, nil
+	}
+}
+
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
 	if c == nil || expected == "" {
 		return nil, nil

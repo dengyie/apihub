@@ -225,3 +225,51 @@ func TestStreamStatus_Summary_NilSafe(t *testing.T) {
 	var s *StreamStatus
 	assert.Equal(t, "StreamStatus<nil>", s.Summary())
 }
+
+// TestStreamStatus_ClientAbortIsNotAnUpstreamFault 复刻生产上真实观测到的状态：
+// 客户端断开后我们收尾关闭上游 body，scanner 记下一条读错误，于是
+// EndReason=client_gone 且 ErrorCount=1。这必须仍然不算上游渠道故障。
+//
+// 回归背景：控制器曾用「HasErrors() || (!IsNormalEnd() && EndReason != ClientGone)」
+// 判定流中断，HasErrors() 那一支没有客户端断开豁免，而 hasErrorsLocked 的豁免又
+// 只写在 EndError 分支上、被前面的 ErrorCount>0 短路。结果是用户按 ESC 放弃
+// 请求就会熔断一个健康渠道，并为这个死掉的请求继续换渠道重试（实测一天 112 次
+// 误熔断、35 次白烧的上游调用）。
+func TestStreamStatus_ClientAbortIsNotAnUpstreamFault(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonClientGone, context.Canceled)
+	// 收尾期我们自己关闭 body 产生的读错误
+	s.RecordError("http: read on closed response body")
+
+	assert.True(t, s.IsClientAbort(), "precondition: EndReason=client_gone")
+	assert.False(t, s.IsUpstreamStreamFault(),
+		"客户端断开即使带有收尾读错误也不得算作上游流故障")
+}
+
+// TestStreamStatus_UpstreamFaultStillDetected 确认收敛判据没有把真故障一起放过。
+func TestStreamStatus_UpstreamFaultStillDetected(t *testing.T) {
+	t.Parallel()
+
+	scannerErr := NewStreamStatus()
+	scannerErr.SetEndReason(StreamEndReasonScannerErr, fmt.Errorf("INTERNAL_ERROR"))
+	scannerErr.RecordError("stream error: stream ID 5; INTERNAL_ERROR")
+	assert.True(t, scannerErr.IsUpstreamStreamFault(), "scanner 错误是上游故障")
+
+	ttft := NewStreamStatus()
+	ttft.SetEndReason(StreamEndReasonTimeout, nil)
+	assert.True(t, ttft.IsUpstreamStreamFault(), "首字超时是上游故障")
+
+	truncated := NewStreamStatus()
+	truncated.SetEndReason(StreamEndReasonEOF, nil)
+	truncated.RecordError("error processing stream token data")
+	assert.True(t, truncated.IsUpstreamStreamFault(), "带软错误的中途截断是上游故障")
+
+	clean := NewStreamStatus()
+	clean.SetEndReason(StreamEndReasonDone, nil)
+	assert.False(t, clean.IsUpstreamStreamFault(), "正常结束不是故障")
+
+	var nilStatus *StreamStatus
+	assert.False(t, nilStatus.IsUpstreamStreamFault())
+	assert.False(t, nilStatus.IsClientAbort())
+}

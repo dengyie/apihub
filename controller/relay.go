@@ -219,6 +219,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 虚设。句柄存入 context 供 StreamScannerHandler 复用同一个计数器。
 		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
+		// panic 兜底：保证 inflight 一定归还。
+		//
+		// defer 写在 for 循环里通常是函数级、看着没用，但 panic 展开本身就是
+		// 一次函数退出——所有迭代注册的 defer 都会按 LIFO 执行，其中自然包含
+		// 正在 panic 的那次尝试。End 自身用 done.Swap 幂等，所以正常路径上这
+		// 若干次调用全是空操作，不会双记熔断计数。
+		//
+		// 没有这条兜底时，panic 会跳过下面所有显式 End 而直接冲到外层 recover
+		// （文本路径）或 gin 的 Recovery 中间件（任务路径），inflight 就此不归
+		// 还：该渠道的 MaxInflight 永久少一个槽，直到进程结束为止。
+		defer lbAttempt.End(false, false)
 		service.AppendUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			// 计费准备失败发生在请求上游之前，渠道本身无过错
@@ -253,7 +264,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
-			if relayInfo.StreamStatus != nil && (relayInfo.StreamStatus.HasErrors() || (!relayInfo.StreamStatus.IsNormalEnd() && relayInfo.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone)) {
+			// 客户端主动断开不是上游渠道故障：不得据此熔断渠道，也不得为一个
+			// 已经离开的接收方继续重试。判据统一走 StreamStatus.IsUpstreamStreamFault。
+			if relayInfo.StreamStatus.IsUpstreamStreamFault() {
 				streamErr := types.NewErrorWithStatusCode(
 					&loadbalancer.StreamBrokenError{
 						ChannelID: channel.Id,
@@ -341,6 +354,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if decision.Action != "retry" {
 			break
 		}
+		// 客户端已经断开：换渠道重试只是为一个不在的接收方消耗真实上游额度。
+		// 该记的账在上面已经记完（RecordPolicyFailure / 熔断 / processChannelError），
+		// 这里只停重试——渠道该坏还是坏，只是不再为一个死掉的请求去烧钱。
+		if c.Request != nil && c.Request.Context().Err() != nil {
+			logger.LogInfo(c, "客户端已断开，停止重试")
+			break
+		}
 	}
 
 	// 整轮重试都失败时，结算最后一次中断流的部分产出。客户端已经收到了这份输出，
@@ -415,7 +435,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
 		return channel, nil
 	}
-	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
+	channel, selectGroup, err := service.SelectRetryChannel(retryParam)
 	if err != nil {
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
@@ -673,6 +693,9 @@ func executeTaskSubmissionWith(
 		// 智能负载：任务提交同样计入 inflight（见 Relay 中的同名注释）
 		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
+		// panic 兜底，理由见 Relay 中的同名注释。任务提交路径没有自己的
+		// recover，panic 由 gin 的 Recovery 中间件接住，所以这条更必要。
+		defer lbAttempt.End(false, false)
 		service.AppendUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {

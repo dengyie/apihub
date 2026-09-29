@@ -220,12 +220,17 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 	return nil
 }
 
-func UpdateAbilityStatus(channelId int, status bool) error {
-	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
+// UpdateAbilityStatus keeps the abilities projection of one channel in step
+// with channels.status. The db handle is a parameter so callers can commit both
+// writes in one transaction; a half-applied status change leaves a disabled
+// channel with a live enabled ability row, and the database selection path
+// would then keep picking it.
+func UpdateAbilityStatus(tx *gorm.DB, channelId int, status bool) error {
+	return tx.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
 }
 
-func UpdateAbilityStatusByTag(tag string, status bool) error {
-	return DB.Model(&Ability{}).Where("tag = ?", tag).Select("enabled").Update("enabled", status).Error
+func UpdateAbilityStatusByTag(tx *gorm.DB, tag string, status bool) error {
+	return tx.Model(&Ability{}).Where("tag = ?", tag).Select("enabled").Update("enabled", status).Error
 }
 
 func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uint) error {

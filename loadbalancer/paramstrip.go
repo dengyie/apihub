@@ -407,3 +407,37 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 	}
 	return false
 }
+
+// IsUpstreamModelUnavailableError 判断是否为「这个渠道永远不会好」的上游失效。
+//
+// 与 IsUpstreamRelayError 那一类瞬时故障的区别：那些换个时间/换个渠道就好，
+// 熔断一小时后自动恢复即可；这里的两类不会自愈，重试再多次也是同样结果，
+// 于是每一次命中都要白白消耗一整轮换渠道重试预算：
+//
+//  1. 模型映射失效：渠道声明的某个模型在上游已不存在（"模型不存在"、
+//     "model not found"、"unknown model"、"no such model"）。生产实测一天 101 次，
+//     集中在 4 个渠道上，且默认自动禁用状态码只有 401，这些渠道永远不会下线。
+//  2. OAuth 凭据刷新失效："oauth2: cannot fetch token"，refresh token 已被上游
+//     撤销或过期，渠道再也无法取得访问令牌。
+//
+// 判据刻意保守：只认上游明确表达的确定性失效，不含 5xx、限流、额度耗尽——
+// 那三类都会随时间自愈，误禁用会把健康渠道踢出池子。
+func IsUpstreamModelUnavailableError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "模型不存在") ||
+		strings.Contains(msg, "模型不可用") ||
+		strings.Contains(msg, "model not found") ||
+		strings.Contains(msg, "model_not_found") ||
+		strings.Contains(msg, "unknown model") ||
+		strings.Contains(msg, "no such model") ||
+		// "The model `x` does not exist" 这类措辞只有和 model 同时出现才算数：
+		// 单独的 "does not exist" 会把 "session does not exist" 之类的无关 404 一起误伤。
+		(strings.Contains(msg, "does not exist") && strings.Contains(msg, "model")) ||
+		strings.Contains(msg, "cannot fetch token") {
+		return true
+	}
+	return false
+}

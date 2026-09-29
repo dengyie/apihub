@@ -229,6 +229,45 @@ func (s *StreamStatus) TotalErrorCount() int {
 	return s.ErrorCount
 }
 
+// IsClientAbort 判断本次流是否因客户端主动断开而结束。
+//
+// 客户端断开是下游行为而不是上游渠道故障：它既不该计入熔断计数，也不该触发
+// 换渠道重试，更不该把一个健康渠道判成「上游流中断」而立即熔断。
+//
+// 这个判据此前在三处各写一遍且彼此不等价——hasErrorsLocked 只在 EndError 分支
+// 豁免（被前面的 ErrorCount>0 短路掉）、流扫描器的两处又各自拼一遍 context
+// canceled 字符串匹配。三处判据不一致导致客户端取消被误判成上游流故障：
+// 收尾期我们自己关闭上游 body 产生的读错误记入 ErrorCount，hasErrorsLocked
+// 随之返回 true，控制器把它升级成 StreamBrokenError 并立即熔断健康渠道。
+// 收敛成唯一判据，消掉这一类不一致。
+func (s *StreamStatus) IsClientAbort() bool {
+	if s == nil {
+		return false
+	}
+	if s.EndReason == StreamEndReasonClientGone {
+		return true
+	}
+	return s.EndError != nil && errors.Is(s.EndError, context.Canceled)
+}
+
+// IsUpstreamStreamFault 判断本次流是否应被归因为上游渠道的传输故障——即该不该
+// 计入熔断计数、该不该换一个渠道重试。
+//
+// 这是唯一判据。此前 controller 与流扫描器各写了一遍等价逻辑而彼此不等价：
+// controller 那份的软错误分支漏掉了客户端断开豁免，于是收尾期我们自己关闭上游
+// body 产生的读错误会把「客户端按 ESC 放弃」升级成「上游流中断」，实测一天误
+// 熔断 112 次健康渠道并为 35 个已死请求各多烧一次真实上游调用。任何新增的流
+// 终止路径都必须走这里，不要再自己拼条件。
+func (s *StreamStatus) IsUpstreamStreamFault() bool {
+	if s == nil {
+		return false
+	}
+	if s.IsClientAbort() {
+		return false
+	}
+	return s.HasErrors() || !s.IsNormalEnd()
+}
+
 func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true

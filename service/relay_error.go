@@ -33,9 +33,6 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if GetChannelConstraints(c).SuppressesRetry() {
 		return PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}
 	}
-	if types.IsChannelError(err) {
-		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
-	}
 	// skipRetry 是错误构造点留下的「此错误重试无意义」显式标记（本地参数校验、
 	// 额度不足、令牌无权使用该模型等），必须先于负载类启发式判断。否则任何命中
 	// 启发式的本地错误都会被反复换渠道重试：例如网关自身的 403（令牌模型白名单
@@ -50,9 +47,21 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
 	}
-	// 智能负载：首字超时视为可重试，触发切换到下一个渠道
+	// 智能负载：首字超时视为可重试，触发切换到下一个渠道。
+	//
+	// 必须排在 IsChannelError 之前：TTFT 超时的错误码是
+	// ErrorCodeChannelResponseTimeExceeded = "channel:response_time_exceeded"，
+	// 而 IsChannelError 判的就是 "channel:" 前缀，所以放在它后面这个分支永远
+	// 走不到——既丢掉了 ttft_timeout 这个可观测的原因，也把上面两道闸门
+	// （skipRetry 标记、重试预算）一并绕过了：TTFT 超时可以在预算耗尽后继续换
+	// 渠道重试，无限循环在只有一个渠道的分组上。
 	if loadbalancer.IsTTFTTimeout(err) {
 		return PolicyDecision{Action: "retry", Reason: "ttft_timeout", Source: "loadbalancer"}
+	}
+	// 其余 "channel:" 前缀错误（模型映射失效、参数/请求头覆写非法、密钥无效、
+	// AWS 客户端错误等）：换渠道重试。上面的 skipRetry 与预算闸门对它们同样有效。
+	if types.IsChannelError(err) {
+		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
 	}
 	// 智能负载：空流视同渠道失败，换渠道重试（客户端尚未收到任何数据）
 	if loadbalancer.IsEmptyStream(err) {

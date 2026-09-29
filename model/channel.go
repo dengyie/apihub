@@ -356,7 +356,11 @@ func (channel *Channel) Save() error {
 // saveStatusState persists only the fields owned by the channel status flow.
 // Keeping this allowlist here prevents a stale channel snapshot from
 // overwriting credentials, accounting counters, or channel configuration.
-func (channel *Channel) saveStatusState() error {
+//
+// The db handle is a parameter so the status change and its abilities
+// projection can commit in one transaction — the two tables are one fact and
+// must not be able to diverge.
+func (channel *Channel) saveStatusState(tx *gorm.DB) error {
 	if channel.Id == 0 {
 		return errors.New("channel ID is 0")
 	}
@@ -367,7 +371,7 @@ func (channel *Channel) saveStatusState() error {
 	if channel.ChannelInfo.IsMultiKey {
 		updates["channel_info"] = channel.ChannelInfo
 	}
-	return DB.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
+	return tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
 }
 
 func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool, sortOptions ...ChannelSortOptions) ([]*Channel, error) {
@@ -772,14 +776,6 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	}
 
 	shouldUpdateAbilities := false
-	defer func() {
-		if shouldUpdateAbilities {
-			err := UpdateAbilityStatus(channelId, status == common.ChannelStatusEnabled)
-			if err != nil {
-				common.SysLog(fmt.Sprintf("failed to update ability status: channel_id=%d, error=%v", channelId, err))
-			}
-		}
-	}()
 	channel, err := GetChannelById(channelId, true)
 	if err != nil {
 		return false
@@ -807,9 +803,22 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			channel.Status = status
 			shouldUpdateAbilities = true
 		}
-		err = channel.saveStatusState()
+
+		// channels 与 abilities 是同一份事实的两张表，必须同生共死。
+		// 此前 abilities 的更新挂在 defer 上、失败只打日志，两张表因此可以永久
+		// 漂移：channels 已禁用而 abilities 仍是 enabled，生产实测会让已禁用的
+		// 渠道继续被选中（读路径的二次校验只能兜住这一次，写路径才是根因）。
+		err = DB.Transaction(func(tx *gorm.DB) error {
+			if err := channel.saveStatusState(tx); err != nil {
+				return err
+			}
+			if shouldUpdateAbilities {
+				return UpdateAbilityStatus(tx, channelId, status == common.ChannelStatusEnabled)
+			}
+			return nil
+		})
 		if err != nil {
-			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
+			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channelId, status, err))
 			return false
 		}
 	}
@@ -817,12 +826,12 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 }
 
 func EnableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error
-	if err != nil {
-		return err
-	}
-	err = UpdateAbilityStatusByTag(tag, true)
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error; err != nil {
+			return err
+		}
+		return UpdateAbilityStatusByTag(tx, tag, true)
+	})
 }
 
 func DisableChannelByTag(tag string) error {
@@ -839,12 +848,13 @@ func DisableChannelByTag(tag string) error {
 			}
 		}
 	}
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
-	if err != nil {
-		return err
-	}
-	err = UpdateAbilityStatusByTag(tag, false)
-	return err
+	// 与 EnableChannelByTag 同理：状态与 abilities 投影同生共死。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error; err != nil {
+			return err
+		}
+		return UpdateAbilityStatusByTag(tx, tag, false)
+	})
 }
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
