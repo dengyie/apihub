@@ -62,8 +62,8 @@ func TestShouldRetryByStatusCode(t *testing.T) {
 
 	require.True(t, ShouldRetryByStatusCode(429))
 	require.True(t, ShouldRetryByStatusCode(500))
-	require.False(t, ShouldRetryByStatusCode(504))
-	require.False(t, ShouldRetryByStatusCode(524))
+	require.True(t, ShouldRetryByStatusCode(504))
+	require.True(t, ShouldRetryByStatusCode(524))
 	require.False(t, ShouldRetryByStatusCode(400))
 	require.False(t, ShouldRetryByStatusCode(200))
 }
@@ -75,13 +75,17 @@ func TestShouldRetryByStatusCode_DefaultMatchesLegacyBehavior(t *testing.T) {
 	require.False(t, ShouldRetryByStatusCode(408))
 	require.True(t, ShouldRetryByStatusCode(429))
 	require.True(t, ShouldRetryByStatusCode(500))
-	require.False(t, ShouldRetryByStatusCode(504))
-	require.False(t, ShouldRetryByStatusCode(524))
+	// 504/524 曾随上游遗留实现对慢上游网关超时（Cloudflare 504/524）永不重试。
+	// 生产实证（v29.3 部署后 1 小时 15 次终态 502）证明这类失败换渠道即可恢复，
+	// 且客户端断开守卫与即时熔断已封住双倍等待的代价，故放开为可重试。
+	require.True(t, ShouldRetryByStatusCode(504))
+	require.True(t, ShouldRetryByStatusCode(524))
 	require.True(t, ShouldRetryByStatusCode(599))
 }
 
 func TestIsAlwaysSkipRetryStatusCode(t *testing.T) {
-	require.True(t, IsAlwaysSkipRetryStatusCode(504))
-	require.True(t, IsAlwaysSkipRetryStatusCode(524))
+	// 必跳过清单默认为空：不再有绕过一切启发式的状态码。保留机制供将来配置。
+	require.False(t, IsAlwaysSkipRetryStatusCode(504))
+	require.False(t, IsAlwaysSkipRetryStatusCode(524))
 	require.False(t, IsAlwaysSkipRetryStatusCode(500))
 }
