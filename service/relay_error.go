@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,6 +18,27 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 )
+
+// IsClientAbort 判断本次失败是否由客户端主动断开引起。
+//
+// 取消是下游行为，不是渠道故障。判据用请求级事实，不依赖错误链——
+// OpenAIError 构造经常丢掉 Unwrap。DeadlineExceeded 是网关预算 / TTFT，
+// 不得当成 abort。
+func IsClientAbort(c *gin.Context, relayInfo *relaycommon.RelayInfo, err error) bool {
+	if types.IsClientAbortedError(err) {
+		return true
+	}
+	if relayInfo != nil && relayInfo.StreamStatus != nil && relayInfo.StreamStatus.IsClientAbort() {
+		return true
+	}
+	if c != nil && c.Request != nil && c.Request.Context() != nil {
+		ctxErr := c.Request.Context().Err()
+		if ctxErr != nil && errors.Is(ctxErr, context.Canceled) {
+			return true
+		}
+	}
+	return false
+}
 
 // DecideRelayRetry is the single retry decision for relay attempts. The reason
 // is recorded in the request policy decision events of the log details.
@@ -40,6 +63,12 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	// 故障，白白烧完整轮重试预算、消耗半开探测配额，最后返回的还是同一个 403。
 	// 负载类错误（TTFT 超时/空流/断流）由 ToNewAPIError 构造，从不携带该标记，
 	// 因此前移不影响它们的换渠道重试。
+	if types.IsClientAbortedError(err) {
+		return PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}
+	}
+	if loadbalancer.IsEmptyStreamBudget(err) {
+		return PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}
+	}
 	if types.IsSkipRetryError(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}
 	}
@@ -98,17 +127,21 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
 		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
-	// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
-	if loadbalancer.IsThinkingModeHistoryError(err) {
-		return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
-	}
-	// 智能负载：上游中继站报告代理异常（如 "来自上游渠道的报错: bad response status code 400"，换渠道重试）
-	if loadbalancer.IsUpstreamRelayError(err) {
-		return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
-	}
-	if operation_setting.ShouldRetryByStatusCode(code) {
-		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
-	}
+		// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
+		if loadbalancer.IsThinkingModeHistoryError(err) {
+			return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
+		}
+		// 智能负载：上游中继站报告代理异常（如 "来自上游渠道的报错: bad response status code 400"，换渠道重试）
+		if loadbalancer.IsUpstreamRelayError(err) {
+			return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
+		}
+		if operation_setting.ShouldRetryByStatusCode(code) {
+			return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
+		}
+		// 智能负载：上游限流/并发超限（如 400 包装的并发限制、RPM 限流），换渠道重试
+		if loadbalancer.IsUpstreamRateLimitError(err) {
+			return PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}
+		}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
 }
 

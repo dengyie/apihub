@@ -34,6 +34,9 @@ type ChannelStats struct {
 	degradedUntil atomic.Int64
 	// consecutiveSlowCount 连续慢请求计数（不含硬失败），用于触发降级
 	consecutiveSlowCount atomic.Int32
+	// consecutiveEmptyStreams 连续空流计数。达到 empty_stream_trip_threshold
+	// 后熔断该渠道（不自动禁用）；一次非空流成功清零。
+	consecutiveEmptyStreams atomic.Int32
 	// halfOpenProbes 半开状态已放行的探测数
 	halfOpenProbes atomic.Int32
 	// halfOpenSince 本轮半开的起始时刻（Unix 纳秒），0=未进入过半开。
@@ -121,6 +124,40 @@ func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 	s.halfOpenSince.Store(0)
 }
 
+// RecordEmptyStream 记一次该渠道的空流。连续达到阈值则熔断（只熔断不禁用）。
+// 阈值 ≤0 时关闭。成功一次非空流应调用 ClearEmptyStream。
+func (t *Tracker) RecordEmptyStream(channelID int) {
+	if !Enabled() || channelID <= 0 {
+		return
+	}
+	threshold := GetEmptyStreamTripThreshold()
+	if threshold <= 0 {
+		return
+	}
+	s := t.getOrCreate(channelID)
+	n := s.consecutiveEmptyStreams.Add(1)
+	if int(n) >= threshold {
+		t.TripBreaker(channelID)
+		s.consecutiveEmptyStreams.Store(0)
+	}
+}
+
+// ClearEmptyStream 渠道一次非空流成功后清零连续空流计数。
+func (t *Tracker) ClearEmptyStream(channelID int) {
+	if channelID <= 0 {
+		return
+	}
+	t.getOrCreate(channelID).consecutiveEmptyStreams.Store(0)
+}
+
+// EmptyStreamStreak 返回渠道当前连续空流次数（测试用）。
+func (t *Tracker) EmptyStreamStreak(channelID int) int {
+	if channelID <= 0 {
+		return 0
+	}
+	return int(t.getOrCreate(channelID).consecutiveEmptyStreams.Load())
+}
+
 // TripBreaker 立即熔断渠道（开启常规冷却周期）。
 // 适用于明确的确定性或严重上游故障（如 410 EOL）。
 func (t *Tracker) TripBreaker(channelID int) {
@@ -130,8 +167,24 @@ func (t *Tracker) TripBreaker(channelID int) {
 	s := t.getOrCreate(channelID)
 	s.state.Store(int32(breakerOpen))
 	s.openedAt.Store(time.Now().Unix())
+	s.blockedUntil.Store(0)
 	s.halfOpenProbes.Store(0)
 	s.halfOpenSince.Store(0)
+}
+
+// TripBreakerForRateLimit 针对上游瞬时限流或并发超限（429、RPM 等）的短期避让熔断。
+// 使用配置的 RateLimitCooldownSeconds（默认 30 秒），
+// 短暂避让后自动进入半开探测，防止常规长冷却（如 300 秒）导致全渠道假死。
+func (t *Tracker) TripBreakerForRateLimit(channelID int) {
+	if !Enabled() || channelID <= 0 {
+		return
+	}
+	policy := GetPolicy().Resolve(channelID)
+	cooldown := policy.Breaker.RateLimitCooldownSeconds
+	if cooldown <= 0 {
+		cooldown = 30
+	}
+	t.TripBreakerUntil(channelID, time.Now().Add(time.Duration(cooldown)*time.Second))
 }
 
 // IsDegraded 判断渠道是否处于降级状态（慢 3 次后的 10 分钟软降级）。
@@ -279,6 +332,7 @@ func (h *RequestHandle) tripBreaker() {
 	// 无论之前是 closed 还是 half-open，只要判定熔断，无条件重置为 open 开启新冷却
 	h.stats.state.Store(int32(breakerOpen))
 	h.stats.openedAt.Store(time.Now().Unix())
+	h.stats.blockedUntil.Store(0)
 	h.stats.halfOpenProbes.Store(0)
 	h.stats.halfOpenSince.Store(0)
 }
@@ -296,26 +350,31 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 	reservedProbe := false
 	switch state := breakerState(s.state.Load()); state {
 	case breakerOpen:
-		// 定时熔断（如宵禁）：到期前一律不放行
+		// 定时熔断（如宵禁或限流短冷却）：到期前一律不放行
 		if until := s.blockedUntil.Load(); until > 0 {
 			if time.Now().Unix() < until {
 				return false, ReasonCircuitBlockedUntil
 			}
-			// 到期：清除定时，恢复常规冷却逻辑
+			// 到期：清除定时，直接进入半开状态允许探测
 			s.blockedUntil.Store(0)
-		}
-		cooldown := policy.Breaker.CooldownSeconds
-		if cooldown <= 0 {
-			cooldown = 60
-		}
-		if time.Now().Unix()-s.openedAt.Load() >= cooldown {
-			// 进入半开状态
 			if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
 				s.halfOpenProbes.Store(0)
 				s.halfOpenSince.Store(time.Now().UnixNano())
 			}
 		} else {
-			return false, ReasonCircuitOpen
+			cooldown := policy.Breaker.CooldownSeconds
+			if cooldown <= 0 {
+				cooldown = 60
+			}
+			if time.Now().Unix()-s.openedAt.Load() >= cooldown {
+				// 进入半开状态
+				if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
+					s.halfOpenProbes.Store(0)
+					s.halfOpenSince.Store(time.Now().UnixNano())
+				}
+			} else {
+				return false, ReasonCircuitOpen
+			}
 		}
 		// 进入半开后继续走下面的半开逻辑
 		fallthrough

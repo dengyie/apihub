@@ -62,6 +62,14 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if err == nil {
 		return false
 	}
+	// 客户端断开与空流墙钟耗尽不是渠道故障：即使以后有人去掉 skipRetry，
+	// 也不得据此自动禁用。空流本身靠连续计数熔断，不走自动禁用。
+	if types.IsClientAbortedError(err) {
+		return false
+	}
+	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) {
+		return false
+	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。

@@ -59,6 +59,24 @@ func IsEmptyStream(err error) bool {
 	return errors.As(err, &emptyErr)
 }
 
+// EmptyStreamBudgetError 流式零字节换渠道重试墙钟耗尽。
+// 客户端仍未收到任何内容，终态 502，不计熔断硬失败。
+type EmptyStreamBudgetError struct {
+	ChannelID int
+}
+
+func (e *EmptyStreamBudgetError) Error() string {
+	return "loadbalancer: empty stream retry budget exhausted"
+}
+
+func IsEmptyStreamBudget(err error) bool {
+	if err == nil {
+		return false
+	}
+	var budgetErr *EmptyStreamBudgetError
+	return errors.As(err, &budgetErr)
+}
+
 // StreamBrokenError 流中断错误：上游在流传输中途断开连接
 // （如 HTTP/2 INTERNAL_ERROR、connection reset），
 // 且客户端尚未收到任何有效内容。视同渠道失败，触发换渠道重试。

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -146,7 +148,8 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "upstream permission denied 403 retries", err: types.NewOpenAIError(errors.New("无权访问 按量分组 分组"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}},
 		{name: "upstream tokenplan model unsupported 404 retries", err: types.NewOpenAIError(errors.New("deepseek-v4-flash is not supported by TokenPlan"), types.ErrorCodeBadResponseStatusCode, http.StatusNotFound), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}},
 		{name: "upstream relay bad response status code 400 retries", err: types.NewOpenAIError(errors.New("来自上游渠道的报错: bad response status code 400 (request id: 202609281247566269176407PebRmdX)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
-		{name: "upstream thinking mode history reasoning_content 400 retries", err: types.NewOpenAIError(errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}},
+			{name: "upstream thinking mode history reasoning_content 400 retries", err: types.NewOpenAIError(errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}},
+			{name: "upstream concurrency limit 400 retries", err: types.NewOpenAIError(errors.New("您已达到并发请求数限制：最多同时处理1个请求"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}},
 		{name: "attempt budget exhausted", err: upstream(http.StatusTooManyRequests), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		// 504/524 曾在 always-skip 清单里永不重试；现放开为常规可重试（见
 		// status_code_ranges.go 的注释）：慢上游网关超时改为换渠道故障转移。
@@ -169,6 +172,9 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			RequestPolicy(c).SessionModeSource = "global"
 		}, want: PolicyDecision{Action: "stop", Reason: "strict_session", Source: "global"}},
 		{name: "nil error", retries: 1, want: PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}},
+		{name: "client aborted never retries", err: types.NewClientAbortedError(context.Canceled), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}},
+		{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},
+		{name: "empty stream still retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamError{ChannelID: 1}, types.ErrorCodeBadResponseBody, http.StatusBadGateway), retries: 2, want: PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -228,4 +234,46 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	other := model.NewLogOther()
 	AppendRelayLogAdminInfo(untouched, nil, other)
 	assert.NotContains(t, other.Snapshot()["admin_info"], "request_policy", "requests without decisions do not carry an empty record")
+}
+
+func TestIsClientAbortUsesRequestFacts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(canceled)
+	assert.True(t, IsClientAbort(c, nil, types.NewError(errors.New("do request failed"), types.ErrorCodeDoRequestFailed)))
+
+	timedOut, timeoutCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer timeoutCancel()
+	<-timedOut.Done()
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(timedOut)
+	assert.False(t, IsClientAbort(c2, nil, types.NewError(errors.New("deadline"), types.ErrorCodeDoRequestFailed)))
+
+	status := relaycommon.NewStreamStatus()
+	status.SetEndReason(relaycommon.StreamEndReasonClientGone, context.Canceled)
+	assert.True(t, IsClientAbort(nil, &relaycommon.RelayInfo{StreamStatus: status}, nil))
+
+	assert.True(t, IsClientAbort(nil, nil, types.NewClientAbortedError(context.Canceled)))
+}
+
+func TestShouldDisableChannelSkipsClientAbortAndEmptyStream(t *testing.T) {
+	previous := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = previous })
+
+	assert.False(t, ShouldDisableChannel(types.NewClientAbortedError(context.Canceled)))
+	assert.False(t, ShouldDisableChannel(types.NewErrorWithStatusCode(
+		&loadbalancer.EmptyStreamError{ChannelID: 1},
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadGateway,
+	)))
+	assert.False(t, ShouldDisableChannel(types.NewErrorWithStatusCode(
+		&loadbalancer.EmptyStreamBudgetError{ChannelID: 1},
+		types.ErrorCodeEmptyStreamBudgetExhausted,
+		http.StatusBadGateway,
+		types.ErrOptionWithSkipRetry(),
+	)))
 }

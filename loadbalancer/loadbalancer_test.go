@@ -523,6 +523,121 @@ func TestIsUpstreamPermissionError(t *testing.T) {
 	assert.False(t, IsUpstreamPermissionError(nil))
 }
 
+func TestIsUpstreamRelayError_Excludes429(t *testing.T) {
+	// 429 属于上游频次/并发限流，即使带有 new_api_error 类型，也不应判定为中继失效
+	err429 := &types.NewAPIError{
+		StatusCode: 429,
+		RelayError: types.OpenAIError{
+			Type:    "new_api_error",
+			Message: "您已达到并发请求数限制：最多同时处理1个请求",
+		},
+		Err: errors.New("channel error (channel #83, status code: 429): status_code=429, 您已达到并发请求数限制：最多同时处理1个请求"),
+	}
+	assert.False(t, IsUpstreamRelayError(err429))
+
+	// 非 429（如 400）但带有限流信息的聚合中继报错，也必须被互斥排除，不能误判为上游中继代理崩溃
+	err400RateLimit := &types.NewAPIError{
+		StatusCode: 400,
+		RelayError: types.OpenAIError{
+			Type:    "new_api_error",
+			Message: "您已达到并发请求数限制：最多同时处理1个请求",
+		},
+		Err: errors.New("channel error: 您已达到并发请求数限制：最多同时处理1个请求"),
+	}
+	assert.True(t, IsUpstreamRateLimitError(err400RateLimit))
+	assert.False(t, IsUpstreamRelayError(err400RateLimit))
+}
+
+func TestIsUpstreamRateLimitError(t *testing.T) {
+	// 并发超限
+	errConcurrency := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("您已达到并发请求数限制：最多同时处理1个请求"),
+	}
+	assert.True(t, IsUpstreamRateLimitError(errConcurrency))
+
+	// RPM / TPM 限流
+	errRPM := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("您已达到请求数限制：1分钟内最多请求5次"),
+	}
+	assert.True(t, IsUpstreamRateLimitError(errRPM))
+
+	errTPM := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("inference exceeds tpm/rpm limit"),
+	}
+	assert.True(t, IsUpstreamRateLimitError(errTPM))
+
+	// 临时超额冻结
+	errFrozen := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("API 已因用量超额临时冻结，请稍后再试"),
+	}
+	assert.True(t, IsUpstreamRateLimitError(errFrozen))
+
+	// 额度耗尽（应属于 QuotaError，不属于瞬时 RateLimitError）
+	errQuota := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("API key 额度已用完"),
+	}
+	assert.False(t, IsUpstreamRateLimitError(errQuota))
+	assert.True(t, IsUpstreamQuotaError(errQuota))
+
+	// 客户端 API Key 已达到用量上限（应属于 QuotaError）
+	errQuotaLimit := &types.NewAPIError{
+		StatusCode: 429,
+		Err:        errors.New("客户端 API Key 已达到用量上限"),
+	}
+	assert.False(t, IsUpstreamRateLimitError(errQuotaLimit))
+	assert.True(t, IsUpstreamQuotaError(errQuotaLimit))
+
+	// 正常 200/500/400 不算
+	assert.False(t, IsUpstreamRateLimitError(nil))
+	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{StatusCode: 500, Err: errors.New("server error")}))
+	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{StatusCode: 400, Err: errors.New("bad request")}))
+}
+
+func TestRateLimitBreakerShortCooldown(t *testing.T) {
+	policy := &Policy{
+		Enabled: true,
+		Default: ChannelPolicy{
+			Breaker: BreakerPolicy{
+				CooldownSeconds:          300, // 常规故障 300 秒
+				RateLimitCooldownSeconds: 2,   // 429 短冷却 2 秒
+				HalfOpenProbes:           1,
+			},
+		},
+		Channels: make(map[int]ChannelPolicy),
+	}
+	SetPolicy(policy)
+	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	const chID = 888
+
+	// 触发针对限流的短期熔断
+	tracker.TripBreakerForRateLimit(chID)
+
+	// 熔断中：被 blockedUntil 阻拦
+	ok, reason := tracker.IsAvailable(chID)
+	assert.False(t, ok)
+	assert.Equal(t, ReasonCircuitBlockedUntil, reason)
+
+	// 等待 2.1 秒后到期
+	time.Sleep(2100 * time.Millisecond)
+
+	// 到期后应当立即进入半开状态并允许 1 次探测请求，绝不能继续等待 300 秒常规冷却！
+	ok, reason = tracker.IsAvailable(chID)
+	assert.True(t, ok, "短冷却到期后应直接允许探测，当前原因: %s", reason)
+
+	// 探测成功后 End，熔断器闭合
+	h := tracker.Begin(chID)
+	h.End(false, false)
+
+	// 闭合后完全正常
+	ok, _ = tracker.IsAvailable(chID)
+	assert.True(t, ok)
+}
+
 // --- 半开探测配额租约 ---
 //
 // IsAvailable 以副作用预占半开探测配额，只有真正发出请求并 End 才归还。
@@ -775,4 +890,65 @@ func TestRequestTimeoutPolicy(t *testing.T) {
 	// nil 接收者不 panic（GetPolicy 的兜底路径）。
 	var nilPolicy *Policy
 	assert.NotZero(t, nilPolicy.RequestTimeout())
+}
+
+func TestEmptyStreamPolicyAndTracker(t *testing.T) {
+	// 1. 策略三态验证
+	var omitted Policy
+	assert.Equal(t, time.Duration(DefaultEmptyStreamRetryBudgetMs)*time.Millisecond, omitted.EmptyStreamRetryBudget())
+	assert.Equal(t, DefaultEmptyStreamTripThreshold, omitted.EmptyStreamTripLimit())
+
+	off := 0
+	omitted.EmptyStreamRetryBudgetMs = &off
+	omitted.EmptyStreamTripThreshold = &off
+	assert.Equal(t, time.Duration(0), omitted.EmptyStreamRetryBudget())
+	assert.Equal(t, 0, omitted.EmptyStreamTripLimit())
+
+	customMs := 15000
+	customThreshold := 5
+	omitted.EmptyStreamRetryBudgetMs = &customMs
+	omitted.EmptyStreamTripThreshold = &customThreshold
+	assert.Equal(t, 15*time.Second, omitted.EmptyStreamRetryBudget())
+	assert.Equal(t, 5, omitted.EmptyStreamTripLimit())
+
+	// nil 接收者兜底
+	var nilPolicy *Policy
+	assert.NotZero(t, nilPolicy.EmptyStreamRetryBudget())
+	assert.Equal(t, DefaultEmptyStreamTripThreshold, nilPolicy.EmptyStreamTripLimit())
+
+	// 2. 连续空流熔断跟踪
+	oldPolicy := currentPolicy.Load()
+	p := testPolicy()
+	three := 3
+	p.EmptyStreamTripThreshold = &three
+	currentPolicy.Store(p)
+	defer currentPolicy.Store(oldPolicy)
+
+	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	chID := 55
+
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID))
+	tr.RecordEmptyStream(chID)
+	assert.Equal(t, 1, tr.EmptyStreamStreak(chID))
+	ok, _ := tr.IsAvailable(chID)
+	assert.True(t, ok)
+
+	tr.RecordEmptyStream(chID)
+	assert.Equal(t, 2, tr.EmptyStreamStreak(chID))
+	ok, _ = tr.IsAvailable(chID)
+	assert.True(t, ok)
+
+	// 达到阈值 3：触发硬熔断，streak 重置为 0
+	tr.RecordEmptyStream(chID)
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID))
+	ok, reason := tr.IsAvailable(chID)
+	assert.False(t, ok, "达到阈值后应立即熔断")
+	assert.Equal(t, "circuit_open", reason)
+
+	// 清零方法验证
+	chID2 := 56
+	tr.RecordEmptyStream(chID2)
+	assert.Equal(t, 1, tr.EmptyStreamStreak(chID2))
+	tr.ClearEmptyStream(chID2)
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID2))
 }

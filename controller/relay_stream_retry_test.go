@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/loadbalancer"
@@ -138,4 +139,23 @@ func TestArmRequestBudget(t *testing.T) {
 	budgetCtx4, cancel4 := armRequestBudget(c4, false, types.RelayFormatOpenAI)
 	require.Nil(t, budgetCtx4)
 	require.Nil(t, cancel4)
+}
+
+func TestEmptyStreamRetryBudgetDoesNotArmRequestContext(t *testing.T) {
+	old := loadbalancer.GetPolicy()
+	policy := loadbalancer.DefaultPolicy()
+	one := 1
+	policy.EmptyStreamRetryBudgetMs = &one
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(old)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	before := c.Request
+	budgetCtx, cancel := armRequestBudget(c, true, types.RelayFormatOpenAI)
+	require.Nil(t, budgetCtx)
+	require.Nil(t, cancel)
+	require.True(t, c.Request == before, "stream request context must stay untouched even with a zero-byte wall clock")
+	assert.Equal(t, time.Millisecond, loadbalancer.GetEmptyStreamRetryBudget())
 }

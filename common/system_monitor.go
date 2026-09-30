@@ -79,3 +79,8 @@ func updateSystemStatus() {
 func GetSystemStatus() SystemStatus {
 	return latestSystemStatus.Load().(SystemStatus)
 }
+
+// SetSystemStatus 覆盖当前系统状态采样。测试注入超阈值负载用。
+func SetSystemStatus(status SystemStatus) {
+	latestSystemStatus.Store(status)
+}

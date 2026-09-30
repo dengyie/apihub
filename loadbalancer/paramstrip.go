@@ -255,7 +255,15 @@ func IsUpstreamQuotaError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "balance is not enough") ||
 		strings.Contains(msg, "quota_exceeded") ||
 		strings.Contains(msg, "user_quota_exhausted") ||
-		strings.Contains(msg, "account_deactivated") {
+		strings.Contains(msg, "account_deactivated") ||
+		strings.Contains(msg, "用量上限") ||
+		strings.Contains(msg, "今日已用完") ||
+		strings.Contains(msg, "额度已用完") ||
+		strings.Contains(msg, "额度不足") ||
+		strings.Contains(msg, "余额不足") ||
+		strings.Contains(msg, "entitlement exhausted") ||
+		strings.Contains(msg, "reached your weekly") ||
+		strings.Contains(msg, "reached your daily") {
 		return true
 	}
 	if oe, ok := err.RelayError.(types.OpenAIError); ok {
@@ -366,6 +374,10 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 	if err == nil {
 		return false
 	}
+	// 429 或限流/并发超限属于上游频次/并发瞬时限制，绝非中继代理网关故障，不应归为中继代理失效
+	if err.StatusCode == http.StatusTooManyRequests || IsUpstreamRateLimitError(err) {
+		return false
+	}
 	// 若为参数不支持类的 400 错误（如 thinking、reasoning_effort 等），优先由参数裁剪机制处理，不计入上游中继失效熔断
 	if _, ok := IsParamNotSupportedError(err); ok {
 		return false
@@ -406,6 +418,34 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		}
 	}
 	return false
+}
+
+// IsUpstreamRateLimitError 判断是否为上游瞬时频次限流或并发超限错误（如 429 Too Many Requests、最多同时处理1个请求、rpm/tpm 超限等）。
+// 区别于配额永久耗尽（IsUpstreamQuotaError），限流通常在短时间（几秒到几十秒）后自动解除，
+// 不应触发长达数百秒的常规硬熔断，而应采用短冷却（默认 30 秒）并触发换渠道重试，避免健康渠道被过度隔离导致全池瘫痪。
+func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	// 真正的额度/欠费耗尽优先归入 QuotaError 处理
+	if IsUpstreamQuotaError(err) {
+		return false
+	}
+	if err.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "并发请求数限制") ||
+		strings.Contains(msg, "最多同时处理") ||
+		strings.Contains(msg, "请求数限制") ||
+		strings.Contains(msg, "总请求数限制") ||
+		strings.Contains(msg, "rpm") ||
+		strings.Contains(msg, "tpm") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate_limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "超额临时冻结") ||
+		strings.Contains(msg, "负载已饱和")
 }
 
 // IsUpstreamModelUnavailableError 判断是否为「这个渠道永远不会好」的上游失效。

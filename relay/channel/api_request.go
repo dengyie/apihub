@@ -371,6 +371,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		if types.IsClientAbortedError(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
@@ -408,6 +411,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		if types.IsClientAbortedError(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
@@ -448,6 +454,10 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	targetConn, resp, err := dialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
 	if err != nil {
+		if isClientCanceled(err, c.Request.Context()) {
+			logger.LogInfo(c, "websocket dial aborted: client closed connection")
+			return nil, types.NewClientAbortedError(err)
+		}
 		statusCode := http.StatusInternalServerError
 		if resp != nil {
 			statusCode = resp.StatusCode
@@ -602,6 +612,10 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	resp, err := relayClient.Do(req)
 	if err != nil {
+		if isClientCanceled(err, req.Context()) {
+			logger.LogInfo(c, "do request aborted: client closed connection")
+			return nil, types.NewClientAbortedError(err)
+		}
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
@@ -654,6 +668,9 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		if types.IsClientAbortedError(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
@@ -664,4 +681,15 @@ func newTaskAPIRequest(c *gin.Context, fullRequestURL string, requestBody io.Rea
 		return nil, errors.New("task client request is missing")
 	}
 	return http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
+}
+
+// isClientCanceled reports a client-side abort rather than an upstream dial/transport
+// failure. Prefer the request-level context fact: OpenAIError wrappers often drop
+// the Unwrap chain, so matching only errors.Is(err, Canceled) is not enough.
+// DeadlineExceeded is the gateway budget / TTFT path and must not be treated as abort.
+func isClientCanceled(err error, ctx context.Context) bool {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return true
+	}
+	return err != nil && errors.Is(err, context.Canceled)
 }

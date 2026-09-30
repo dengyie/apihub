@@ -10,6 +10,15 @@ import "time"
 // 又能在系统性慢上游时把总等待封住。
 const DefaultRequestTimeoutMs = 180000
 
+// DefaultEmptyStreamRetryBudgetMs 流式请求在「客户端仍未收到任何内容字节」
+// 时，换渠道重试的墙钟默认值（毫秒）。长流出字后立即作废，不套到
+// request_timeout_ms 上。
+const DefaultEmptyStreamRetryBudgetMs = 25000
+
+// DefaultEmptyStreamTripThreshold 同一渠道连续空流达到此次数后熔断。
+// 只熔断、不自动禁用。0 表示关闭。
+const DefaultEmptyStreamTripThreshold = 3
+
 // Policy 定义智能负载的全部策略参数。
 // 策略支持热加载：修改 YAML 配置文件后自动生效，无需重启服务。
 type Policy struct {
@@ -26,6 +35,15 @@ type Policy struct {
 	// 指针三态：缺省（yaml 未写该键）用 DefaultRequestTimeoutMs；显式 0 表示
 	// 关闭。流式请求不受它约束——首字等待归 ttft_timeout_ms，长流是合法形态。
 	RequestTimeoutMs *int `yaml:"request_timeout_ms"`
+
+	// EmptyStreamRetryBudgetMs 流式请求在客户端仍未收到任何内容字节时，
+	// 换渠道重试的墙钟（毫秒）。指针三态：缺省 DefaultEmptyStreamRetryBudgetMs；
+	// 显式 0 = 关闭。不作用于已开始出字的长流，也不套到 request context 上。
+	EmptyStreamRetryBudgetMs *int `yaml:"empty_stream_retry_budget_ms"`
+
+	// EmptyStreamTripThreshold 同一渠道连续空流达到此次数后熔断。
+	// 指针三态：缺省 DefaultEmptyStreamTripThreshold；显式 0 = 关闭。
+	EmptyStreamTripThreshold *int `yaml:"empty_stream_trip_threshold"`
 
 	// StripThinkingChannels 需要裁剪 thinking 参数的渠道 ID 列表（兼容旧配置）。
 	// 这些渠道的上游不支持 thinking 参数，转发时会自动去掉。
@@ -57,6 +75,38 @@ func GetRequestTimeout() time.Duration {
 	return GetPolicy().RequestTimeout()
 }
 
+// EmptyStreamRetryBudget 返回流式零字节换渠道重试墙钟；0 表示禁用。
+func (p *Policy) EmptyStreamRetryBudget() time.Duration {
+	if p == nil || p.EmptyStreamRetryBudgetMs == nil {
+		return time.Duration(DefaultEmptyStreamRetryBudgetMs) * time.Millisecond
+	}
+	if *p.EmptyStreamRetryBudgetMs <= 0 {
+		return 0
+	}
+	return time.Duration(*p.EmptyStreamRetryBudgetMs) * time.Millisecond
+}
+
+// GetEmptyStreamRetryBudget 返回当前生效策略的流式零字节墙钟。
+func GetEmptyStreamRetryBudget() time.Duration {
+	return GetPolicy().EmptyStreamRetryBudget()
+}
+
+// EmptyStreamTripLimit 返回连续空流熔断阈值；0 表示关闭。
+func (p *Policy) EmptyStreamTripLimit() int {
+	if p == nil || p.EmptyStreamTripThreshold == nil {
+		return DefaultEmptyStreamTripThreshold
+	}
+	if *p.EmptyStreamTripThreshold <= 0 {
+		return 0
+	}
+	return *p.EmptyStreamTripThreshold
+}
+
+// GetEmptyStreamTripThreshold 返回当前生效策略的连续空流熔断阈值。
+func GetEmptyStreamTripThreshold() int {
+	return GetPolicy().EmptyStreamTripLimit()
+}
+
 // ChannelPolicy 单个渠道的策略参数。
 // 零值表示"未设置"，使用 Default 中的对应值。
 type ChannelPolicy struct {
@@ -79,6 +129,8 @@ type BreakerPolicy struct {
 	FailureThreshold int `yaml:"failure_threshold"`
 	// CooldownSeconds 熔断后冷却时间，之后进入半开状态允许探测
 	CooldownSeconds int64 `yaml:"cooldown_seconds"`
+	// RateLimitCooldownSeconds 遭遇 429 频次/并发限流时的短期避让冷却时间（秒），默认 30 秒
+	RateLimitCooldownSeconds int64 `yaml:"rate_limit_cooldown_seconds"`
 	// HalfOpenProbes 半开状态允许的探测请求数
 	HalfOpenProbes int `yaml:"half_open_probes"`
 }
@@ -106,6 +158,9 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	if cp.Breaker.CooldownSeconds != 0 {
 		resolved.Breaker.CooldownSeconds = cp.Breaker.CooldownSeconds
 	}
+	if cp.Breaker.RateLimitCooldownSeconds != 0 {
+		resolved.Breaker.RateLimitCooldownSeconds = cp.Breaker.RateLimitCooldownSeconds
+	}
 	if cp.Breaker.HalfOpenProbes != 0 {
 		resolved.Breaker.HalfOpenProbes = cp.Breaker.HalfOpenProbes
 	}
@@ -121,9 +176,10 @@ func DefaultPolicy() *Policy {
 			MaxInflight:   50,
 			TTFTTimeoutMs: 15000,
 			Breaker: BreakerPolicy{
-				FailureThreshold: 5,
-				CooldownSeconds:  60,
-				HalfOpenProbes:   1,
+				FailureThreshold:         5,
+				CooldownSeconds:          60,
+				RateLimitCooldownSeconds: 30,
+				HalfOpenProbes:           1,
 			},
 		},
 		Channels: make(map[int]ChannelPolicy),

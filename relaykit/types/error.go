@@ -50,6 +50,13 @@ const (
 	ErrorCodeDoRequestFailed    ErrorCode = "do_request_failed"
 	ErrorCodeGetChannelFailed   ErrorCode = "get_channel_failed"
 	ErrorCodeGenRelayInfoFailed ErrorCode = "gen_relay_info_failed"
+	// ErrorCodeClientAborted 客户端主动断开。不是上游渠道故障：不得据此
+	// 熔断/自动禁用，也不得包装成 do_request_failed 500。HTTP 499 沿用
+	// nginx「客户端关闭连接」惯例；OpenAI JSON 的 code 才是 SDK 主判据。
+	ErrorCodeClientAborted ErrorCode = "client_aborted"
+	// ErrorCodeEmptyStreamBudgetExhausted 流式请求在客户端仍未收到任何
+	// 内容字节时，换渠道重试的墙钟耗尽。终态 502，不计熔断硬失败。
+	ErrorCodeEmptyStreamBudgetExhausted ErrorCode = "empty_stream_budget_exhausted"
 
 	// channel error
 	ErrorCodeChannelNoAvailableKey        ErrorCode = "channel:no_available_key"
@@ -86,6 +93,10 @@ const (
 	ErrorCodeInsufficientUserQuota      ErrorCode = "insufficient_user_quota"
 	ErrorCodePreConsumeTokenQuotaFailed ErrorCode = "pre_consume_token_quota_failed"
 )
+
+// StatusClientClosedRequest 是 nginx 惯例的「客户端关闭连接」状态码。
+// net/http 没有这个常量。
+const StatusClientClosedRequest = 499
 
 type NewAPIError struct {
 	Err            error
@@ -382,6 +393,37 @@ func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.skipRetry = true
 	}
+}
+
+// NewClientAbortedError 构造客户端主动断开错误：499 + skipRetry。
+// 幂等：已经是 client_aborted 则原样返回，避免 Do() 特判与控制器双改写叠一层。
+func NewClientAbortedError(cause error) *NewAPIError {
+	if cause == nil {
+		cause = errors.New("client closed connection")
+	}
+	var existing *NewAPIError
+	if errors.As(cause, &existing) && existing != nil && existing.GetErrorCode() == ErrorCodeClientAborted {
+		return existing
+	}
+	return NewErrorWithStatusCode(
+		cause,
+		ErrorCodeClientAborted,
+		StatusClientClosedRequest,
+		ErrOptionWithSkipRetry(),
+		ErrOptionWithHideErrMsg("client closed connection"),
+		ErrOptionWithNoRecordErrorLog(),
+	)
+}
+
+func IsClientAbortedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *NewAPIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return apiErr.GetErrorCode() == ErrorCodeClientAborted
+	}
+	return false
 }
 
 func ErrOptionWithNoRecordErrorLog() NewAPIErrorOptions {

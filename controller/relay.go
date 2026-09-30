@@ -89,68 +89,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	defer func() {
-		if newAPIError != nil {
-			service.RecordRequestPolicyTermination(c, newAPIError)
-			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			// 终端状态码保护：上游渠道的 401/403/410/TokenPlan/中继报错，在网关层重试耗尽后映射为 502 Bad Gateway，
-			// 避免 downstream 客户端 SDK 将其判定为 client-side 永久不可重试凭证错误 (auth_failed status=403 retryable=false) 而中止会话。
-			// 注意：排除客户端自身的额度不足（ErrorCodeInsufficientUserQuota 发生在渠道请求前）。
-			isUpstreamChannelError := len(c.GetStringSlice("use_channel")) > 0
-			if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-				if loadbalancer.IsEOLError(newAPIError) ||
-					loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-					loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-					loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-					loadbalancer.IsUpstreamRelayError(newAPIError) ||
-					loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
-					newAPIError.StatusCode == http.StatusForbidden ||
-					newAPIError.StatusCode == http.StatusUnauthorized ||
-					newAPIError.StatusCode == http.StatusGone ||
-					newAPIError.StatusCode == http.StatusBadRequest {
-					newAPIError.StatusCode = http.StatusBadGateway
-				}
-			} else if loadbalancer.IsEOLError(newAPIError) {
-				newAPIError.StatusCode = http.StatusBadGateway
+		if newAPIError == nil {
+			return
+		}
+		clientAborted := types.IsClientAbortedError(newAPIError)
+		if clientAborted {
+			// 取消不是上游故障：不记渠道失败、不映射成 502，已出字则不再补 SSE 错误帧。
+			if c.Writer.Written() {
+				return
 			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
-			if !c.Writer.Written() {
-				switch relayFormat {
-				case types.RelayFormatOpenAIRealtime:
-					helper.WssError(c, ws, newAPIError.ToOpenAIError())
-				case types.RelayFormatClaude:
-					c.JSON(newAPIError.StatusCode, gin.H{
-						"type":  "error",
-						"error": newAPIError.ToClaudeError(),
-					})
-				default:
-					c.JSON(newAPIError.StatusCode, gin.H{
-						"error": newAPIError.ToOpenAIError(),
-					})
-				}
-			} else {
-				// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
-				// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
-				// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
-				var sseErrData string
-				switch relayFormat {
-				case types.RelayFormatClaude:
-					errJSON, _ := common.Marshal(gin.H{
-						"type":  "error",
-						"error": newAPIError.ToClaudeError(),
-					})
-					sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
-				default:
-					openAIErr := newAPIError.ToOpenAIError()
-					openAIErr.Code = newAPIError.StatusCode
-					errJSON, _ := common.Marshal(gin.H{
-						"error": openAIErr,
-					})
-					sseErrData = fmt.Sprintf("data: %s\n\n", string(errJSON))
-				}
-				c.Writer.Write([]byte(sseErrData))
-				c.Writer.Flush()
-			}
+			writeRelayTerminalError(c, ws, relayFormat, newAPIError)
+			return
 		}
+		service.RecordRequestPolicyTermination(c, newAPIError)
+		logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+		applyRelayTerminalStatusShield(c, newAPIError)
+		newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+		writeRelayTerminalError(c, ws, relayFormat, newAPIError)
 	}()
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
@@ -215,6 +171,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	requestBudgetCtx, cancelRequestBudget := armRequestBudget(c, relayInfo.IsStream, relayFormat)
 	if cancelRequestBudget != nil {
 		defer cancelRequestBudget()
+	}
+
+	// 流式零字节墙钟：只约束「客户端仍未收到任何内容」的换渠道重试。
+	// 用单调时钟在控制器里比，不套到 request context 上——那会把合法长流
+	// 和取消/预算搅在一起。一出字即作废。
+	zeroByteDeadline := time.Time{}
+	if relayInfo.IsStream {
+		if budget := loadbalancer.GetEmptyStreamRetryBudget(); budget > 0 {
+			zeroByteDeadline = time.Now().Add(budget)
+		}
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
@@ -295,6 +261,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if service.IsClientAbort(c, relayInfo, nil) {
+				// 扫描器在客户端断开时返回 nil。尚未写出响应体则补 499；
+				// 已经出字则按部分成功收尾，不再发伪装上游故障的错误帧。
+				lbAttempt.End(false, false)
+				if !c.Writer.Written() {
+					newAPIError = types.NewClientAbortedError(context.Canceled)
+					relayInfo.LastError = newAPIError
+					logger.LogInfo(c, "客户端已断开，停止重试")
+					break
+				}
+				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
+				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id)
+				relayInfo.LastError = nil
+				return
+			}
 			// 客户端主动断开不是上游渠道故障：不得据此熔断渠道，也不得为一个
 			// 已经离开的接收方继续重试。判据统一走 StreamStatus.IsUpstreamStreamFault。
 			if relayInfo.StreamStatus.IsUpstreamStreamFault() {
@@ -310,6 +291,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				newAPIError = streamErr
 			} else {
 				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
+				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id)
 				// 流式路径已由 StreamScannerHandler 上报（幂等），这里收尾非流式
 				lbAttempt.End(false, false)
 				relayInfo.LastError = nil
@@ -320,53 +302,95 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
+		// 客户端主动断开：先改写再记账。取消是下游行为，不是渠道故障。
+		// 判据用请求级事实（context.Canceled / StreamStatus.IsClientAbort），
+		// 不依赖错误链——OpenAIError 构造经常丢掉 Unwrap。
+		if service.IsClientAbort(c, relayInfo, newAPIError) {
+			newAPIError = types.NewClientAbortedError(newAPIError)
+			relayInfo.LastError = newAPIError
+			logger.LogInfo(c, "客户端已断开，停止重试")
+			lbAttempt.End(false, false)
+			break
+		}
+
+		// 流式仍零字节且墙钟耗尽：改写 502，停止换渠道。出字后墙钟已作废。
+		if !zeroByteDeadline.IsZero() && streamDeliveredContent(relayInfo) {
+			zeroByteDeadline = time.Time{}
+		}
+		wasEmptyStream := loadbalancer.IsEmptyStream(newAPIError)
+		if wasEmptyStream {
+			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id)
+		}
+		if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
+			zeroByteRetryable(newAPIError) {
+			newAPIError = types.NewErrorWithStatusCode(
+				&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
+				types.ErrorCodeEmptyStreamBudgetExhausted,
+				http.StatusBadGateway,
+				types.ErrOptionWithSkipRetry(),
+			)
+			relayInfo.LastError = newAPIError
+			logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
+			lbAttempt.End(false, false)
+			break
+		}
+
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
-		// 智能负载：本轮尝试收尾——归还 inflight，并决定是否计入熔断计数。
-		// 流式失败的计数已由 StreamScannerHandler 用同一个（幂等）句柄上报，
-		// 这里的 End 不会双记；只有没有流状态的失败（首字节前的错误、非流式）
-		// 才由本层补记。400 不计入（参数不支持不代表渠道不健康）。
-		// 无论是否计入都必须 End，否则 inflight 不归还，并发上限会被永久占满。
-		lbAttempt.End(false,
-			relayInfo.StreamStatus == nil &&
-				newAPIError.StatusCode != 400 &&
-				!loadbalancer.IsTTFTTimeout(newAPIError) &&
-				!loadbalancer.IsEmptyStream(newAPIError) &&
-				!loadbalancer.IsStreamBroken(newAPIError))
-		// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
-		if loadbalancer.IsEOLError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
-		}
-		// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
-		if loadbalancer.IsStreamBroken(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
-		}
-		// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
-		if loadbalancer.IsUpstreamQuotaError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-		}
-		if loadbalancer.IsUpstreamRoutingError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-		}
-		// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
-		if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-		}
-		// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
-		if loadbalancer.IsUpstreamRelayError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-		}
-		// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
-		if loadbalancer.IsUpstreamPermissionError(newAPIError) {
-			loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-		}
+			// 智能负载：本轮尝试收尾——归还 inflight，并决定是否计入熔断计数。
+			// 流式失败的计数已由 StreamScannerHandler 用同一个（幂等）句柄上报，
+			// 这里的 End 不会双记；只有没有流状态的失败（首字节前的错误、非流式）
+			// 才由本层补记。400 不计入（参数不支持不代表渠道不健康）。
+			// 无论是否计入都必须 End，否则 inflight 不归还，并发上限会被永久占满。
+			lbAttempt.End(false,
+				relayInfo.StreamStatus == nil &&
+					newAPIError.StatusCode != 400 &&
+					!loadbalancer.IsTTFTTimeout(newAPIError) &&
+					!loadbalancer.IsEmptyStream(newAPIError) &&
+					!loadbalancer.IsEmptyStreamBudget(newAPIError) &&
+					!loadbalancer.IsStreamBroken(newAPIError) &&
+					!loadbalancer.IsUpstreamRateLimitError(newAPIError) &&
+					!types.IsClientAbortedError(newAPIError))
+				// 智能负载：上游限流或并发超限（429 / RPM / 并发限制），采用短周期熔断冷却（默认 30 秒），避免整池因瞬时限流假死
+				if loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id)
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游限流/并发超限 (429/RPM/Concurrency)，已设置短期避让冷却: %s", channel.Id, newAPIError.Error()))
+				} else {
+					// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
+					if loadbalancer.IsEOLError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
+					}
+					// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
+					if loadbalancer.IsStreamBroken(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
+					}
+					// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
+					if loadbalancer.IsUpstreamQuotaError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+					}
+					if loadbalancer.IsUpstreamRoutingError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+					}
+					// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
+					if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+					}
+					// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
+					if loadbalancer.IsUpstreamRelayError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+					}
+					// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
+					if loadbalancer.IsUpstreamPermissionError(newAPIError) {
+						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
+						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
+					}
+				}
 		// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
@@ -385,16 +409,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if decision.Action != "retry" {
 			break
 		}
-		// 客户端已经断开 / 请求预算耗尽：换渠道重试只是为一个不在的接收方消耗
-		// 真实上游额度。该记的账在上面已经记完（RecordPolicyFailure / 熔断 /
-		// processChannelError），这里只停重试——渠道该坏还是坏，只是不再为一个
-		// 死掉的请求去烧钱。客户端断开产生 context.Canceled；网关侧整请求预算
-		// 耗尽产生 context.DeadlineExceeded，二者在此区分以便排障归因。
+		// 请求预算耗尽：取消已在记账前改写并 break，这里只处理 DeadlineExceeded。
 		if ctxErr := c.Request.Context().Err(); ctxErr != nil {
 			if errors.Is(ctxErr, context.DeadlineExceeded) {
 				logger.LogInfo(c, "请求预算耗尽（网关侧总超时），停止重试")
-			} else {
-				logger.LogInfo(c, "客户端已断开，停止重试")
 			}
 			break
 		}
@@ -474,6 +492,103 @@ func armRequestBudget(c *gin.Context, isStream bool, relayFormat types.RelayForm
 	ctx, cancel := context.WithTimeout(c.Request.Context(), budget)
 	c.Request = c.Request.WithContext(ctx)
 	return ctx, cancel
+}
+
+func streamDeliveredContent(relayInfo *relaycommon.RelayInfo) bool {
+	if relayInfo == nil {
+		return false
+	}
+	return relayInfo.ReceivedResponseCount > 0 || relayInfo.ReceivedContentBytes > 0
+}
+
+func zeroByteRetryable(err *types.NewAPIError) bool {
+	if err == nil || types.IsClientAbortedError(err) {
+		return false
+	}
+	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) ||
+		loadbalancer.IsStreamBroken(err) || loadbalancer.IsTTFTTimeout(err) {
+		return true
+	}
+	if err.GetErrorCode() == types.ErrorCodeDoRequestFailed {
+		return true
+	}
+	if loadbalancer.IsUpstreamRelayError(err) {
+		return true
+	}
+	switch err.StatusCode {
+	case http.StatusBadGateway, http.StatusGatewayTimeout, http.StatusServiceUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// applyRelayTerminalStatusShield 把上游渠道的 401/403/410/400 映射成 502，
+// 避免客户端 SDK 把网关故障当成自己的凭证错误。客户端断开不得映射。
+func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIError) {
+	if newAPIError == nil || types.IsClientAbortedError(newAPIError) {
+		return
+	}
+	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
+	if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
+		if loadbalancer.IsEOLError(newAPIError) ||
+			loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+			loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+			loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+			loadbalancer.IsUpstreamRelayError(newAPIError) ||
+			loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+			newAPIError.StatusCode == http.StatusForbidden ||
+			newAPIError.StatusCode == http.StatusUnauthorized ||
+			newAPIError.StatusCode == http.StatusGone ||
+			newAPIError.StatusCode == http.StatusBadRequest {
+			newAPIError.StatusCode = http.StatusBadGateway
+		}
+	} else if loadbalancer.IsEOLError(newAPIError) {
+		newAPIError.StatusCode = http.StatusBadGateway
+	}
+}
+
+func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat types.RelayFormat, newAPIError *types.NewAPIError) {
+	if c == nil || newAPIError == nil {
+		return
+	}
+	if !c.Writer.Written() {
+		switch relayFormat {
+		case types.RelayFormatOpenAIRealtime:
+			helper.WssError(c, ws, newAPIError.ToOpenAIError())
+		case types.RelayFormatClaude:
+			c.JSON(newAPIError.StatusCode, gin.H{
+				"type":  "error",
+				"error": newAPIError.ToClaudeError(),
+			})
+		default:
+			c.JSON(newAPIError.StatusCode, gin.H{
+				"error": newAPIError.ToOpenAIError(),
+			})
+		}
+		return
+	}
+	// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
+	// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
+	// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
+	var sseErrData string
+	switch relayFormat {
+	case types.RelayFormatClaude:
+		errJSON, _ := common.Marshal(gin.H{
+			"type":  "error",
+			"error": newAPIError.ToClaudeError(),
+		})
+		sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
+	default:
+		openAIErr := newAPIError.ToOpenAIError()
+		openAIErr.Code = newAPIError.StatusCode
+		errJSON, _ := common.Marshal(gin.H{
+			"error": openAIErr,
+		})
+		sseErrData = fmt.Sprintf("data: %s\n\n", string(errJSON))
+	}
+	_, _ = c.Writer.Write([]byte(sseErrData))
+	c.Writer.Flush()
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
