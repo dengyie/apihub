@@ -148,8 +148,11 @@ func TestBreakerHalfOpenProbeFailure(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, "circuit_open", reason)
 
-	// 模拟过了新的一轮冷却时间后，应再次允许探测（不会永久死锁）
-	s.openedAt.Store(time.Now().Unix() - 61)
+	// 模拟过了新的一轮冷却时间后，应再次允许探测（不会永久死锁）。
+	// v29.8 起冷却按连续熔断次数递增：这里探测失败是第 2 次熔断，冷却已翻倍，
+	// 必须按实际倍数拨回，否则会误判成「仍被锁住」而掩盖真正的死锁回归。
+	breaker := GetPolicy().Resolve(100).Breaker
+	s.openedAt.Store(time.Now().Unix() - breaker.CooldownSeconds*s.escalationMultiplier(breaker) - 1)
 	ok, _ = tr.IsAvailable(100)
 	assert.True(t, ok, "channel should allow probe again after next cooldown")
 }

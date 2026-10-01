@@ -37,6 +37,9 @@ type ChannelStats struct {
 	// consecutiveEmptyStreams 连续空流计数。达到 empty_stream_trip_threshold
 	// 后熔断该渠道（不自动禁用）；一次非空流成功清零。
 	consecutiveEmptyStreams atomic.Int32
+	// tripCount 连续熔断次数。用于冷却递增退避：第 n 次熔断的冷却为
+	// 基础冷却 × min(n, escalation_cap)。一次成功请求清零。
+	tripCount atomic.Int32
 	// halfOpenProbes 半开状态已放行的探测数
 	halfOpenProbes atomic.Int32
 	// halfOpenSince 本轮半开的起始时刻（Unix 纳秒），0=未进入过半开。
@@ -112,8 +115,12 @@ func (t *Tracker) getOrCreate(channelID int) *ChannelStats {
 
 // TripBreakerUntil 定时熔断：将渠道熔断到指定时间点（如宵禁到早 8 点）。
 // 立即打开熔断器，并设置 blockedUntil，到期前不参与选渠道。
+// 豁免渠道（breaker_exempt）直接返回，兜底链路不做定时熔断。
 func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 	if !Enabled() || channelID <= 0 {
+		return
+	}
+	if IsBreakerExempt(channelID) {
 		return
 	}
 	s := t.getOrCreate(channelID)
@@ -128,6 +135,9 @@ func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 // 阈值 ≤0 时关闭。成功一次非空流应调用 ClearEmptyStream。
 func (t *Tracker) RecordEmptyStream(channelID int) {
 	if !Enabled() || channelID <= 0 {
+		return
+	}
+	if IsBreakerExempt(channelID) {
 		return
 	}
 	threshold := GetEmptyStreamTripThreshold()
@@ -160,16 +170,15 @@ func (t *Tracker) EmptyStreamStreak(channelID int) int {
 
 // TripBreaker 立即熔断渠道（开启常规冷却周期）。
 // 适用于明确的确定性或严重上游故障（如 410 EOL）。
+// 冷却时长按连续熔断次数递增，见 tripBreaker。
 func (t *Tracker) TripBreaker(channelID int) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
-	s := t.getOrCreate(channelID)
-	s.state.Store(int32(breakerOpen))
-	s.openedAt.Store(time.Now().Unix())
-	s.blockedUntil.Store(0)
-	s.halfOpenProbes.Store(0)
-	s.halfOpenSince.Store(0)
+	if IsBreakerExempt(channelID) {
+		return
+	}
+	t.getOrCreate(channelID).tripBreaker()
 }
 
 // TripBreakerForRateLimit 针对上游瞬时限流或并发超限（429、RPM 等）的短期避让熔断。
@@ -304,8 +313,11 @@ func (h *RequestHandle) End(slow, failed bool) {
 		// 半开探测失败时立即重新熔断，开启新冷却周期，避免卡在半开耗尽状态。
 		n := h.stats.consecutiveFailures.Add(1)
 		currentState := breakerState(h.stats.state.Load())
-		if currentState == breakerHalfOpen || (policy.Breaker.FailureThreshold > 0 && int(n) >= policy.Breaker.FailureThreshold) {
-			h.tripBreaker()
+		// BreakerExempt 渠道只记失败数，不推进熔断状态机（IsAvailable 也跳过
+		// 熔断判断，两端保持一致，避免留下永远读不到的死状态）。
+		if !policy.BreakerExempt &&
+			(currentState == breakerHalfOpen || (policy.Breaker.FailureThreshold > 0 && int(n) >= policy.Breaker.FailureThreshold)) {
+			h.stats.tripBreaker()
 		}
 		// 失败也重置慢计数（失败已硬处理，不再叠加软降级）
 		h.stats.consecutiveSlowCount.Store(0)
@@ -319,8 +331,22 @@ func (h *RequestHandle) End(slow, failed bool) {
 	} else {
 		h.stats.consecutiveFailures.Store(0)
 		h.stats.consecutiveSlowCount.Store(0)
-		// 半开探测成功，关闭熔断器并归还探测配额
-		if breakerState(h.stats.state.Load()) == breakerHalfOpen {
+		// 任何一次成功都证明渠道已恢复：递增退避计数清零，
+		// 下次熔断重新从 1 倍基础冷却开始。
+		h.stats.tripCount.Store(0)
+		// 成功即救活：半开探测成功关闭熔断器；开熔断期间仍在途的请求成功
+		// 同样说明渠道已恢复（旧逻辑只认半开，会让递增退避的渠道在冷却期内
+		// 无人问津，只能靠时间自然过期）。
+		//
+		// 但定时熔断（限流短避让 / 宵禁）不在此列：它走 blockedUntil 分支，
+		// 一旦把状态改成 closed，IsAvailable 就再也不读 blockedUntil，剩余的
+		// 避让时长被整段作废。渠道正被限流时其它在途请求成功是常态，那样等于
+		// 限流避让形同虚设，「避让 → 立刻重入 → 再 429」会一直抖。
+		switch breakerState(h.stats.state.Load()) {
+		case breakerHalfOpen, breakerOpen:
+			if h.stats.blockedUntil.Load() > 0 {
+				break
+			}
 			h.stats.state.Store(int32(breakerClosed))
 			h.stats.halfOpenProbes.Store(0)
 			h.stats.halfOpenSince.Store(0)
@@ -328,13 +354,46 @@ func (h *RequestHandle) End(slow, failed bool) {
 	}
 }
 
-func (h *RequestHandle) tripBreaker() {
+// tripBreaker 打开熔断器并开启一轮递增冷却。
+//
+// 递增退避：第 n 次连续熔断的冷却 = cooldown_seconds × min(n, escalation_cap)
+// （第 1 次 1 倍、第 2 次 2 倍、第 3 次 3 倍……），一次成功请求即清零计数。
+// 动机是生产上观察到的「同一个渠道被反复熔断、每次冷却结束又立刻被同一个
+// 故障打回」：固定 300 秒既没有惩罚递增的复发，也没有让重试更快找到别处。
+// 封顶（默认 6 倍）避免反复故障的渠道被冷却到数小时而彻底退出轮转。
+//
+// 冷却长度仍按 openedAt + cooldown_seconds × 倍数 计算（不落绝对到期时间），
+// 这样定时熔断（宵禁，blockedUntil）的优先级语义和既有到期判定路径都不变。
+func (s *ChannelStats) tripBreaker() {
+	s.tripCount.Add(1)
+	// 已经在定时熔断中就整体让路：blockedUntil 是绝对到期时间（宵禁到早 8 点、
+	// 限流避让到 +30s），常规熔断的 openedAt 是相对冷却。把 blockedUntil 清零
+	// 等于用一次失败把宵禁/避让整段抹掉——而 End 的失败分支不看 blockedUntil，
+	// 宵禁期间累计到 failure_threshold 次在途失败就会走到这里，渠道于是在午夜
+	// 重新进入轮转，正是宵禁要防的事。
+	//
+	// tripCount 照常递增：这次失败是真的，只是不该拿它改写已有的绝对到期时间。
+	if until := s.blockedUntil.Load(); until > 0 && time.Now().Unix() < until {
+		return
+	}
 	// 无论之前是 closed 还是 half-open，只要判定熔断，无条件重置为 open 开启新冷却
-	h.stats.state.Store(int32(breakerOpen))
-	h.stats.openedAt.Store(time.Now().Unix())
-	h.stats.blockedUntil.Store(0)
-	h.stats.halfOpenProbes.Store(0)
-	h.stats.halfOpenSince.Store(0)
+	s.state.Store(int32(breakerOpen))
+	s.openedAt.Store(time.Now().Unix())
+	s.blockedUntil.Store(0)
+	s.halfOpenProbes.Store(0)
+	s.halfOpenSince.Store(0)
+}
+
+// escalationMultiplier 本轮熔断的冷却倍数：第 n 次连续熔断为 n 倍，在封顶处截断。
+func (s *ChannelStats) escalationMultiplier(breaker BreakerPolicy) int64 {
+	mult := int64(s.tripCount.Load())
+	if cap := breaker.EscalationCapOrDefault(); mult > cap {
+		mult = cap
+	}
+	if mult < 1 {
+		mult = 1
+	}
+	return mult
 }
 
 // IsAvailable 检查渠道当前是否可用（未过载、未熔断）
@@ -347,49 +406,55 @@ func (t *Tracker) IsAvailable(channelID int) (bool, string) {
 	s := t.getOrCreate(channelID)
 
 	// 熔断器检查
+	// BreakerExempt 只豁免熔断状态机，不豁免并发上限：兜底渠道（CPA）本身
+	// 仍可能被并发打满，此时继续放行只会把过载原样透传给兜底链路。
 	reservedProbe := false
-	switch state := breakerState(s.state.Load()); state {
-	case breakerOpen:
-		// 定时熔断（如宵禁或限流短冷却）：到期前一律不放行
-		if until := s.blockedUntil.Load(); until > 0 {
-			if time.Now().Unix() < until {
-				return false, ReasonCircuitBlockedUntil
-			}
-			// 到期：清除定时，直接进入半开状态允许探测
-			s.blockedUntil.Store(0)
-			if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
-				s.halfOpenProbes.Store(0)
-				s.halfOpenSince.Store(time.Now().UnixNano())
-			}
-		} else {
-			cooldown := policy.Breaker.CooldownSeconds
-			if cooldown <= 0 {
-				cooldown = 60
-			}
-			if time.Now().Unix()-s.openedAt.Load() >= cooldown {
-				// 进入半开状态
+	if !policy.BreakerExempt {
+		switch state := breakerState(s.state.Load()); state {
+		case breakerOpen:
+			// 定时熔断（如宵禁或限流短冷却）优先级高于常规冷却：到期前一律不放行
+			if until := s.blockedUntil.Load(); until > 0 {
+				if time.Now().Unix() < until {
+					return false, ReasonCircuitBlockedUntil
+				}
+				// 到期：清除定时，直接进入半开状态允许探测
+				s.blockedUntil.Store(0)
 				if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
 					s.halfOpenProbes.Store(0)
 					s.halfOpenSince.Store(time.Now().UnixNano())
 				}
 			} else {
-				return false, ReasonCircuitOpen
+				cooldown := policy.Breaker.CooldownSeconds
+				if cooldown <= 0 {
+					cooldown = 60
+				}
+				// 递增退避：连续第 n 次熔断的冷却 = 基础冷却 × min(n, escalation_cap)
+				cooldown *= s.escalationMultiplier(policy.Breaker)
+				if time.Now().Unix()-s.openedAt.Load() >= cooldown {
+					// 进入半开状态
+					if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
+						s.halfOpenProbes.Store(0)
+						s.halfOpenSince.Store(time.Now().UnixNano())
+					}
+				} else {
+					return false, ReasonCircuitOpen
+				}
 			}
+			// 进入半开后继续走下面的半开逻辑
+			fallthrough
+		case breakerHalfOpen:
+			maxProbes := policy.Breaker.HalfOpenProbes
+			if maxProbes <= 0 {
+				maxProbes = 1
+			}
+			s.reclaimExpiredProbes()
+			if s.halfOpenProbes.Add(1) > int32(maxProbes) {
+				s.halfOpenProbes.Add(-1)
+				return false, ReasonHalfOpenProbesExceeded
+			}
+			reservedProbe = true
+			// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
 		}
-		// 进入半开后继续走下面的半开逻辑
-		fallthrough
-	case breakerHalfOpen:
-		maxProbes := policy.Breaker.HalfOpenProbes
-		if maxProbes <= 0 {
-			maxProbes = 1
-		}
-		s.reclaimExpiredProbes()
-		if s.halfOpenProbes.Add(1) > int32(maxProbes) {
-			s.halfOpenProbes.Add(-1)
-			return false, ReasonHalfOpenProbesExceeded
-		}
-		reservedProbe = true
-		// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
 	}
 
 	// 并发上限检查

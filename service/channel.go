@@ -55,8 +55,21 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 	}
 }
 
-func ShouldDisableChannel(err *types.NewAPIError) bool {
+func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
 	if !common.AutomaticDisableChannelEnabled {
+		return false
+	}
+	// 策略文件首次加载失败时，breaker_exempt 无从解析（IsBreakerExempt 会因
+	// !Enabled() 一律返回 false），兜底渠道会被静默摘出豁免名单。这里选择
+	// 「判据不可信就不动手」：熔断会自愈，自动禁用不会——要人工或渠道测活才
+	// 回来，两者的代价不对称。故障期间少一次自动禁用，换兜底链路不会被
+	// 一个 yaml 路径问题悄悄拆掉。
+	if !loadbalancer.PolicyReliable() {
+		return false
+	}
+	// 兜底渠道豁免：本机 CPA 一旦被自动禁用就彻底失去退路，与熔断豁免
+	// 复用同一份判定（loadbalancer 的 breaker_exempt），避免两条路径口径漂移。
+	if loadbalancer.IsBreakerExempt(channelId) {
 		return false
 	}
 	if err == nil {

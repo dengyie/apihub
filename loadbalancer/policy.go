@@ -121,6 +121,15 @@ type ChannelPolicy struct {
 
 	// Breaker 熔断器参数
 	Breaker BreakerPolicy `yaml:"breaker"`
+
+	// BreakerExempt 豁免熔断与自动禁用。
+	//
+	// 用于本机 CPA（127.0.0.1:8317）这类兜底渠道：它们是最后一道防线，
+	// 一旦因为上游抖动被熔断或被自动禁用，整条链路就没有退路了。
+	// 豁免后该渠道不参与熔断统计、IsAvailable 恒为可用、自动禁用直接跳过。
+	// 代价是 CPA 真的宕机时每个请求都会先撞一次快速失败的本地调用，
+	// 但本机 loopback 失败是毫秒级的，远小于失去兜底的代价。
+	BreakerExempt bool `yaml:"breaker_exempt"`
 }
 
 // BreakerPolicy 熔断器策略
@@ -131,8 +140,25 @@ type BreakerPolicy struct {
 	CooldownSeconds int64 `yaml:"cooldown_seconds"`
 	// RateLimitCooldownSeconds 遭遇 429 频次/并发限流时的短期避让冷却时间（秒），默认 30 秒
 	RateLimitCooldownSeconds int64 `yaml:"rate_limit_cooldown_seconds"`
+	// EscalationCap 连续熔断的冷却递增上限倍数。
+	//
+	// 第 n 次连续熔断的冷却 = cooldown_seconds × min(n, EscalationCap)：
+	// 第 1 次 1 倍、第 2 次 2 倍、第 3 次 3 倍……一次成功即清零回到 1 倍。
+	// 封顶是为了避免反复故障的渠道被冷却到数小时而彻底退出轮转。
+	EscalationCap int64 `yaml:"escalation_cap"`
 	// HalfOpenProbes 半开状态允许的探测请求数
 	HalfOpenProbes int `yaml:"half_open_probes"`
+}
+
+// DefaultEscalationCap 连续熔断冷却倍数的内置上限。
+const DefaultEscalationCap = 6
+
+// EscalationCapOrDefault 返回生效的递增上限倍数。
+func (b BreakerPolicy) EscalationCapOrDefault() int64 {
+	if b.EscalationCap <= 0 {
+		return DefaultEscalationCap
+	}
+	return b.EscalationCap
 }
 
 // Resolve 将渠道级策略与默认策略合并，返回生效的完整策略
@@ -158,6 +184,13 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	if cp.Breaker.CooldownSeconds != 0 {
 		resolved.Breaker.CooldownSeconds = cp.Breaker.CooldownSeconds
 	}
+	if cp.Breaker.EscalationCap != 0 {
+		resolved.Breaker.EscalationCap = cp.Breaker.EscalationCap
+	}
+	// 豁免只能显式打开：零值 false 与「未设置」不可区分，故只在为 true 时提升。
+	if cp.BreakerExempt {
+		resolved.BreakerExempt = true
+	}
 	if cp.Breaker.RateLimitCooldownSeconds != 0 {
 		resolved.Breaker.RateLimitCooldownSeconds = cp.Breaker.RateLimitCooldownSeconds
 	}
@@ -165,6 +198,15 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 		resolved.Breaker.HalfOpenProbes = cp.Breaker.HalfOpenProbes
 	}
 	return resolved
+}
+
+// IsBreakerExempt 报告该渠道是否豁免熔断与自动禁用。
+// 供 tracker（熔断/可用性）与 service（自动禁用）共用同一份判定。
+func IsBreakerExempt(channelID int) bool {
+	if !Enabled() || channelID <= 0 {
+		return false
+	}
+	return GetPolicy().Resolve(channelID).BreakerExempt
 }
 
 // DefaultPolicy 返回内置默认策略（配置文件缺失时使用）

@@ -179,6 +179,25 @@ func (c *ChannelInfo) Scan(value any) error {
 	return common.Unmarshal(jsonScanBytes(value), c)
 }
 
+// SanitizeChannelKey 清洗单个 API key：去掉首尾空白，并剔除所有 CR/LF。
+//
+// 背景：迁移/录入时残留的行尾换行会让 Go 的 net/http 直接拒绝请求——
+// `net/http: invalid header field value for "Authorization"`，且 100% 必现。
+// 换行在本网关里只作为「多 key 分隔符」有意义，单个 key 内部绝不该出现，
+// 因此这里对单 key 一律剔除而不只是 trim。
+func SanitizeChannelKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, key)
+	return strings.TrimSpace(cleaned)
+}
+
 func (channel *Channel) GetKeys() []string {
 	if channel.Key == "" {
 		return []string{}
@@ -186,27 +205,59 @@ func (channel *Channel) GetKeys() []string {
 	if len(channel.Keys) > 0 {
 		return channel.Keys
 	}
-	trimmed := strings.TrimSpace(channel.Key)
-	// If the key starts with '[', try to parse it as a JSON array (e.g., for Vertex AI scenarios)
+	return parseChannelKeyList(channel.Key)
+}
+
+// parseChannelKeyList 把数据库里的 key 字段解析成实际可用的 key 列表。
+// 支持 JSON 数组（Vertex AI 场景）与换行分隔两种形态，逐个清洗并丢弃空项。
+//
+// GetKeys 与 Update（重算 MultiKeySize）必须共用这一份解析：否则清洗规则
+// 一旦调整，MultiKeySize 就会与真正可选的 key 数量不一致，多 key 状态位数组
+// 直接错位。
+func parseChannelKeyList(keyStr string) []string {
+	trimmed := strings.TrimSpace(keyStr)
 	if strings.HasPrefix(trimmed, "[") {
-		var arr []json.RawMessage
+		// 必须解到 []string，不能停在 []json.RawMessage：RawMessage 是元素的
+		// **原始 JSON 文本**，字符串元素连引号一起保留，直接 string(v) 会把
+		// "sk-xxx" 原样变成带字面引号的 "sk-xxx" 发进 Authorization 头，
+		// 该渠道 100% 认证失败且不报任何错。解到 []string 同时顺带处理转义。
+		var arr []string
 		if err := common.Unmarshal([]byte(trimmed), &arr); err == nil {
-			res := make([]string, len(arr))
-			for i, v := range arr {
-				res[i] = string(v)
+			res := make([]string, 0, len(arr))
+			for _, v := range arr {
+				if cleaned := SanitizeChannelKey(v); cleaned != "" {
+					res = append(res, cleaned)
+				}
 			}
 			return res
 		}
 	}
-	// Otherwise, fall back to splitting by newline
-	keys := strings.Split(strings.Trim(channel.Key, "\n"), "\n")
+	raw := strings.Split(strings.Trim(keyStr, "\n"), "\n")
+	keys := make([]string, 0, len(raw))
+	for _, k := range raw {
+		// 逐个清洗：行尾 \r（CRLF 录入）与多余空白同样会让 header 失效，
+		// 同时丢掉清洗后为空的项，避免轮询选到空 key。
+		if cleaned := SanitizeChannelKey(k); cleaned != "" {
+			keys = append(keys, cleaned)
+		}
+	}
 	return keys
 }
 
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
-		return channel.Key, 0, nil
+		// 单 key 同样要清洗：这里过去直接返回 channel.Key，尾部残留的换行
+		// 会原样进入 Authorization 头，导致该渠道 100% 必然失败。
+		//
+		// 但「非多 key 渠道的库里却存了多条换行分隔的 key」是数据不一致：清洗会
+		// 把它们拼成一条超长 key 发出去，上游回 401，而 401 在自动禁用状态码里，
+		// 于是这个渠道会被自动禁用。清洗前留一条日志，让这种坏数据可诊断，
+		// 而不是表现为一个毫无线索的「上游认证失败」。
+		if strings.ContainsAny(channel.Key, "\r\n") {
+			logger.LogError(nil, fmt.Sprintf("channel #%d 标记为单 key，但 key 字段含换行符（疑似多 key 数据未开启多 key 模式），已合并为单条发送，请核对渠道配置", channel.Id))
+		}
+		return SanitizeChannelKey(channel.Key), 0, nil
 	}
 
 	// Obtain all keys (split by \n)
@@ -574,19 +625,7 @@ func (channel *Channel) Update() error {
 		// Parse the key list (supports newline separation or JSON array)
 		keys := []string{}
 		if keyStr != "" {
-			trimmed := strings.TrimSpace(keyStr)
-			if strings.HasPrefix(trimmed, "[") {
-				var arr []json.RawMessage
-				if err := common.Unmarshal([]byte(trimmed), &arr); err == nil {
-					keys = make([]string, len(arr))
-					for i, v := range arr {
-						keys[i] = string(v)
-					}
-				}
-			}
-			if len(keys) == 0 { // fallback to newline split
-				keys = strings.Split(strings.Trim(keyStr, "\n"), "\n")
-			}
+			keys = parseChannelKeyList(keyStr)
 		}
 		channel.ChannelInfo.MultiKeySize = len(keys)
 		// Clean up status data that exceeds the new key count to prevent index out of range

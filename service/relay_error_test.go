@@ -264,13 +264,13 @@ func TestShouldDisableChannelSkipsClientAbortAndEmptyStream(t *testing.T) {
 	common.AutomaticDisableChannelEnabled = true
 	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = previous })
 
-	assert.False(t, ShouldDisableChannel(types.NewClientAbortedError(context.Canceled)))
-	assert.False(t, ShouldDisableChannel(types.NewErrorWithStatusCode(
+	assert.False(t, ShouldDisableChannel(0, types.NewClientAbortedError(context.Canceled)))
+	assert.False(t, ShouldDisableChannel(0, types.NewErrorWithStatusCode(
 		&loadbalancer.EmptyStreamError{ChannelID: 1},
 		types.ErrorCodeBadResponseBody,
 		http.StatusBadGateway,
 	)))
-	assert.False(t, ShouldDisableChannel(types.NewErrorWithStatusCode(
+	assert.False(t, ShouldDisableChannel(0, types.NewErrorWithStatusCode(
 		&loadbalancer.EmptyStreamBudgetError{ChannelID: 1},
 		types.ErrorCodeEmptyStreamBudgetExhausted,
 		http.StatusBadGateway,

@@ -507,6 +507,21 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			request.MaxTokens = nil
 		}
 	}
+	// 把 max_completion_tokens / max_tokens 钳到该渠道该上游模型的已知上限。
+	//
+	// 上游对超限一律回 400，上游自述的上限已在 service.ProcessChannelError 里
+	// 学到手（那里拿得到实际发出去的模型名）。上限未知时完全不动作，已知且
+	// 请求更大时才钳，因此正常请求的出站报文不受影响。
+	//
+	// 键必须是 info.UpstreamModelName（映射/后缀剥离之后的名字），与记录侧
+	// 是同一个字符串；换成 OriginModelName 或客户端请求名就会与记录侧分叉，
+	// 钳制永远命中不了。
+	if v := lo.FromPtrOr(request.MaxCompletionTokens, uint(0)); v > 0 {
+		request.MaxCompletionTokens = lo.ToPtr(loadbalancer.ClampMaxCompletionTokens(info.ChannelId, info.UpstreamModelName, v))
+	}
+	if v := lo.FromPtrOr(request.MaxTokens, uint(0)); v > 0 {
+		request.MaxTokens = lo.ToPtr(loadbalancer.ClampMaxCompletionTokens(info.ChannelId, info.UpstreamModelName, v))
+	}
 	if !capabilities.SupportsTemperature {
 		request.Temperature = nil
 	}

@@ -76,6 +76,23 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
 	}
+	// 智能负载：max_completion_tokens 超出该模型上限（如
+	// "max_completion_tokens is too large: 384000. This model supports at most
+	// 262144 completion tokens."）。这不是渠道故障而是请求参数与模型能力不匹配，
+	// 不计入熔断（controller 的 lbAttempt.End 已把 400 排除在失败计数外）。
+	//
+	// 必须排在下面两道闸门之前，否则这个分支是死代码：
+	//  1. alwaysSkipCodes 默认含 ErrorCodeBadResponseBody——上游 400 绝大多数
+	//     落在这个错误码上，会在闸门处直接 stop；
+	//  2. 即便错误码不在其中，默认 retryRanges 明确排除 400，最后也会落到
+	//     status_not_retryable。
+	// 死代码的代价不只是少一个 reason：controller 的重试循环是
+	// 「processChannelError（学到上限）→ 继续下一次尝试」，下一轮
+	// ConvertOpenAIRequest 出站前就会用刚学到的上限钳制，请求当场成功。
+	// 分支死了就等于第一次请求必定把 400 打给客户端，只有第二次请求才受益。
+	if _, ok := loadbalancer.ParseMaxCompletionTokensLimit(err); ok {
+		return PolicyDecision{Action: "retry", Reason: "max_completion_tokens_clamped", Source: "loadbalancer"}
+	}
 	// 智能负载：首字超时视为可重试，触发切换到下一个渠道。
 	//
 	// 必须排在 IsChannelError 之前：TTFT 超时的错误码是
@@ -153,8 +170,31 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	if err == nil {
 		return
 	}
+	// 智能负载：记住该渠道该上游模型的 max_completion_tokens 真实上限，
+	// 后续出站前直接钳制（见 openai adaptor），客户端要的长回复一次就成。
+	//
+	// 放在这里而不是 DecideRelayRetry 里，两个理由都是必须的：
+	//  1. 上限是「上游模型」的属性，必须用实际发出去的那个名字
+	//     （relayInfo.UpstreamModelName，已经过 model_mapping 与 reasoning
+	//     后缀剥离）。此前写在 DecideRelayRetry 里用的是
+	//     ContextKeyOriginalModel（客户端请求名），而出站钳制读的是
+	//     UpstreamModelName——渠道 #111 配了 model_mapping 把 deepseek-v4-flash
+	//     映射成 Deepseek-v4-flash，两个名字就此分叉，钳制永远查不到，等于没修。
+	//  2. 学习是「观测到事实」的副作用，与「这次要不要重试」无关。写在重试
+	//     决策里会被 client_aborted / skipRetry / retryTimes<=0 等闸门挡掉，
+	//     而恰恰是反复失败到预算耗尽的请求最需要把上限学到手。
+	//
+	// ChannelMeta 也要判空：UpstreamModelName 是从内嵌的 *ChannelMeta 提升上来
+	// 的字段，而它是**指针**内嵌。渠道选定之前就失败（选渠道失败、令牌中途失效
+	// 等）时 relayInfo 非 nil 但 ChannelMeta 仍为 nil，直接取字段会空指针 panic，
+	// 把一个本该正常记账的失败变成 500。
+	if relayInfo != nil && relayInfo.ChannelMeta != nil {
+		if limit, ok := loadbalancer.ParseMaxCompletionTokensLimit(err); ok {
+			loadbalancer.RecordMaxCompletionTokensLimit(channelError.ChannelId, relayInfo.UpstreamModelName, limit)
+		}
+	}
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
-	if ShouldDisableChannel(err) && channelError.AutoBan {
+	if ShouldDisableChannel(channelError.ChannelId, err) && channelError.AutoBan {
 		reason := err.MaskSensitiveErrorWithStatusCode()
 		gopool.Go(func() {
 			DisableChannel(channelError, reason)

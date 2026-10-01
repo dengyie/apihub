@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,90 @@ var (
 	paramStripConfig  = make(map[int]map[string]struct{})
 	paramStripLearned = make(map[int]map[string]struct{})
 )
+
+// maxTokensLimitLearned 记录「渠道 × 上游模型」真实的 max_completion_tokens 上限。
+//
+// 上游对超限请求一律回 400，但报文里通常直接写明它自己的上限
+// （"max_completion_tokens is too large: 384000. This model supports at most
+// 262144 completion tokens."）。与其每次都先失败一次再重试，不如第一次收到
+// 就把这个上限学到手，之后出站前直接钳制——客户端要的长回复一次就成。
+//
+// key 为 channelID → model → limit。模型级而非渠道级：同一中转站的
+// 不同模型上限可以差一个数量级。
+var maxTokensLimitLearned sync.Map // map[int]map[string]uint
+
+// maxTokensLimitRe 解析上游回传的 max_completion_tokens 上限。
+// 兼容中英文与不同措辞：只认「超限 + 上限数字」这一组语义。
+var maxTokensLimitRe = regexp.MustCompile(
+	`(?is)max_completion_tokens\s+is\s+too\s+large.*?supports\s+at\s+most\s+(\d+)`)
+
+// ParseMaxCompletionTokensLimit 从上游 400 报文里解析该模型允许的
+// max_completion_tokens 上限。未命中返回 (0, false)。
+func ParseMaxCompletionTokensLimit(err *types.NewAPIError) (uint, bool) {
+	if err == nil {
+		return 0, false
+	}
+	m := maxTokensLimitRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	parsed, perr := strconv.ParseUint(m[1], 10, 64)
+	if perr != nil || parsed == 0 {
+		return 0, false
+	}
+	return uint(parsed), true
+}
+
+// RecordMaxCompletionTokensLimit 记住该渠道该模型的上限。
+// 只在「本次学到的上限比已知更小」时覆盖：上限只会收紧，放宽会让先前
+// 按更小上限做的钳制失效。
+func RecordMaxCompletionTokensLimit(channelID int, modelName string, limit uint) {
+	if channelID <= 0 || modelName == "" || limit == 0 {
+		return
+	}
+	inner, _ := maxTokensLimitLearned.LoadOrStore(channelID, &sync.Map{})
+	perModel, ok := inner.(*sync.Map)
+	if !ok {
+		return
+	}
+	if prev, loaded := perModel.Load(modelName); loaded {
+		if old, ok := prev.(uint); ok && old <= limit {
+			return
+		}
+	}
+	perModel.Store(modelName, limit)
+}
+
+// GetMaxCompletionTokensLimit 返回该渠道该模型的已知上限；未学到返回 0。
+func GetMaxCompletionTokensLimit(channelID int, modelName string) uint {
+	if channelID <= 0 || modelName == "" {
+		return 0
+	}
+	inner, ok := maxTokensLimitLearned.Load(channelID)
+	if !ok {
+		return 0
+	}
+	perModel, ok := inner.(*sync.Map)
+	if !ok {
+		return 0
+	}
+	if v, ok := perModel.Load(modelName); ok {
+		if limit, ok := v.(uint); ok {
+			return limit
+		}
+	}
+	return 0
+}
+
+// ClampMaxCompletionTokens 把请求的上限钳到该渠道该模型的已知上限内。
+// limit 为 0（未学到）或请求本身已在上限内时原样返回。
+func ClampMaxCompletionTokens(channelID int, modelName string, requested uint) uint {
+	limit := GetMaxCompletionTokensLimit(channelID, modelName)
+	if limit == 0 || requested <= limit {
+		return requested
+	}
+	return limit
+}
 
 // SetParamStripConfig 从配置加载手动指定的裁剪规则
 // cfg: channelID -> 参数名列表
