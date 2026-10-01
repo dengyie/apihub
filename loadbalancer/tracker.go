@@ -15,11 +15,15 @@ const (
 	breakerHalfOpen
 )
 
-// ChannelStats 单个渠道的实时状态。
-// 所有字段通过原子操作或内部锁访问，支持高并发。
+// ChannelStats 一份熔断状态机的状态。
+//
+// 键是 breakerKey 而非渠道 id：model 为空串表示「渠道级」，非空表示
+// 「该渠道的这个模型」。同一个渠道的不同模型各持一份，互不影响——
+// 这正是 v29.11 的目的：一个模型 404 不该让该渠道其余模型一起退出轮转。
 type ChannelStats struct {
-	// inflight 当前进行中的请求数
-	inflight atomic.Int32
+	// lastSeen 最近一次 Begin 的时刻（Unix 秒）。淘汰清扫据此丢弃
+	// 长期没人用的条目，避免 (渠道 × 模型) 的组合把 map 撑大。
+	lastSeen atomic.Int64
 	// consecutiveFailures 连续硬失败计数（达到阈值后硬熔断）
 	consecutiveFailures atomic.Int32
 	// state 熔断器状态
@@ -35,7 +39,7 @@ type ChannelStats struct {
 	// consecutiveSlowCount 连续慢请求计数（不含硬失败），用于触发降级
 	consecutiveSlowCount atomic.Int32
 	// consecutiveEmptyStreams 连续空流计数。达到 empty_stream_trip_threshold
-	// 后熔断该渠道（不自动禁用）；一次非空流成功清零。
+	// 后熔断该条目对应的范围（渠道级或单模型）；一次非空流成功清零。
 	consecutiveEmptyStreams atomic.Int32
 	// tripCount 连续熔断次数。用于冷却递增退避：第 n 次熔断的冷却为
 	// 基础冷却 × min(n, escalation_cap)。一次成功请求清零。
@@ -81,14 +85,43 @@ const (
 	ReasonOverloaded             = "overloaded"
 )
 
+// breakerKey 标识一份熔断状态。
+//
+// model 为空串表示「整渠道」状态：账号级失效（额度耗尽、宵禁、密钥失效、
+// 分组无权）熔在这把键上，挡住该渠道的全部模型。model 非空则只熔这一个
+// (渠道, 模型) 组合，同渠道其它模型照常轮转。
+//
+// 键必须是**客户端请求的模型名**（relayInfo.OriginModelName），不是上游名
+// （UpstreamModelName）：熔断的写侧两个名字都拿得到，读侧（IsAvailable，
+// 选渠道时）只知道客户端请求了什么，而 model_mapping 是多对一的，无法
+// 从上游名反推客户端名。所以键只能落在读侧唯一知道的那个名字上。
+// 代价见 docs：多个客户端名映射到同一上游名时，它们各自独立熔断。
+//
+// 这与 paramstrip.go 的 maxTokensLimitLearned **故意用不同的键空间**：
+// 那里是纯写侧（钳制发生在中继时，上游名确定可用），不需要读侧反查。
+// 不要为了「统一」把两者合并。
+type breakerKey struct {
+	channelID int
+	model     string
+}
+
 // Tracker 跟踪所有渠道的实时状态
 type Tracker struct {
-	mu       sync.RWMutex
-	channels map[int]*ChannelStats
+	mu sync.RWMutex
+	// breakers 熔断状态机，按 (渠道, 模型) 分键
+	breakers map[breakerKey]*ChannelStats
+	// inflight 进行中请求数，**按渠道**统计。
+	//
+	// max_inflight 是上游账号的并发预算，不是单模型的预算。若跟着熔断一起
+	// 拆到模型级，一个渠道上 N 个并发请求分散到 N 个不同模型时每个键各自
+	// 看到 inflight=0，并发上限形同虚设——这会打掉 v29.7 起对 #7 起作用的
+	// 过载保护。故熔断按模型、并发按渠道，两者刻意不共用一把键。
+	inflight map[int]*atomic.Int32
 }
 
 var globalTracker = &Tracker{
-	channels: make(map[int]*ChannelStats),
+	breakers: make(map[breakerKey]*ChannelStats),
+	inflight: make(map[int]*atomic.Int32),
 }
 
 // GlobalTracker 返回全局跟踪器
@@ -96,34 +129,89 @@ func GlobalTracker() *Tracker {
 	return globalTracker
 }
 
-func (t *Tracker) getOrCreate(channelID int) *ChannelStats {
+// getBreaker 取该键的熔断状态，必要时创建。
+// 刻意不提供「只给渠道 id」的便捷版本：那会把作用域默认为渠道级，
+// 而 v29.11 里选错作用域是静默的（少熔或过度熔都不会报错）。每个调用点
+// 必须自己写清楚 scope。
+func (t *Tracker) getBreaker(k breakerKey) *ChannelStats {
 	t.mu.RLock()
-	s, ok := t.channels[channelID]
+	s, ok := t.breakers[k]
 	t.mu.RUnlock()
 	if ok {
 		return s
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if s, ok := t.channels[channelID]; ok {
+	if s, ok := t.breakers[k]; ok {
 		return s
 	}
+	t.evictLocked()
 	s = &ChannelStats{}
-	t.channels[channelID] = s
+	t.breakers[k] = s
 	return s
 }
 
-// TripBreakerUntil 定时熔断：将渠道熔断到指定时间点（如宵禁到早 8 点）。
+// getInflight 返回该渠道的并发计数器（按渠道，不按模型）。
+func (t *Tracker) getInflight(channelID int) *atomic.Int32 {
+	t.mu.RLock()
+	c, ok := t.inflight[channelID]
+	t.mu.RUnlock()
+	if ok {
+		return c
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c, ok := t.inflight[channelID]; ok {
+		return c
+	}
+	c = &atomic.Int32{}
+	t.inflight[channelID] = c
+	return c
+}
+
+// 淘汰阈值：条目数超过它就在下一次建键时清扫一次。
+//
+// 键空间从「渠道数」变成了「渠道数 × 模型数」，条目会多一个量级。渠道被删
+// 或改名后其条目本会永久残留（熔断状态不再被读，也没人再碰它），所以要有
+// 这条清扫路径。阈值给得宽松：正常规模（212 渠道 × 180 模型上限 ≈ 38k）
+// 远达不到，只有真出现异常增长才会触发。
+const breakerEvictThreshold = 65536
+
+// breakerIdleTTL 条目空闲多久后可以被淘汰。
+const breakerIdleTTL = time.Hour
+
+// evictLocked 丢弃「已关闭且长期无人使用」的条目。调用方必须持有写锁。
+//
+// 只清 closed：open / halfOpen 的条目正在挡流量或正在探测，任何一个被误删
+// 都等于让故障渠道立刻重新进入轮转。halfOpen 的条目靠 lastSeen 自然老化，
+// 但它在 halfOpen 时也会被 Begin 更新 lastSeen，所以会随探测流量保持新鲜。
+func (t *Tracker) evictLocked() {
+	if len(t.breakers) <= breakerEvictThreshold {
+		return
+	}
+	cutoff := time.Now().Unix() - int64(breakerIdleTTL/time.Second)
+	for k, s := range t.breakers {
+		if breakerState(s.state.Load()) != breakerClosed {
+			continue
+		}
+		if s.lastSeen.Load() < cutoff {
+			delete(t.breakers, k)
+		}
+	}
+}
+
+// TripBreakerUntil 定时熔断：将该条目熔断到指定时间点（如宵禁到早 8 点）。
 // 立即打开熔断器，并设置 blockedUntil，到期前不参与选渠道。
 // 豁免渠道（breaker_exempt）直接返回，兜底链路不做定时熔断。
-func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
+// 宵禁是账号级的时段限制，调用方应传空 model（熔整渠道）。
+func (t *Tracker) TripBreakerUntil(channelID int, model string, until time.Time) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
 	if IsBreakerExempt(channelID) {
 		return
 	}
-	s := t.getOrCreate(channelID)
+	s := t.getBreaker(scopeKey(channelID, model))
 	s.state.Store(int32(breakerOpen))
 	s.openedAt.Store(time.Now().Unix())
 	s.blockedUntil.Store(until.Unix())
@@ -131,9 +219,9 @@ func (t *Tracker) TripBreakerUntil(channelID int, until time.Time) {
 	s.halfOpenSince.Store(0)
 }
 
-// RecordEmptyStream 记一次该渠道的空流。连续达到阈值则熔断（只熔断不禁用）。
+// RecordEmptyStream 记一次该条目的空流。连续达到阈值则熔断（只熔断不禁用）。
 // 阈值 ≤0 时关闭。成功一次非空流应调用 ClearEmptyStream。
-func (t *Tracker) RecordEmptyStream(channelID int) {
+func (t *Tracker) RecordEmptyStream(channelID int, model string) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
@@ -144,47 +232,47 @@ func (t *Tracker) RecordEmptyStream(channelID int) {
 	if threshold <= 0 {
 		return
 	}
-	s := t.getOrCreate(channelID)
+	s := t.getBreaker(scopeKey(channelID, model))
 	n := s.consecutiveEmptyStreams.Add(1)
 	if int(n) >= threshold {
-		t.TripBreaker(channelID)
+		t.TripBreaker(channelID, model)
 		s.consecutiveEmptyStreams.Store(0)
 	}
 }
 
-// ClearEmptyStream 渠道一次非空流成功后清零连续空流计数。
-func (t *Tracker) ClearEmptyStream(channelID int) {
+// ClearEmptyStream 一次非空流成功后清零连续空流计数。
+func (t *Tracker) ClearEmptyStream(channelID int, model string) {
 	if channelID <= 0 {
 		return
 	}
-	t.getOrCreate(channelID).consecutiveEmptyStreams.Store(0)
+	t.getBreaker(scopeKey(channelID, model)).consecutiveEmptyStreams.Store(0)
 }
 
-// EmptyStreamStreak 返回渠道当前连续空流次数（测试用）。
-func (t *Tracker) EmptyStreamStreak(channelID int) int {
+// EmptyStreamStreak 返回该条目当前连续空流次数（测试用）。
+func (t *Tracker) EmptyStreamStreak(channelID int, model string) int {
 	if channelID <= 0 {
 		return 0
 	}
-	return int(t.getOrCreate(channelID).consecutiveEmptyStreams.Load())
+	return int(t.getBreaker(scopeKey(channelID, model)).consecutiveEmptyStreams.Load())
 }
 
-// TripBreaker 立即熔断渠道（开启常规冷却周期）。
+// TripBreaker 立即熔断（开启常规冷却周期）。
 // 适用于明确的确定性或严重上游故障（如 410 EOL）。
 // 冷却时长按连续熔断次数递增，见 tripBreaker。
-func (t *Tracker) TripBreaker(channelID int) {
+func (t *Tracker) TripBreaker(channelID int, model string) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
 	if IsBreakerExempt(channelID) {
 		return
 	}
-	t.getOrCreate(channelID).tripBreaker()
+	t.getBreaker(scopeKey(channelID, model)).tripBreaker()
 }
 
 // TripBreakerForRateLimit 针对上游瞬时限流或并发超限（429、RPM 等）的短期避让熔断。
 // 使用配置的 RateLimitCooldownSeconds（默认 30 秒），
 // 短暂避让后自动进入半开探测，防止常规长冷却（如 300 秒）导致全渠道假死。
-func (t *Tracker) TripBreakerForRateLimit(channelID int) {
+func (t *Tracker) TripBreakerForRateLimit(channelID int, model string) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
@@ -193,16 +281,20 @@ func (t *Tracker) TripBreakerForRateLimit(channelID int) {
 	if cooldown <= 0 {
 		cooldown = 30
 	}
-	t.TripBreakerUntil(channelID, time.Now().Add(time.Duration(cooldown)*time.Second))
+	t.TripBreakerUntil(channelID, model, time.Now().Add(time.Duration(cooldown)*time.Second))
 }
 
-// IsDegraded 判断渠道是否处于降级状态（慢 3 次后的 10 分钟软降级）。
-// 降级渠道仍可用，但在选渠道时排最后。
-func (t *Tracker) IsDegraded(channelID int) bool {
+// IsDegraded 判断条目是否处于降级状态（慢 3 次后的 10 分钟软降级）。
+// 降级条目仍可用，但在选渠道时排最后。
+//
+// 按 (渠道, 模型) 判断：首字时间取决于具体上游模型，不同模型的延迟可以
+// 差一个量级。选渠道时的比较总是在同一个模型名上进行的（同一请求的候选
+// 都服务于这个模型），所以按模型判降级反而比按渠道更准。
+func (t *Tracker) IsDegraded(channelID int, model string) bool {
 	if !Enabled() || channelID <= 0 {
 		return false
 	}
-	s := t.getOrCreate(channelID)
+	s := t.getBreaker(scopeKey(channelID, model))
 	if until := s.degradedUntil.Load(); until > 0 {
 		if time.Now().Unix() < until {
 			return true
@@ -214,41 +306,47 @@ func (t *Tracker) IsDegraded(channelID int) bool {
 }
 
 // Begin 请求开始：inflight +1，返回一个用于 End 的句柄。
+//
+// model 是客户端请求的模型名（relayInfo.OriginModelName）：熔断状态按它
+// 建键，而 inflight 始终按渠道计（见 Tracker.inflight）。
 // 若 channelID <= 0（未确定渠道的占位调用），返回不污染统计的虚拟句柄。
-func (t *Tracker) Begin(channelID int) *RequestHandle {
+func (t *Tracker) Begin(channelID int, model string) *RequestHandle {
 	if channelID <= 0 {
 		return &RequestHandle{
 			tracker:   t,
 			stats:     &ChannelStats{},
+			inflight:  &atomic.Int32{},
 			channelID: channelID,
 			start:     time.Now(),
 		}
 	}
-	s := t.getOrCreate(channelID)
-	s.inflight.Add(1)
+	s := t.getBreaker(scopeKey(channelID, model))
+	c := t.getInflight(channelID)
+	s.lastSeen.Store(time.Now().Unix())
+	c.Add(1)
 	return &RequestHandle{
 		tracker:   t,
 		stats:     s,
+		inflight:  c,
 		channelID: channelID,
 		start:     time.Now(),
 	}
 }
 
-// Inflight 返回渠道当前进行中的请求数
+// Inflight 返回渠道当前进行中的请求数（按渠道计，不按模型）
 func (t *Tracker) Inflight(channelID int) int {
 	if channelID <= 0 {
 		return 0
 	}
-	s := t.getOrCreate(channelID)
-	return int(s.inflight.Load())
+	return int(t.getInflight(channelID).Load())
 }
 
-// AvgTTFT 返回渠道最近的平均首字时间（毫秒），无样本时返回 -1
-func (t *Tracker) AvgTTFT(channelID int) int64 {
+// AvgTTFT 返回该条目最近的平均首字时间（毫秒），无样本时返回 -1
+func (t *Tracker) AvgTTFT(channelID int, model string) int64 {
 	if channelID <= 0 {
 		return -1
 	}
-	s := t.getOrCreate(channelID)
+	s := t.getBreaker(scopeKey(channelID, model))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.ttftSamples) == 0 {
@@ -263,8 +361,11 @@ func (t *Tracker) AvgTTFT(channelID int) int64 {
 
 // RequestHandle 单次请求的跟踪句柄
 type RequestHandle struct {
-	tracker   *Tracker
-	stats     *ChannelStats
+	tracker *Tracker
+	// stats 该 (渠道, 模型) 的熔断状态机
+	stats *ChannelStats
+	// inflight 该渠道的并发计数器（渠道级，与 stats 的模型级键不同）
+	inflight  *atomic.Int32
 	channelID int
 	start     time.Time
 	firstByte time.Time
@@ -295,7 +396,7 @@ func (h *RequestHandle) End(slow, failed bool) {
 	if h.channelID <= 0 {
 		return
 	}
-	h.stats.inflight.Add(-1)
+	h.inflight.Add(-1)
 
 	policy := GetPolicy().Resolve(h.channelID)
 
@@ -342,6 +443,11 @@ func (h *RequestHandle) End(slow, failed bool) {
 		// 一旦把状态改成 closed，IsAvailable 就再也不读 blockedUntil，剩余的
 		// 避让时长被整段作废。渠道正被限流时其它在途请求成功是常态，那样等于
 		// 限流避让形同虚设，「避让 → 立刻重入 → 再 429」会一直抖。
+		//
+		// 注意 h.stats 是**模型级**条目：某个模型成功不会碰渠道级那条，
+		// 于是「A 模型成功」无法提前解掉「额度耗尽」这类账号级封锁——那正是
+		// 我们要的：账号级封锁只能由它自己到期（blockedUntil）或同一条目的
+		// 成功来解除。
 		switch breakerState(h.stats.state.Load()) {
 		case breakerHalfOpen, breakerOpen:
 			if h.stats.blockedUntil.Load() > 0 {
@@ -396,78 +502,127 @@ func (s *ChannelStats) escalationMultiplier(breaker BreakerPolicy) int64 {
 	return mult
 }
 
-// IsAvailable 检查渠道当前是否可用（未过载、未熔断）
-// 返回 false 时附带原因
-func (t *Tracker) IsAvailable(channelID int) (bool, string) {
+// scopeKey 决定一次记录/熔断实际落在哪把键上。
+//
+// 三个折叠规则，**所有写侧方法都必须经过它**（否则 Begin 记的条目和
+// IsAvailable 查的条目不是同一把，失败计数会写进没人读的条目里）：
+//  1. channelID <= 0 → 无处可记（零值键）
+//  2. model 为空 → 渠道级：调用方明确要熔整渠道（额度耗尽、宵禁、401）
+//  3. per_model 关闭 → 渠道级：这既是灰度开关也是回滚手段，
+//     关闭时行为与 v29.10 逐位一致
+func scopeKey(channelID int, model string) breakerKey {
+	if channelID <= 0 {
+		return breakerKey{}
+	}
+	if model == "" || !GetPolicy().Resolve(channelID).Breaker.PerModelOrDefault() {
+		return breakerKey{channelID: channelID}
+	}
+	return breakerKey{channelID: channelID, model: model}
+}
+
+// IsAvailable 检查渠道当前对 model 是否可用（未过载、未熔断）。
+// 返回 false 时附带原因。
+func (t *Tracker) IsAvailable(channelID int, model string) (bool, string) {
 	if !Enabled() || channelID <= 0 {
 		return true, ""
 	}
 	policy := GetPolicy().Resolve(channelID)
-	s := t.getOrCreate(channelID)
 
-	// 熔断器检查
+	// 渠道级那把键永远查（账号级封锁必须挡住全部模型）；
+	// 模型级那把键只在 per_model 打开且 model 非空时查。
+	modelScoped := model != "" && policy.Breaker.PerModelOrDefault()
+	keys := [2]breakerKey{{channelID: channelID}, {}}
+	nkeys := 1
+	if modelScoped {
+		keys[1] = breakerKey{channelID: channelID, model: model}
+		nkeys = 2
+	}
+
 	// BreakerExempt 只豁免熔断状态机，不豁免并发上限：兜底渠道（CPA）本身
 	// 仍可能被并发打满，此时继续放行只会把过载原样透传给兜底链路。
-	reservedProbe := false
+	var reserved [2]bool
 	if !policy.BreakerExempt {
-		switch state := breakerState(s.state.Load()); state {
-		case breakerOpen:
-			// 定时熔断（如宵禁或限流短冷却）优先级高于常规冷却：到期前一律不放行
-			if until := s.blockedUntil.Load(); until > 0 {
-				if time.Now().Unix() < until {
-					return false, ReasonCircuitBlockedUntil
-				}
-				// 到期：清除定时，直接进入半开状态允许探测
-				s.blockedUntil.Store(0)
-				if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
-					s.halfOpenProbes.Store(0)
-					s.halfOpenSince.Store(time.Now().UnixNano())
-				}
-			} else {
-				cooldown := policy.Breaker.CooldownSeconds
-				if cooldown <= 0 {
-					cooldown = 60
-				}
-				// 递增退避：连续第 n 次熔断的冷却 = 基础冷却 × min(n, escalation_cap)
-				cooldown *= s.escalationMultiplier(policy.Breaker)
-				if time.Now().Unix()-s.openedAt.Load() >= cooldown {
-					// 进入半开状态
-					if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
-						s.halfOpenProbes.Store(0)
-						s.halfOpenSince.Store(time.Now().UnixNano())
+		for i := 0; i < nkeys; i++ {
+			reason, took := t.checkBreaker(keys[i], policy)
+			if reason != "" {
+				// 归还本次调用自己已经预占的探测配额。
+				// 用局部标志而不是重读熔断状态：状态可能在两步之间被并发的
+				// End 改成 open，那时重读会漏还或多还（见 overload 分支注释）。
+				for j := 0; j < i; j++ {
+					if reserved[j] {
+						t.getBreaker(keys[j]).halfOpenProbes.Add(-1)
 					}
-				} else {
-					return false, ReasonCircuitOpen
 				}
+				return false, reason
 			}
-			// 进入半开后继续走下面的半开逻辑
-			fallthrough
-		case breakerHalfOpen:
-			maxProbes := policy.Breaker.HalfOpenProbes
-			if maxProbes <= 0 {
-				maxProbes = 1
-			}
-			s.reclaimExpiredProbes()
-			if s.halfOpenProbes.Add(1) > int32(maxProbes) {
-				s.halfOpenProbes.Add(-1)
-				return false, ReasonHalfOpenProbesExceeded
-			}
-			reservedProbe = true
-			// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
+			reserved[i] = took
 		}
 	}
 
-	// 并发上限检查
-	if max := policy.MaxInflight; max > 0 && int(s.inflight.Load()) >= max {
-		// 归还本次调用自己预占的探测配额。用局部标志而不是重读熔断状态：
-		// 状态可能在两步之间被并发的 End 改成 open，那时重读会漏还或多还。
-		if reservedProbe {
-			s.halfOpenProbes.Add(-1)
+	// 并发上限检查（渠道级，不按模型——见 Tracker.inflight）
+	if max := policy.MaxInflight; max > 0 && int(t.getInflight(channelID).Load()) >= max {
+		for j := 0; j < nkeys; j++ {
+			if reserved[j] {
+				t.getBreaker(keys[j]).halfOpenProbes.Add(-1)
+			}
 		}
 		return false, ReasonOverloaded
 	}
 
 	return true, ""
+}
+
+// checkBreaker 对单把键做熔断状态机检查。
+// 返回 reason 非空表示不可用；returned took 为 true 表示本次调用预占了
+// 一个半开探测配额，调用方放弃时必须归还。
+func (t *Tracker) checkBreaker(k breakerKey, policy ChannelPolicy) (reason string, took bool) {
+	s := t.getBreaker(k)
+	switch state := breakerState(s.state.Load()); state {
+	case breakerOpen:
+		// 定时熔断（如宵禁或限流短冷却）优先级高于常规冷却：到期前一律不放行
+		if until := s.blockedUntil.Load(); until > 0 {
+			if time.Now().Unix() < until {
+				return ReasonCircuitBlockedUntil, false
+			}
+			// 到期：清除定时，直接进入半开状态允许探测
+			s.blockedUntil.Store(0)
+			if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
+				s.halfOpenProbes.Store(0)
+				s.halfOpenSince.Store(time.Now().UnixNano())
+			}
+		} else {
+			cooldown := policy.Breaker.CooldownSeconds
+			if cooldown <= 0 {
+				cooldown = 60
+			}
+			// 递增退避：连续第 n 次熔断的冷却 = 基础冷却 × min(n, escalation_cap)
+			cooldown *= s.escalationMultiplier(policy.Breaker)
+			if time.Now().Unix()-s.openedAt.Load() >= cooldown {
+				// 进入半开状态
+				if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {
+					s.halfOpenProbes.Store(0)
+					s.halfOpenSince.Store(time.Now().UnixNano())
+				}
+			} else {
+				return ReasonCircuitOpen, false
+			}
+		}
+		// 进入半开后继续走下面的半开逻辑
+		fallthrough
+	case breakerHalfOpen:
+		maxProbes := policy.Breaker.HalfOpenProbes
+		if maxProbes <= 0 {
+			maxProbes = 1
+		}
+		s.reclaimExpiredProbes()
+		if s.halfOpenProbes.Add(1) > int32(maxProbes) {
+			s.halfOpenProbes.Add(-1)
+			return ReasonHalfOpenProbesExceeded, false
+		}
+		// 允许这一个探测请求通过，结束时 End 会根据结果关闭或重新熔断
+		return "", true
+	}
+	return "", false
 }
 
 // reclaimExpiredProbes 回收「已预占但从未归还」的半开探测配额。

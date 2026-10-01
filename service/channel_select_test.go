@@ -303,7 +303,7 @@ func TestSelectChannelForRequestOverloadedFallback(t *testing.T) {
 	// Both channels reach max_inflight; chID2 is further past it. Selection
 	// must fall back to the least loaded one instead of failing with 503.
 	tr := loadbalancer.GlobalTracker()
-	handles := []*loadbalancer.RequestHandle{tr.Begin(chID1), tr.Begin(chID2), tr.Begin(chID2), tr.Begin(chID2)}
+	handles := []*loadbalancer.RequestHandle{tr.Begin(chID1, testModel), tr.Begin(chID2, testModel), tr.Begin(chID2, testModel), tr.Begin(chID2, testModel)}
 	t.Cleanup(func() {
 		for _, h := range handles {
 			h.End(false, false)
@@ -337,14 +337,14 @@ func TestSelectChannelForRequestPrefersOverloadedOverDegradedFallback(t *testing
 	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
 
 	tr := loadbalancer.GlobalTracker()
-	inflight := tr.Begin(overloadedID)
+	inflight := tr.Begin(overloadedID, testModel)
 	t.Cleanup(func() { inflight.End(false, false) })
 	// Three consecutive slow attempts mark the channel as degraded: usable, but
 	// only as a last resort.
 	for i := 0; i < 3; i++ {
-		tr.Begin(degradedID).End(true, false)
+		tr.Begin(degradedID, testModel).End(true, false)
 	}
-	require.True(t, tr.IsDegraded(degradedID))
+	require.True(t, tr.IsDegraded(degradedID, testModel))
 
 	c, retry := newSelectRetryParam(modelName, nil)
 	selected, _, err := SelectChannelForRequest(c, modelName, retry)
@@ -525,8 +525,8 @@ func TestSelectRetryChannelSkipsUnhealthyChannels(t *testing.T) {
 	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
 
 	tracker := loadbalancer.GlobalTracker()
-	tracker.TripBreaker(chID1)
-	tracker.TripBreaker(chID2)
+	tracker.TripBreaker(chID1, testModel)
+	tracker.TripBreaker(chID2, testModel)
 
 	_, retry := newSelectRetryParam(modelName, nil)
 	selected, _, err := SelectRetryChannel(retry)
@@ -537,9 +537,13 @@ func TestSelectRetryChannelSkipsUnhealthyChannels(t *testing.T) {
 	// With every candidate tripped there is nothing left to try. Returning nil
 	// is what lets the caller stop cleanly instead of calling a known-bad
 	// channel one more time.
-	tracker.TripBreaker(chID3)
+	tracker.TripBreaker(chID3, testModel)
 	_, retry2 := newSelectRetryParam(modelName, nil)
 	selected, _, err = SelectRetryChannel(retry2)
 	require.NoError(t, err)
 	assert.Nil(t, selected, "an all-unhealthy pool must report exhaustion, not a channel")
 }
+
+// testModel 测试里统一用的模型名。per_model 默认关闭，模型名会被 scopeKey
+// 折叠成渠道级，所以这些用例的语义与 v29.10 一致。
+const testModel = "gpt-4o"

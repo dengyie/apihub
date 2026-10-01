@@ -288,8 +288,8 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 		if channel == nil {
 			return nil, selectGroup, nil
 		}
-		if ok, reason := tracker.IsAvailable(channel.Id); !ok {
-			logger.LogDebug(param.Ctx, "loadbalancer: retry 跳过渠道 #%d (%s)", channel.Id, reason)
+		if ok, reason := tracker.IsAvailable(channel.Id, param.ModelName); !ok {
+			logger.LogDebug(param.Ctx, "loadbalancer: retry 跳过渠道 #%d [model=%s] (%s)", channel.Id, param.ModelName, reason)
 			param.ExcludedIDs[channel.Id] = struct{}{}
 			continue
 		}
@@ -498,8 +498,8 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				channel = nil
 				continue
 			}
-			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id); !ok {
-				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (%s)", channel.Id, reason)
+			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); !ok {
+				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d [model=%s] (%s)", channel.Id, modelName, reason)
 				if reason == loadbalancer.ReasonOverloaded {
 					inflight := loadbalancer.GlobalTracker().Inflight(channel.Id)
 					if inflight < minOverloadedInflight {
@@ -513,7 +513,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				continue
 			}
 			// 降级渠道：先记为备选，优先用非降级渠道
-			if loadbalancer.GlobalTracker().IsDegraded(channel.Id) {
+			if loadbalancer.GlobalTracker().IsDegraded(channel.Id, modelName) {
 				if degradedFallback == nil {
 					degradedFallback = channel
 					degradedSelectGroup = selectGroup

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,10 +53,10 @@ func TestPolicyResolve(t *testing.T) {
 }
 
 func TestTrackerInflight(t *testing.T) {
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
-	h1 := tr.Begin(1)
-	h2 := tr.Begin(1)
+	h1 := tr.Begin(1, testModel)
+	h2 := tr.Begin(1, testModel)
 	assert.Equal(t, 2, tr.Inflight(1))
 
 	h1.End(false, false)
@@ -74,41 +75,41 @@ func TestBreakerTripAndRecover(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// 连续 3 次慢请求（非失败）只触发软降级，不硬熔断
 	for i := 0; i < 3; i++ {
-		h := tr.Begin(7)
+		h := tr.Begin(7, testModel)
 		h.End(true, false)
 	}
-	ok, _ := tr.IsAvailable(7)
+	ok, _ := tr.IsAvailable(7, testModel)
 	assert.True(t, ok, "channel 7 should stay available after 3 slow requests (soft degrade only)")
-	assert.True(t, tr.IsDegraded(7), "channel 7 should be degraded after 3 slow requests")
+	assert.True(t, tr.IsDegraded(7, testModel), "channel 7 should be degraded after 3 slow requests")
 
 	// 连续 3 次硬失败触发熔断
 	for i := 0; i < 3; i++ {
-		h := tr.Begin(8)
+		h := tr.Begin(8, testModel)
 		h.End(false, true)
 	}
-	ok, reason := tr.IsAvailable(8)
+	ok, reason := tr.IsAvailable(8, testModel)
 	assert.False(t, ok, "channel 8 should be unavailable after 3 hard failures")
 	assert.Equal(t, "circuit_open", reason)
 
 	// 手动把 openedAt 拨到冷却期之前，模拟冷却结束
-	s := tr.getOrCreate(8)
+	s := statsFor(tr, 8)
 	s.openedAt.Store(time.Now().Unix() - 61)
 
 	// 半开：允许 1 个探测
-	ok, _ = tr.IsAvailable(8)
+	ok, _ = tr.IsAvailable(8, testModel)
 	assert.True(t, ok, "channel 8 should allow 1 probe in half-open")
 	// 第 2 个被拒绝
-	ok, _ = tr.IsAvailable(8)
+	ok, _ = tr.IsAvailable(8, testModel)
 	assert.False(t, ok, "channel 8 should reject 2nd probe in half-open")
 
 	// 探测成功后熔断器关闭
-	h := tr.Begin(8)
+	h := tr.Begin(8, testModel)
 	h.End(false, false)
-	ok, _ = tr.IsAvailable(8)
+	ok, _ = tr.IsAvailable(8, testModel)
 	assert.True(t, ok, "channel 8 should be available after successful probe")
 }
 
@@ -117,34 +118,34 @@ func TestBreakerHalfOpenProbeFailure(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// 1. 触发硬熔断（3次失败）
 	for i := 0; i < 3; i++ {
-		h := tr.Begin(100)
+		h := tr.Begin(100, testModel)
 		h.End(false, true)
 	}
-	ok, reason := tr.IsAvailable(100)
+	ok, reason := tr.IsAvailable(100, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, "circuit_open", reason)
 
 	// 2. 冷却结束，进入半开
-	s := tr.getOrCreate(100)
+	s := statsFor(tr, 100)
 	s.openedAt.Store(time.Now().Unix() - 61)
 
 	// 3. 放行 1 个探测
-	ok, _ = tr.IsAvailable(100)
+	ok, _ = tr.IsAvailable(100, testModel)
 	assert.True(t, ok)
 
 	// 4. 探测失败！此时应立即切回 circuit_open，并开启新的冷却时间
-	h := tr.Begin(100)
+	h := tr.Begin(100, testModel)
 	h.End(false, true)
 
 	assert.Equal(t, int32(breakerOpen), s.state.Load(), "state should revert to breakerOpen after failed probe")
 	assert.Equal(t, int32(0), s.halfOpenProbes.Load(), "halfOpenProbes should be reset to 0")
 
 	// 此时冷却未结束（刚熔断），不应可用
-	ok, reason = tr.IsAvailable(100)
+	ok, reason = tr.IsAvailable(100, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, "circuit_open", reason)
 
@@ -153,7 +154,7 @@ func TestBreakerHalfOpenProbeFailure(t *testing.T) {
 	// 必须按实际倍数拨回，否则会误判成「仍被锁住」而掩盖真正的死锁回归。
 	breaker := GetPolicy().Resolve(100).Breaker
 	s.openedAt.Store(time.Now().Unix() - breaker.CooldownSeconds*s.escalationMultiplier(breaker) - 1)
-	ok, _ = tr.IsAvailable(100)
+	ok, _ = tr.IsAvailable(100, testModel)
 	assert.True(t, ok, "channel should allow probe again after next cooldown")
 }
 
@@ -162,26 +163,26 @@ func TestTrackerBreakerHalfOpenProbeSuccessClosesBreaker(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// 1. 触发硬熔断
 	for i := 0; i < 3; i++ {
-		tr.Begin(200).End(false, true)
+		tr.Begin(200, testModel).End(false, true)
 	}
-	s := tr.getOrCreate(200)
+	s := statsFor(tr, 200)
 	assert.Equal(t, int32(breakerOpen), s.state.Load())
 
 	// 2. 冷却结束，进入半开
 	s.openedAt.Store(time.Now().Unix() - 61)
 
 	// 3. 放行 1 个探测请求
-	ok, _ := tr.IsAvailable(200)
+	ok, _ := tr.IsAvailable(200, testModel)
 	assert.True(t, ok)
 	assert.Equal(t, int32(breakerHalfOpen), s.state.Load())
 	assert.Equal(t, int32(1), s.halfOpenProbes.Load())
 
 	// 4. 探测请求成功结束
-	tr.Begin(200).End(false, false)
+	tr.Begin(200, testModel).End(false, false)
 
 	// 5. 验证熔断器成功闭合，且 halfOpenProbes 重置为 0
 	assert.Equal(t, int32(breakerClosed), s.state.Load(), "state should close to breakerClosed after a successful probe")
@@ -189,7 +190,7 @@ func TestTrackerBreakerHalfOpenProbeSuccessClosesBreaker(t *testing.T) {
 	assert.Equal(t, int32(0), s.consecutiveFailures.Load(), "consecutiveFailures should be reset to 0")
 
 	// 6. 后续请求应该完全可用，不会出现 circuit_half_open_probes_exhausted
-	ok, reason := tr.IsAvailable(200)
+	ok, reason := tr.IsAvailable(200, testModel)
 	assert.True(t, ok, "channel should be available after breaker closed")
 	assert.Empty(t, reason)
 }
@@ -199,18 +200,18 @@ func TestTrackerIgnoreZeroChannel(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// channel <= 0 不应崩溃且不应污染统计
-	h := tr.Begin(0)
+	h := tr.Begin(0, testModel)
 	assert.NotNil(t, h)
 	h.MarkFirstByte()
 	h.End(false, true)
 
 	assert.Equal(t, 0, tr.Inflight(0))
-	assert.Equal(t, int64(-1), tr.AvgTTFT(0))
-	assert.False(t, tr.IsDegraded(0))
-	ok, _ := tr.IsAvailable(0)
+	assert.Equal(t, int64(-1), tr.AvgTTFT(0, testModel))
+	assert.False(t, tr.IsDegraded(0, testModel))
+	ok, _ := tr.IsAvailable(0, testModel)
 	assert.True(t, ok)
 }
 
@@ -219,13 +220,13 @@ func TestOverloadSkip(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// MaxInflight=2，打满
-	_ = tr.Begin(9)
-	_ = tr.Begin(9)
+	_ = tr.Begin(9, testModel)
+	_ = tr.Begin(9, testModel)
 
-	ok, reason := tr.IsAvailable(9)
+	ok, reason := tr.IsAvailable(9, testModel)
 	assert.False(t, ok, "channel 9 should be unavailable when overloaded")
 	assert.Equal(t, "overloaded", reason)
 }
@@ -354,15 +355,15 @@ func TestTripBreaker(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 
 	// 初始可用
-	ok, _ := tr.IsAvailable(55)
+	ok, _ := tr.IsAvailable(55, testModel)
 	assert.True(t, ok)
 
 	// 立即熔断
-	tr.TripBreaker(55)
-	ok, reason := tr.IsAvailable(55)
+	tr.TripBreaker(55, testModel)
+	ok, reason := tr.IsAvailable(55, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, "circuit_open", reason)
 }
@@ -614,14 +615,14 @@ func TestRateLimitBreakerShortCooldown(t *testing.T) {
 		Channels: make(map[int]ChannelPolicy),
 	}
 	SetPolicy(policy)
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const chID = 888
 
 	// 触发针对限流的短期熔断
-	tracker.TripBreakerForRateLimit(chID)
+	tracker.TripBreakerForRateLimit(chID, testModel)
 
 	// 熔断中：被 blockedUntil 阻拦
-	ok, reason := tracker.IsAvailable(chID)
+	ok, reason := tracker.IsAvailable(chID, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, ReasonCircuitBlockedUntil, reason)
 
@@ -629,15 +630,15 @@ func TestRateLimitBreakerShortCooldown(t *testing.T) {
 	time.Sleep(2100 * time.Millisecond)
 
 	// 到期后应当立即进入半开状态并允许 1 次探测请求，绝不能继续等待 300 秒常规冷却！
-	ok, reason = tracker.IsAvailable(chID)
+	ok, reason = tracker.IsAvailable(chID, testModel)
 	assert.True(t, ok, "短冷却到期后应直接允许探测，当前原因: %s", reason)
 
 	// 探测成功后 End，熔断器闭合
-	h := tracker.Begin(chID)
+	h := tracker.Begin(chID, testModel)
 	h.End(false, false)
 
 	// 闭合后完全正常
-	ok, _ = tracker.IsAvailable(chID)
+	ok, _ = tracker.IsAvailable(chID, testModel)
 	assert.True(t, ok)
 }
 
@@ -649,28 +650,28 @@ func TestRateLimitBreakerShortCooldown(t *testing.T) {
 // 削弱半开限流。
 // ageHalfOpen 把半开轮次的租约时钟往前拨，模拟「探测配额泄漏后过去了很久」。
 func ageHalfOpen(tracker *Tracker, id int, d time.Duration) {
-	s := tracker.getOrCreate(id)
+	s := statsFor(tracker, id)
 	s.openedAt.Store(time.Now().Add(-d).Unix())
 	s.halfOpenSince.Store(time.Now().Add(-d).UnixNano())
 }
 
 func TestProbeLeakAfterAbandonedRequest(t *testing.T) {
 	SetPolicy(testPolicy())
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 4242
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	ageHalfOpen(tracker, id, 10*time.Minute)
 
 	// 第一次检查通过（预占 1 个探测配额）
-	ok, reason := tracker.IsAvailable(id)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	require.True(t, ok, "first probe should be admitted, got %q", reason)
 
 	// 模拟请求在 Begin/End 之前被放弃：客户端断开、计费准备失败，
 	// 或 Responses WebSocket 中继根本不调用 End。租约过去后必须自愈。
 	ageHalfOpen(tracker, id, 10*time.Minute)
 
-	ok, reason = tracker.IsAvailable(id)
+	ok, reason = tracker.IsAvailable(id, testModel)
 	assert.True(t, ok, "channel must self-heal once the abandoned probe's lease expires, got %q", reason)
 }
 
@@ -678,28 +679,28 @@ func TestProbeLeakCannotPermanentlyDisableChannel(t *testing.T) {
 	p := testPolicy()
 	p.Default.Breaker.HalfOpenProbes = 2
 	SetPolicy(p)
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 4343
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	// 进入半开后不再拨动时钟：模拟同一时间窗内连续到来的若干请求，
 	// 它们全部「检查通过但请求被放弃」，配额只增不减。
 	ageHalfOpen(tracker, id, 10*time.Minute)
 	for range 3 {
-		_, _ = tracker.IsAvailable(id)
+		_, _ = tracker.IsAvailable(id, testModel)
 	}
-	require.EqualValues(t, 2, tracker.getOrCreate(id).halfOpenProbes.Load(),
+	require.EqualValues(t, 2, statsFor(tracker, id).halfOpenProbes.Load(),
 		"precondition: probes accumulated to the budget without any End")
 
 	// 配额用尽后必须被限流——否则半开保护形同虚设
-	ok, reason := tracker.IsAvailable(id)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, ReasonHalfOpenProbesExceeded, reason)
 
 	// 修复前：熔断器既没回 closed 也没再 open，没有任何东西会重置这个
 	// 计数，渠道在此永久不可用。租约到期后必须重新放行探测。
 	ageHalfOpen(tracker, id, 10*time.Minute)
-	ok, reason = tracker.IsAvailable(id)
+	ok, reason = tracker.IsAvailable(id, testModel)
 	assert.True(t, ok, "channel must not be permanently disabled, got %q", reason)
 }
 
@@ -708,41 +709,41 @@ func TestProbeLeaseDoesNotFireEarly(t *testing.T) {
 	p := testPolicy()
 	p.Default.Breaker.HalfOpenProbes = 1
 	SetPolicy(p)
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 4444
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	ageHalfOpen(tracker, id, 10*time.Minute)
-	require.True(t, func() bool { ok, _ := tracker.IsAvailable(id); return ok }())
+	require.True(t, func() bool { ok, _ := tracker.IsAvailable(id, testModel); return ok }())
 
 	// 租约内：仍应被拒，否则熔断保护形同虚设
-	ok, reason := tracker.IsAvailable(id)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, ReasonHalfOpenProbesExceeded, reason)
 
 	// 超过租约：重新放行
 	ageHalfOpen(tracker, id, halfOpenProbeLease+time.Second)
-	ok, reason = tracker.IsAvailable(id)
+	ok, reason = tracker.IsAvailable(id, testModel)
 	assert.True(t, ok, "probe must be re-admitted after the lease, got %q", reason)
 }
 
 // 正常的探测成功必须立即关闭熔断器，不受租约影响。
 func TestProbeLeaseDoesNotDelaySuccessfulRecovery(t *testing.T) {
 	SetPolicy(testPolicy())
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 4545
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	ageHalfOpen(tracker, id, 10*time.Minute)
-	ok, _ := tracker.IsAvailable(id)
+	ok, _ := tracker.IsAvailable(id, testModel)
 	require.True(t, ok)
 
 	// 探测真的发出了请求并成功
-	tracker.Begin(id).End(false, false)
+	tracker.Begin(id, testModel).End(false, false)
 
-	assert.Equal(t, breakerClosed, breakerState(tracker.getOrCreate(id).state.Load()))
+	assert.Equal(t, breakerClosed, breakerState(statsFor(tracker, id).state.Load()))
 	// 关闭后 IsAvailable 不再受探测配额限制
-	ok, reason := tracker.IsAvailable(id)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	assert.True(t, ok, "recovered channel should be available, got %q", reason)
 }
 
@@ -752,24 +753,24 @@ func TestOverloadRefundKeepsProbeCountNonNegative(t *testing.T) {
 	p := testPolicy()
 	p.Default.MaxInflight = 1
 	SetPolicy(p)
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 4646
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	ageHalfOpen(tracker, id, 10*time.Minute)
 
 	// 占满 inflight，使并发上限检查必然失败
-	tracker.Begin(id)
+	tracker.Begin(id, testModel)
 	require.Equal(t, 1, tracker.Inflight(id))
 
-	ok, reason := tracker.IsAvailable(id)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	assert.False(t, ok)
 	assert.Equal(t, ReasonOverloaded, reason)
-	assert.EqualValues(t, 0, tracker.getOrCreate(id).halfOpenProbes.Load(),
+	assert.EqualValues(t, 0, statsFor(tracker, id).halfOpenProbes.Load(),
 		"an overload rejection must refund the probe it just reserved")
 
-	tracker.getOrCreate(id).inflight.Store(0)
-	ok, reason = tracker.IsAvailable(id)
+	tracker.getInflight(id).Store(0)
+	ok, reason = tracker.IsAvailable(id, testModel)
 	assert.True(t, ok, "refunded probe must be re-admittable, got %q", reason)
 }
 
@@ -836,7 +837,7 @@ func TestTrackerInflightReturnedOnPanic(t *testing.T) {
 	currentPolicy.Store(testPolicy())
 	defer currentPolicy.Store(old)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 	const channelID = 7
 
 	// Two attempts succeed normally, the third panics partway through — the
@@ -844,7 +845,7 @@ func TestTrackerInflightReturnedOnPanic(t *testing.T) {
 	// work panics.
 	attempts := func() {
 		for i := 0; i < 3; i++ {
-			h := tr.Begin(channelID)
+			h := tr.Begin(channelID, testModel)
 			defer h.End(false, false)
 			if i == 2 {
 				panic("upstream handler blew up")
@@ -862,7 +863,7 @@ func TestTrackerInflightReturnedOnPanic(t *testing.T) {
 
 	// The same guard must not double-count the attempts that did reach their
 	// own End, or a single panic would inflate the failure count instead.
-	assert.Zero(t, tr.channels[channelID].consecutiveFailures.Load(),
+	assert.Zero(t, statsFor(tr, channelID).consecutiveFailures.Load(),
 		"the panic guard must not add breaker failures of its own")
 }
 
@@ -927,31 +928,55 @@ func TestEmptyStreamPolicyAndTracker(t *testing.T) {
 	currentPolicy.Store(p)
 	defer currentPolicy.Store(oldPolicy)
 
-	tr := &Tracker{channels: make(map[int]*ChannelStats)}
+	tr := newTestTracker()
 	chID := 55
 
-	assert.Equal(t, 0, tr.EmptyStreamStreak(chID))
-	tr.RecordEmptyStream(chID)
-	assert.Equal(t, 1, tr.EmptyStreamStreak(chID))
-	ok, _ := tr.IsAvailable(chID)
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID, testModel))
+	tr.RecordEmptyStream(chID, testModel)
+	assert.Equal(t, 1, tr.EmptyStreamStreak(chID, testModel))
+	ok, _ := tr.IsAvailable(chID, testModel)
 	assert.True(t, ok)
 
-	tr.RecordEmptyStream(chID)
-	assert.Equal(t, 2, tr.EmptyStreamStreak(chID))
-	ok, _ = tr.IsAvailable(chID)
+	tr.RecordEmptyStream(chID, testModel)
+	assert.Equal(t, 2, tr.EmptyStreamStreak(chID, testModel))
+	ok, _ = tr.IsAvailable(chID, testModel)
 	assert.True(t, ok)
 
 	// 达到阈值 3：触发硬熔断，streak 重置为 0
-	tr.RecordEmptyStream(chID)
-	assert.Equal(t, 0, tr.EmptyStreamStreak(chID))
-	ok, reason := tr.IsAvailable(chID)
+	tr.RecordEmptyStream(chID, testModel)
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID, testModel))
+	ok, reason := tr.IsAvailable(chID, testModel)
 	assert.False(t, ok, "达到阈值后应立即熔断")
 	assert.Equal(t, "circuit_open", reason)
 
 	// 清零方法验证
 	chID2 := 56
-	tr.RecordEmptyStream(chID2)
-	assert.Equal(t, 1, tr.EmptyStreamStreak(chID2))
-	tr.ClearEmptyStream(chID2)
-	assert.Equal(t, 0, tr.EmptyStreamStreak(chID2))
+	tr.RecordEmptyStream(chID2, testModel)
+	assert.Equal(t, 1, tr.EmptyStreamStreak(chID2, testModel))
+	tr.ClearEmptyStream(chID2, testModel)
+	assert.Equal(t, 0, tr.EmptyStreamStreak(chID2, testModel))
+}
+
+// testModel 是测试里统一用的模型名。
+//
+// 它的作用不是「测试按模型熔断」，而是让这些用例继续落在**渠道级**：
+// per_model 默认关闭，scopeKey 会把任何非空 model 折叠回渠道级，于是
+// 这些老用例的语义与 v29.10 逐位一致。按模型的行为由 v2911_new_test.go
+// 单独覆盖。
+const testModel = "gpt-4o"
+
+// newTestTracker 造一个空 Tracker。
+// 熔断状态表与并发计数表是分开的两张（见 Tracker 注释），所以必须一起初始化。
+func newTestTracker() *Tracker {
+	return &Tracker{
+		breakers: make(map[breakerKey]*ChannelStats),
+		inflight: make(map[int]*atomic.Int32),
+	}
+}
+
+// statsFor 取该渠道的**渠道级**条目。
+// per_model 关闭时所有状态都落在这把键上（scopeKey 会把任何 model 折叠
+// 成空串），所以它是这些老用例观察熔断状态的正确入口。
+func statsFor(t *Tracker, id int) *ChannelStats {
+	return t.getBreaker(scopeKey(id, ""))
 }

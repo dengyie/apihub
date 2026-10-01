@@ -197,7 +197,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 智能负载：本轮尝试计入 inflight。原先只有流式路径在 scanner 里
 		// Begin/End，非流式与任务请求对 max_inflight 完全不可见，并发上限形同
 		// 虚设。句柄存入 context 供 StreamScannerHandler 复用同一个计数器。
-		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
+		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id, relayInfo.OriginModelName)
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		// panic 兜底：保证 inflight 一定归还。
 		//
@@ -272,7 +272,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					break
 				}
 				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
-				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id)
+				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id, relayInfo.OriginModelName)
 				relayInfo.LastError = nil
 				return
 			}
@@ -291,7 +291,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				newAPIError = streamErr
 			} else {
 				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
-				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id)
+				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id, relayInfo.OriginModelName)
 				// 流式路径已由 StreamScannerHandler 上报（幂等），这里收尾非流式
 				lbAttempt.End(false, false)
 				relayInfo.LastError = nil
@@ -319,7 +319,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		wasEmptyStream := loadbalancer.IsEmptyStream(newAPIError)
 		if wasEmptyStream {
-			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id)
+			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id, relayInfo.OriginModelName)
 		}
 		if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
 			zeroByteRetryable(newAPIError) {
@@ -351,58 +351,81 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					!loadbalancer.IsStreamBroken(newAPIError) &&
 					!loadbalancer.IsUpstreamRateLimitError(newAPIError) &&
 					!types.IsClientAbortedError(newAPIError))
-				// 智能负载：上游限流或并发超限（429 / RPM / 并发限制），采用短周期熔断冷却（默认 30 秒），避免整池因瞬时限流假死
-				if loadbalancer.IsUpstreamRateLimitError(newAPIError) {
-					loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id)
-					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游限流/并发超限 (429/RPM/Concurrency)，已设置短期避让冷却: %s", channel.Id, newAPIError.Error()))
-				} else {
-					// 智能负载：模型 EOL (410 等) 属于确定性上游失效，立即熔断该渠道。
-					if loadbalancer.IsEOLError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游模型已 EOL/下线 (410)，已立即熔断该渠道", channel.Id))
-					}
-					// 智能负载：上游流传输中断（RST_STREAM / connection reset 等），立即熔断该渠道并换渠道重试。
-					if loadbalancer.IsStreamBroken(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游流传输中断 (%s)，已立即熔断该渠道并触发重试", channel.Id, newAPIError.Error()))
-					}
-					// 智能负载：上游额度耗尽或会话路由失败，属于渠道确定性故障，立即熔断该渠道。
-					if loadbalancer.IsUpstreamQuotaError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-					}
-					if loadbalancer.IsUpstreamRoutingError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-					}
-					// 智能负载：上游思考模式历史消息不兼容（reasoning_content must be passed back），立即熔断该渠道。
-					if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-					}
-					// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），立即熔断该渠道。
-					if loadbalancer.IsUpstreamRelayError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-					}
-					// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，立即熔断该渠道。
-					if loadbalancer.IsUpstreamPermissionError(newAPIError) {
-						loadbalancer.GlobalTracker().TripBreaker(channel.Id)
-						logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, newAPIError.Error()))
-					}
+			// 熔断作用域：只有可证明是账号/密钥/中继级的问题才熔整个渠道，
+			// 其余只熔 (渠道, 模型) 这一对——一个模型 404 不该让该渠道
+			// 上百个健康模型一起退出轮转。判据见 loadbalancer.BreakerScopeOf。
+			//
+			// 下面每条熔断日志都必须打出作用域：按模型熔断之后，只打渠道
+			// id 的日志无法归因「到底是哪个模型把它熔了」。
+			modelName := relayInfo.OriginModelName
+			scopeOf := func(err *types.NewAPIError) string {
+				if loadbalancer.BreakerScopeOf(err) == loadbalancer.ScopeChannel {
+					return ""
 				}
+				return modelName
+			}
+			scopeLabel := func(model string) string {
+				if model == "" {
+					return "全部模型"
+				}
+				return model
+			}
+			// 智能负载：上游限流或并发超限（429 / RPM / 并发限制），采用短周期熔断冷却（默认 30 秒），避免整池因瞬时限流假死
+			if loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+				loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id, "")
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游限流/并发超限 (429/RPM/Concurrency)，已设置短期避让冷却: %s", channel.Id, scopeLabel(""), newAPIError.Error()))
+			} else {
+				// 智能负载：模型 EOL (410 等) 属于该模型自身的确定性失效，只熔这一个模型。
+				if loadbalancer.IsEOLError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, scopeOf(newAPIError))
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型已 EOL/下线 (410)，已立即熔断", channel.Id, scopeLabel(scopeOf(newAPIError))))
+				}
+				// 智能负载：上游流传输中断（RST_STREAM / connection reset 等）。这是单次请求的
+				// 传输故障而非账号失效，只熔该模型；若它其实是系统性的，每个模型会各自
+				// 熔断并各自升级退避，最终收敛到全渠道退出，只是慢 N 步。
+				if loadbalancer.IsStreamBroken(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, scopeOf(newAPIError))
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游流传输中断 (%s)，已立即熔断并触发重试", channel.Id, scopeLabel(scopeOf(newAPIError)), newAPIError.Error()))
+				}
+				// 智能负载：上游额度耗尽属于账号级失效，熔整个渠道。
+				if loadbalancer.IsUpstreamQuotaError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, "")
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游额度已耗尽，已立即熔断该渠道: %s", channel.Id, scopeLabel(""), newAPIError.Error()))
+				}
+				// 智能负载：会话路由失败是上游网关自身的问题，与具体哪个模型无关，熔整个渠道。
+				if loadbalancer.IsUpstreamRoutingError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, scopeOf(newAPIError))
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, scopeLabel(scopeOf(newAPIError)), newAPIError.Error()))
+				}
+				// 智能负载：上游思考模式历史消息不兼容，是这个模型的请求形状问题，只熔该模型。
+				if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, scopeOf(newAPIError))
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断: %s", channel.Id, scopeLabel(scopeOf(newAPIError)), newAPIError.Error()))
+				}
+				// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错），是代理自身故障，熔整个渠道。
+				if loadbalancer.IsUpstreamRelayError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, "")
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断该渠道: %s", channel.Id, scopeLabel(""), newAPIError.Error()))
+				}
+				// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持，是账号令牌问题，熔整个渠道。
+				if loadbalancer.IsUpstreamPermissionError(newAPIError) {
+					loadbalancer.GlobalTracker().TripBreaker(channel.Id, "")
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游权限受限/分组无权访问/模型不支持，已立即熔断该渠道: %s", channel.Id, scopeLabel(""), newAPIError.Error()))
+				}
+			}
 		// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
 			loadbalancer.MarkParamUnsupported(channel.Id, param)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 不支持 %s 参数，已标记自动裁剪", channel.Id, param))
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 不支持 %s 参数，已标记自动裁剪", channel.Id, scopeLabel(modelName), param))
 		}
 		// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。
 		// 403 本身已会触发换渠道重试，这里加的是超长熔断。
+		// 宵禁是账号级的时段限制，熔整个渠道（传空 model）。
 		if loadbalancer.IsCurfewError(newAPIError) {
 			until := loadbalancer.CurfewEndTime(time.Now())
-			loadbalancer.GlobalTracker().TripBreakerUntil(channel.Id, until)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d 宵禁中，已熔断到 %s", channel.Id, until.Format("15:04")))
+			loadbalancer.GlobalTracker().TripBreakerUntil(channel.Id, "", until)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 宵禁中，已熔断到 %s", channel.Id, scopeLabel(""), until.Format("15:04")))
 		}
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -863,7 +886,7 @@ func executeTaskSubmissionWith(
 		diagnostics.attempt(retryParam.GetRetry()+1, channel, relayInfo.LockedChannel != nil)
 
 		// 智能负载：任务提交同样计入 inflight（见 Relay 中的同名注释）
-		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id)
+		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id, relayInfo.OriginModelName)
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		// panic 兜底，理由见 Relay 中的同名注释。任务提交路径没有自己的
 		// recover，panic 由 gin 的 Recovery 中间件接住，所以这条更必要。

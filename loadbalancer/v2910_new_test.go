@@ -15,10 +15,10 @@ import (
 func TestTripBreakerDoesNotCancelActiveTimedBlock(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9010
 
-	tracker.TripBreakerUntil(id, time.Now().Add(2*time.Hour))
+	tracker.TripBreakerUntil(id, testModel, time.Now().Add(2*time.Hour))
 	before := blockedRemaining(t, tracker, id)
 	if before <= 0 {
 		t.Fatal("宵禁应设置 blockedUntil")
@@ -26,10 +26,10 @@ func TestTripBreakerDoesNotCancelActiveTimedBlock(t *testing.T) {
 
 	// 宵禁期间连续失败到阈值：End 的失败分支会调 tripBreaker
 	for i := 0; i < 5; i++ {
-		tracker.Begin(id).End(false, true)
+		tracker.Begin(id, testModel).End(false, true)
 	}
 
-	if ok, reason := tracker.IsAvailable(id); ok || reason != ReasonCircuitBlockedUntil {
+	if ok, reason := tracker.IsAvailable(id, testModel); ok || reason != ReasonCircuitBlockedUntil {
 		t.Fatalf("宵禁期间失败不应解除避让，实际 IsAvailable = %v（%s）", ok, reason)
 	}
 	after := blockedRemaining(t, tracker, id)
@@ -49,22 +49,22 @@ func TestTripBreakerDoesNotCancelActiveTimedBlock(t *testing.T) {
 func TestTripBreakerAfterTimedBlockExpired(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9011
 
 	// 已过期（过去 1 小时）的宵禁
-	tracker.TripBreakerUntil(id, time.Now().Add(-time.Hour))
+	tracker.TripBreakerUntil(id, testModel, time.Now().Add(-time.Hour))
 	// blockedRemaining 对已过期的定时熔断返回**负值**（剩余 = 到期 - 现在），
 	// 这正是它「不再挡路」的信号，判据是 <= 0 而不是 == 0。
 	if got := blockedRemaining(t, tracker, id); got > 0 {
 		t.Fatalf("过期宵禁不应再有剩余避让时长，got = %v", got)
 	}
 
-	tracker.TripBreaker(id)
-	if state := breakerState(tracker.getOrCreate(id).state.Load()); state != breakerOpen {
+	tracker.TripBreaker(id, testModel)
+	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerOpen {
 		t.Fatalf("过期后常规熔断应正常打开，状态 = %v", state)
 	}
-	if ok, reason := tracker.IsAvailable(id); ok || reason != ReasonCircuitOpen {
+	if ok, reason := tracker.IsAvailable(id, testModel); ok || reason != ReasonCircuitOpen {
 		t.Fatalf("常规冷却期内应不可用，实际 = %v（%s）", ok, reason)
 	}
 }
@@ -73,12 +73,12 @@ func TestTripBreakerAfterTimedBlockExpired(t *testing.T) {
 func TestTripBreakerStillEscalatesNormally(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9012
 
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	first := cooldownRemaining(t, tracker, id)
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	second := cooldownRemaining(t, tracker, id)
 
 	if second <= first {

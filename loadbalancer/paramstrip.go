@@ -566,3 +566,60 @@ func IsUpstreamModelUnavailableError(err *types.NewAPIError) bool {
 	}
 	return false
 }
+
+// BreakerScope 一次上游失效的熔断范围。
+type BreakerScope int
+
+const (
+	// ScopeChannel 熔整个渠道：该渠道的全部模型一起退出轮转。
+	ScopeChannel BreakerScope = iota
+	// ScopeModel 只熔 (该渠道, 该模型) 这一对，同渠道其它模型照常。
+	ScopeModel
+)
+
+func (s BreakerScope) String() string {
+	if s == ScopeChannel {
+		return "channel"
+	}
+	return "model"
+}
+
+// BreakerScopeOf 判定一次上游失败该熔多大范围。
+//
+// 判据只有一条：**这条错误是否可证明关于账号 / 密钥 / 中继本身**，
+// 而不是关于某个模型。可证明的才熔整渠道，其余一律只熔该模型。
+// 拿不准时选 ScopeModel —— 少熔的代价是本该退出的渠道多挨几次请求
+// （而递增退避会让它很快退出）；过熔的代价是该渠道上百个健康模型
+// 集体消失，这是 v29.10 的老毛病，也是这次要修的东西。两者不对称，
+// 所以默认偏向 ScopeModel。
+//
+// 系统性故障不会因此漏网：若某个账号级问题其实表现在很多模型上，
+// 每个模型会各自熔断并各自升级退避，最终收敛到「全渠道退出」这个
+// 同样的终点，只是慢 N 步。代价是有界的，收益是不误伤。
+func BreakerScopeOf(err *types.NewAPIError) BreakerScope {
+	if err == nil {
+		return ScopeModel
+	}
+	// 账号 / 密钥 / 中继级：与具体哪个模型无关
+	if IsCurfewError(err) || // 宵禁是账号的时段限制
+		IsUpstreamQuotaError(err) || // 余额/额度，全模型失效
+		IsUpstreamPermissionError(err) || // 令牌停用、分组无权
+		IsUpstreamRelayError(err) || // 中继代理自身故障
+		IsUpstreamRoutingError(err) || // 上游网关会话路由失败（缺 x-opencode-session）
+		IsUpstreamRateLimitError(err) { // 429/RPM：保守按渠道，冷却仅 30s
+		return ScopeChannel
+	}
+	return ScopeModel
+}
+
+// BreakerScopeForStatusCode 由 HTTP 状态码判熔断范围。
+//
+// 401 是密钥失效（账号级），其余可确定的永久失败按模型级处理。
+// 单独拎出来是因为自动禁用的 disable_ranges 目前只含 401，而熔断侧
+// 需要在拿到状态码的第一时间就知道该熔多大范围。
+func BreakerScopeForStatusCode(statusCode int) BreakerScope {
+	if statusCode == 401 {
+		return ScopeChannel
+	}
+	return ScopeModel
+}

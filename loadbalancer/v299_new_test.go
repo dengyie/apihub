@@ -17,22 +17,22 @@ import (
 func TestInFlightSuccessDoesNotCancelTimedBlock(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9006
 
-	tracker.TripBreakerForRateLimit(id)
+	tracker.TripBreakerForRateLimit(id, testModel)
 	before := blockedRemaining(t, tracker, id)
 	if before <= 0 {
 		t.Fatal("限流避让应设置 blockedUntil")
 	}
 
 	// 冷却期内有一个在途请求成功
-	tracker.Begin(id).End(false, false)
+	tracker.Begin(id, testModel).End(false, false)
 
-	if state := breakerState(tracker.getOrCreate(id).state.Load()); state != breakerOpen {
+	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerOpen {
 		t.Fatalf("定时熔断期间成功后状态 = %v，期望仍为 open（不能被救活分支改写）", state)
 	}
-	if ok, reason := tracker.IsAvailable(id); ok || reason != ReasonCircuitBlockedUntil {
+	if ok, reason := tracker.IsAvailable(id, testModel); ok || reason != ReasonCircuitBlockedUntil {
 		t.Fatalf("定时熔断期间成功后 IsAvailable = %v（%s），期望 false/%s", ok, reason, ReasonCircuitBlockedUntil)
 	}
 	if after := blockedRemaining(t, tracker, id); after <= 0 {
@@ -48,24 +48,24 @@ func TestInFlightSuccessDoesNotCancelTimedBlock(t *testing.T) {
 func TestInFlightSuccessStillRescuesRegularCooldown(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9007
 
-	tracker.TripBreaker(id)
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
+	tracker.TripBreaker(id, testModel)
 	if got := blockedRemaining(t, tracker, id); got != 0 {
 		t.Fatalf("常规熔断不应设置 blockedUntil，实际 %v", got)
 	}
-	if ok, reason := tracker.IsAvailable(id); ok {
+	if ok, reason := tracker.IsAvailable(id, testModel); ok {
 		t.Fatalf("常规冷却期内应不可用，实际可用（%s）", reason)
 	}
 
-	tracker.Begin(id).End(false, false)
+	tracker.Begin(id, testModel).End(false, false)
 
-	if state := breakerState(tracker.getOrCreate(id).state.Load()); state != breakerClosed {
+	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerClosed {
 		t.Fatalf("成功后熔断状态 = %v，期望 closed（成功一次即救活）", state)
 	}
-	if ok, reason := tracker.IsAvailable(id); !ok {
+	if ok, reason := tracker.IsAvailable(id, testModel); !ok {
 		t.Fatalf("成功后 IsAvailable = false（%s），期望立即恢复可用", reason)
 	}
 	if tc := tripCountOf(t, tracker, id); tc != 0 {

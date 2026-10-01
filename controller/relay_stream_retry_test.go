@@ -27,7 +27,7 @@ func TestStreamBrokenRetryDecisionAndBreakerTrip(t *testing.T) {
 	tracker := loadbalancer.GlobalTracker()
 	// Start from a healthy channel: a successful attempt resets the counters
 	// and closes a half-open breaker.
-	tracker.Begin(channelID).End(false, false)
+	tracker.Begin(channelID, testModel).End(false, false)
 
 	brokenErr := &loadbalancer.StreamBrokenError{
 		ChannelID: channelID,
@@ -43,8 +43,8 @@ func TestStreamBrokenRetryDecisionAndBreakerTrip(t *testing.T) {
 
 	// 2. Verify breaker trip on StreamBrokenError
 	assert.True(t, loadbalancer.IsStreamBroken(newAPIErr))
-	tracker.TripBreaker(channelID)
-	available, reason := tracker.IsAvailable(channelID)
+	tracker.TripBreaker(channelID, testModel)
+	available, reason := tracker.IsAvailable(channelID, testModel)
 	assert.False(t, available)
 	assert.Equal(t, "circuit_open", reason)
 }
@@ -159,3 +159,7 @@ func TestEmptyStreamRetryBudgetDoesNotArmRequestContext(t *testing.T) {
 	require.True(t, c.Request == before, "stream request context must stay untouched even with a zero-byte wall clock")
 	assert.Equal(t, time.Millisecond, loadbalancer.GetEmptyStreamRetryBudget())
 }
+
+// testModel 测试里统一用的模型名。per_model 默认关闭，模型名会被 scopeKey
+// 折叠成渠道级，所以这些用例的语义与 v29.10 一致。
+const testModel = "gpt-4o"

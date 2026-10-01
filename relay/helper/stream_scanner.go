@@ -103,7 +103,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	attempt, _ := c.Get(loadbalancer.ContextKeyAttempt)
 	lbHandle, _ := attempt.(*loadbalancer.RequestHandle)
 	if lbHandle == nil {
-		lbHandle = loadbalancer.GlobalTracker().Begin(channelID)
+		// 键必须是客户端请求的模型名（不是上游名）：选渠道时只知道客户端
+		// 请求了什么，而 model_mapping 多对一不可反推。info 可能为 nil，
+		// GetOriginModelName 返回空串 → 自动落到渠道级，等价 v29.10。
+		lbHandle = loadbalancer.GlobalTracker().Begin(channelID, info.GetOriginModelName())
 	}
 	lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
 	var lbTTFTSlow atomic.Bool

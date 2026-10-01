@@ -42,12 +42,12 @@ func newEscalationPolicy() *Policy {
 
 func tripCountOf(t *testing.T, tracker *Tracker, id int) int {
 	t.Helper()
-	return int(tracker.getOrCreate(id).tripCount.Load())
+	return int(statsFor(tracker, id).tripCount.Load())
 }
 
 func blockedRemaining(t *testing.T, tracker *Tracker, id int) time.Duration {
 	t.Helper()
-	until := tracker.getOrCreate(id).blockedUntil.Load()
+	until := statsFor(tracker, id).blockedUntil.Load()
 	if until <= 0 {
 		return 0
 	}
@@ -58,7 +58,7 @@ func blockedRemaining(t *testing.T, tracker *Tracker, id int) time.Duration {
 // 倍数从 tripCount 现算，与 IsAvailable 的到期判定口径保持一致。
 func cooldownRemaining(t *testing.T, tracker *Tracker, id int) time.Duration {
 	t.Helper()
-	s := tracker.getOrCreate(id)
+	s := statsFor(tracker, id)
 	if breakerState(s.state.Load()) != breakerOpen {
 		return 0
 	}
@@ -71,12 +71,12 @@ func cooldownRemaining(t *testing.T, tracker *Tracker, id int) time.Duration {
 func TestTripBreakerEscalatesCooldown(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9001
 
 	want := []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second, 30 * time.Second}
 	for i, expect := range want {
-		tracker.TripBreaker(id)
+		tracker.TripBreaker(id, testModel)
 		got := cooldownRemaining(t, tracker, id)
 		// 允许 2 秒调度抖动
 		if delta := got - expect; delta > 2*time.Second || delta < -2*time.Second {
@@ -92,28 +92,29 @@ func TestTripBreakerEscalatesCooldown(t *testing.T) {
 func TestTripBreakerEscalationResetsOnSuccess(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9002
 
-	tracker.TripBreaker(id)
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
+	tracker.TripBreaker(id, testModel)
 	if tc := tripCountOf(t, tracker, id); tc != 2 {
 		t.Fatalf("连续熔断 2 次后 tripCount = %d，期望 2", tc)
 	}
 
 	// 一次成功请求
-	handle := &RequestHandle{tracker: tracker, stats: tracker.getOrCreate(id), channelID: id}
+	handle := &RequestHandle{tracker: tracker, stats: statsFor(tracker, id),
+		inflight: tracker.getInflight(id), channelID: id}
 	handle.End(false, false)
 
 	if tc := tripCountOf(t, tracker, id); tc != 0 {
 		t.Fatalf("成功后 tripCount = %d，期望清零为 0", tc)
 	}
-	if state := breakerState(tracker.getOrCreate(id).state.Load()); state != breakerClosed {
+	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerClosed {
 		t.Fatalf("成功后熔断状态 = %v，期望 closed", state)
 	}
 
 	// 再次熔断应回到 1 倍
-	tracker.TripBreaker(id)
+	tracker.TripBreaker(id, testModel)
 	if got := cooldownRemaining(t, tracker, id); got > 12*time.Second {
 		t.Fatalf("救活后再次熔断冷却 = %v，期望回到约 10s（1 倍）", got)
 	}
@@ -125,23 +126,23 @@ func TestBreakerExemptChannelNeverTrips(t *testing.T) {
 	policy.Channels[9003] = ChannelPolicy{BreakerExempt: true}
 	usePolicy(t, policy)
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9003
 
 	for i := 0; i < 5; i++ {
-		tracker.TripBreaker(id)
+		tracker.TripBreaker(id, testModel)
 	}
-	tracker.RecordEmptyStream(id)
-	tracker.RecordEmptyStream(id)
-	tracker.RecordEmptyStream(id)
+	tracker.RecordEmptyStream(id, testModel)
+	tracker.RecordEmptyStream(id, testModel)
+	tracker.RecordEmptyStream(id, testModel)
 
-	if state := breakerState(tracker.getOrCreate(id).state.Load()); state != breakerClosed {
+	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerClosed {
 		t.Fatalf("豁免渠道熔断状态 = %v，期望始终 closed", state)
 	}
 	if tc := tripCountOf(t, tracker, id); tc != 0 {
 		t.Fatalf("豁免渠道 tripCount = %d，期望 0", tc)
 	}
-	if ok, reason := tracker.IsAvailable(id); !ok {
+	if ok, reason := tracker.IsAvailable(id, testModel); !ok {
 		t.Fatalf("豁免渠道 IsAvailable = false（%s），期望恒可用", reason)
 	}
 	if !IsBreakerExempt(id) {
@@ -155,14 +156,14 @@ func TestBreakerExemptStillRespectsMaxInflight(t *testing.T) {
 	policy.Channels[9004] = ChannelPolicy{BreakerExempt: true, MaxInflight: 1}
 	usePolicy(t, policy)
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9004
 
-	if ok, _ := tracker.IsAvailable(id); !ok {
+	if ok, _ := tracker.IsAvailable(id, testModel); !ok {
 		t.Fatal("首次检查应可用")
 	}
-	tracker.getOrCreate(id).inflight.Store(1)
-	ok, reason := tracker.IsAvailable(id)
+	tracker.getInflight(id).Store(1)
+	ok, reason := tracker.IsAvailable(id, testModel)
 	if ok || reason != ReasonOverloaded {
 		t.Fatalf("并发打满后 IsAvailable = %v（%s），期望 false/%s", ok, reason, ReasonOverloaded)
 	}
@@ -172,10 +173,10 @@ func TestBreakerExemptStillRespectsMaxInflight(t *testing.T) {
 func TestRateLimitCooldownDoesNotEscalate(t *testing.T) {
 	usePolicy(t, newEscalationPolicy())
 
-	tracker := &Tracker{channels: make(map[int]*ChannelStats)}
+	tracker := newTestTracker()
 	const id = 9005
 
-	tracker.TripBreakerForRateLimit(id)
+	tracker.TripBreakerForRateLimit(id, testModel)
 	first := blockedRemaining(t, tracker, id)
 	if first > 31*time.Second || first < 29*time.Second {
 		t.Fatalf("限流避让 = %v，期望约 30s", first)

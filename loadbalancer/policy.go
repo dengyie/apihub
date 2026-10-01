@@ -148,6 +148,23 @@ type BreakerPolicy struct {
 	EscalationCap int64 `yaml:"escalation_cap"`
 	// HalfOpenProbes 半开状态允许的探测请求数
 	HalfOpenProbes int `yaml:"half_open_probes"`
+	// PerModel 熔断粒度：true = 按 (渠道, 模型) 分键，一个模型坏不牵连
+	// 同渠道其它模型；false = 按渠道，一失败全模型下线（v29.10 行为）。
+	//
+	// 用指针而非 bool：Resolve 是逐字段值合并，裸 bool 的零值 false 会在
+	// 「某渠道只配了 failure_threshold」时把全局的 true 覆盖回 false，
+	// 而且是静默的。*bool 才能区分「没配」（跟随全局）和「显式配 false」
+	// （这个渠道就是要渠道级）。
+	//
+	// 默认 nil → 生效值 false，即新逻辑默认关闭。代码先以关闭状态上线，
+	// 确认无误后改一行 YAML 打开，5 秒内热加载生效无需重启；发现不对改回
+	// false 同样即时。这既是灰度手段也是回滚手段。
+	PerModel *bool `yaml:"per_model"`
+}
+
+// PerModelOrDefault 返回生效的熔断粒度。未配置时为 false（渠道级 = v29.10 行为）。
+func (b BreakerPolicy) PerModelOrDefault() bool {
+	return b.PerModel != nil && *b.PerModel
 }
 
 // DefaultEscalationCap 连续熔断冷却倍数的内置上限。
@@ -196,6 +213,12 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	}
 	if cp.Breaker.HalfOpenProbes != 0 {
 		resolved.Breaker.HalfOpenProbes = cp.Breaker.HalfOpenProbes
+	}
+	// per_model 指针非 nil 才覆盖：nil 表示「本渠道未指定，跟随全局」。
+	// 少了这一行，某渠道只配了 failure_threshold 就会把全局的 true
+	// 静默覆盖成 false，熔断粒度在部分渠道上悄悄退回渠道级。
+	if cp.Breaker.PerModel != nil {
+		resolved.Breaker.PerModel = cp.Breaker.PerModel
 	}
 	return resolved
 }
