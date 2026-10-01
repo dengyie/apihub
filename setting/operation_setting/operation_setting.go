@@ -27,6 +27,18 @@ var AutomaticDisableKeywords = []string{
 	"not supported by tokenplan",
 	"is not supported by tokenplan",
 	"user_group_no_permission",
+	// 以下 5 条是 2026-10-01 从生产文件日志里挖出来的：这些措辞在真实上游
+	// 返回里反复出现，却与上面任何一条都不构成子串匹配，所以渠道一直被熔断
+	// 重试、却永远不会被自动下线 —— 白白消耗重试预算和上游配额。
+	// 选取标准是「**必须人工介入才能恢复**」，而不是「看起来像失败」：
+	// 限流、并发超限、临时不可用一律不收，那是熔断该干的活。
+	"预扣费额度失败",                   // 上游账号余额不足以预扣（实测 200+ 次）
+	"token quota is not enough", // 同上，另一家上游的英文措辞
+	"用户额度不足",                    // 同上，第三家上游的中文措辞
+	"令牌因分组倍率上调已停用",              // 令牌被上游停用，需人工去 API 密钥页重新启用
+	"Invalid token",             // 上游密钥失效。注意它与已有的 "The security token
+	// included in the request is invalid" 是两回事：后者是完整句、后者是裸
+	// 短语，子串匹配互相覆盖不到，两条都得留着。
 }
 
 func AutomaticDisableKeywordsToString() string {

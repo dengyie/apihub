@@ -160,6 +160,43 @@ type BreakerPolicy struct {
 	// 确认无误后改一行 YAML 打开，5 秒内热加载生效无需重启；发现不对改回
 	// false 同样即时。这既是灰度手段也是回滚手段。
 	PerModel *bool `yaml:"per_model"`
+	// ModelExhaustionThreshold 「该模型选不出任何渠道」在窗口内累计到此次数
+	// 即输出一条 MODEL_EXHAUSTION 告警行。0 = 关闭该检测。
+	//
+	// 这不是熔断，是**对外可用性的观测**：熔断只负责绕开坏渠道，而当一个模型
+	// 的全部渠道同时熔断/打满/被禁用时，网关内部一片安静，客户端只看到 503。
+	// 没有这条信号，模型全池挂掉只能等客户端来问。
+	ModelExhaustionThreshold int `yaml:"model_exhaustion_threshold"`
+	// ModelExhaustionWindowSeconds 上述计数窗口（秒），默认 300。
+	ModelExhaustionWindowSeconds int64 `yaml:"model_exhaustion_window_seconds"`
+	// ModelExhaustionAlertCooldownSeconds 同一模型两次告警的最小间隔（秒），
+	// 默认 1800。必须有：客户端重试风暴会在几秒内打出上百次同类 503，
+	// 不节流的日志只会把真正的信号淹掉。
+	ModelExhaustionAlertCooldownSeconds int64 `yaml:"model_exhaustion_alert_cooldown_seconds"`
+}
+
+// ModelExhaustionThresholdOrDefault 返回告警阈值，未配置时为 5。
+func (b BreakerPolicy) ModelExhaustionThresholdOrDefault() int {
+	if b.ModelExhaustionThreshold <= 0 {
+		return 5
+	}
+	return b.ModelExhaustionThreshold
+}
+
+// ModelExhaustionWindowSecondsOrDefault 返回计数窗口（秒），未配置时为 300。
+func (b BreakerPolicy) ModelExhaustionWindowSecondsOrDefault() int64 {
+	if b.ModelExhaustionWindowSeconds <= 0 {
+		return 300
+	}
+	return b.ModelExhaustionWindowSeconds
+}
+
+// ModelExhaustionAlertCooldownSecondsOrDefault 返回告警冷却（秒），未配置时为 1800。
+func (b BreakerPolicy) ModelExhaustionAlertCooldownSecondsOrDefault() int64 {
+	if b.ModelExhaustionAlertCooldownSeconds <= 0 {
+		return 1800
+	}
+	return b.ModelExhaustionAlertCooldownSeconds
 }
 
 // PerModelOrDefault 返回生效的熔断粒度。未配置时为 false（渠道级 = v29.10 行为）。

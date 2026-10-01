@@ -552,6 +552,10 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 		}
 		if channel == nil {
+			// 该模型在本组一个渠道都选不出来 —— 对外就是 503。
+			// 熔断只负责绕开坏渠道，"这个模型已经整体挂了" 这件事网关内部
+			// 原本没有任何记录，靠客户端来报障。这里留一条可聚合的证据。
+			loadbalancer.RecordModelExhausted(modelName, "group="+usingGroup)
 			return nil, selectGroup, &ChannelSelectError{
 				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
 				Params: map[string]any{"Group": usingGroup, "Model": modelName}, NoAvailableChannel: true,
@@ -559,12 +563,16 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		}
 	}
 	if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
+		loadbalancer.RecordModelExhausted(modelName, "filter="+string(kind))
 		return nil, selectGroup, &ChannelSelectError{
 			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
 			Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 			FilterKind: kind, Channel: channel, NoAvailableChannel: true,
 		}
 	}
+	// 选得到渠道 = 这个模型还在正常服务，清空累计，避免「曾经短暂耗尽」
+	// 和「现在真的整体挂了」混进同一条证据里。
+	loadbalancer.ResetModelExhausted(modelName)
 	return channel, selectGroup, nil
 }
 

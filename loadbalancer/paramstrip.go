@@ -1,10 +1,12 @@
 package loadbalancer
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -635,4 +637,61 @@ func BreakerScopeForStatusCode(statusCode int) BreakerScope {
 		return ScopeChannel
 	}
 	return ScopeModel
+}
+
+// EffectiveModelName 把「错误分类」与「熔断粒度开关」合成出**实际会被熔断的
+// 模型名**：返回空串表示这次熔断落在渠道级。
+//
+// 存在的理由是 v29.11 上线后从生产日志里读出来的一个假象：日志标签原本直接
+// 用 BreakerScopeOf 的分类，于是开关关闭（per_model=false，键折叠回渠道级）
+// 时仍然打出「渠道 #140 [deepseek-v4-flash] 已立即熔断」——而那一刻被熔的
+// 其实是**整个渠道**。熔断范围一旦打错，凌晨对账会把「这个模型有问题」当成
+// 结论去查，而真相是整个渠道挂了；反过来真按模型去处置也会打空。
+// 日志是排障的一手证据，不能比实际行为更聪明。
+//
+// 唯一的真相源必须和 scopeKey（tracker.go）同源，否则标签和状态机各说各话。
+func EffectiveModelName(channelID int, originModel string, err *types.NewAPIError) string {
+	if channelID <= 0 || originModel == "" {
+		return ""
+	}
+	if BreakerScopeOf(err) == ScopeChannel {
+		return ""
+	}
+	// 与 scopeKey 用同一个判定：开关关闭时键折叠为渠道级，标签也必须说渠道级。
+	if !GetPolicy().Resolve(channelID).Breaker.PerModelOrDefault() {
+		return ""
+	}
+	return originModel
+}
+
+// SiblingModelsFromMapping 返回与 model 映射到**同一上游模型**的其它客户端模型名。
+//
+// 背景：熔断键只能用客户端请求名（读侧只知���这个名字，model_mapping 多对一
+// 无法反推）。代价是上游模型 X 坏了，映射到 X 的客户端模型 A、B 各自要独立
+// 累计到阈值才熔断，A、B 互不感知，收敛慢一倍。
+//
+// 这里在**写侧**把同源的兄弟一并熔断：读侧一行都不用改，热路径零成本。
+// 判据是「映射到同一个上游名」，所以 A→X-thinking、B→X-search 这种被 adaptor
+// 二次改名的兄弟不会被误并（mapping 里存的是改名前的值）。
+func SiblingModelsFromMapping(mappingJSON, model string) []string {
+	if model == "" || mappingJSON == "" {
+		return nil
+	}
+	var mapping map[string]string
+	if err := json.Unmarshal([]byte(mappingJSON), &mapping); err != nil || len(mapping) == 0 {
+		return nil
+	}
+	// 未出现在映射表里的模型按原样透传，上游名就是它自己。
+	upstream, ok := mapping[model]
+	if !ok || upstream == "" {
+		upstream = model
+	}
+	siblings := make([]string, 0, len(mapping))
+	for client, up := range mapping {
+		if client != model && up == upstream {
+			siblings = append(siblings, client)
+		}
+	}
+	sort.Strings(siblings)
+	return siblings
 }
