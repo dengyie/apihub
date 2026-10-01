@@ -600,6 +600,19 @@ func BreakerScopeOf(err *types.NewAPIError) BreakerScope {
 	if err == nil {
 		return ScopeModel
 	}
+	// 模型级不可用必须**先于**中继代理异常判定。
+	//
+	// 上游分销商说「这个模型没有可用渠道 / 未知 provider」时，故障范围就是那个
+	// 模型，和代理本身坏了完全是两回事。但 IsUpstreamRelayError 认这两句话
+	//（它们本来就是借中继错误通道报出来的，日志里也显示为「中继代理异常」）。
+	// 不在这里先拦一道，一次「该模型在分销商那边没有渠道」就会熔掉整个渠道的
+	// 所有模型——正是 v29.11 要消除的那类过熔。
+	msg := strings.ToLower(err.Error())
+	if IsUpstreamModelUnavailableError(err) ||
+		strings.Contains(msg, "no available channel for model") ||
+		strings.Contains(msg, "unknown provider for model") {
+		return ScopeModel
+	}
 	// 账号 / 密钥 / 中继级：与具体哪个模型无关
 	if IsCurfewError(err) || // 宵禁是账号的时段限制
 		IsUpstreamQuotaError(err) || // 余额/额度，全模型失效

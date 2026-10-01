@@ -160,6 +160,8 @@ func TestBreakerScopeClassification(t *testing.T) {
 		{"中继代理异常", &types.NewAPIError{StatusCode: http.StatusBadGateway, Err: errors.New("bad response status code")}, ScopeChannel},
 		{"上游限流", &types.NewAPIError{StatusCode: http.StatusTooManyRequests, Err: errors.New("rate limit exceeded")}, ScopeChannel},
 		{"模型不存在", &types.NewAPIError{StatusCode: http.StatusNotFound, Err: errors.New("The model `x` does not exist")}, ScopeModel},
+		{"上游无该模型渠道", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("No available channel for model deepseek-v4-pro under group default (distributor)")}, ScopeModel},
+		{"上游未知 provider", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("unknown provider for model foo")}, ScopeModel},
 		{"模型 EOL", &types.NewAPIError{StatusCode: http.StatusGone, Err: errors.New("gone")}, ScopeModel},
 		{"通用 500", &types.NewAPIError{StatusCode: http.StatusInternalServerError, Err: errors.New("upstream boom")}, ScopeModel},
 		{"nil", nil, ScopeModel},
