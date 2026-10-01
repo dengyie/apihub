@@ -39,6 +39,23 @@ var AutomaticDisableKeywords = []string{
 	"Invalid token",             // 上游密钥失效。注意它与已有的 "The security token
 	// included in the request is invalid" 是两回事：后者是完整句、后者是裸
 	// 短语，子串匹配互相覆盖不到，两条都得留着。
+	// ↓↓ v29.13 补的第二批 ↓↓
+	//
+	// 上一批是用正则从日志里捞的，只捞到了「上游 XX 失败」那类带前缀的报文，
+	// 漏掉了**裸报文**形式。改成把每条真实报文逐条喂给词表做子串判定后，
+	// 找出下面 4 条同样长期漏网、同样必须人工才能恢复的措辞。
+	"API key 额度已用完",                    // 上游 API key 的额度打光（实测 47 次）
+	"Insufficient account balance",     // 账号余额不足。注意与已有的 "insufficient balance" 不是同一条：中间隔了 "account"，子串匹配覆盖不到
+	"token plan entitlement exhausted", // 上游订阅额度耗尽（实测 24 次；这条正是把 space-bunny 打到 503 的元凶）
+	"user quota is not enough",         // 与已有的 "user quota not enough" 差一个 "is"，子串同样覆盖不到
+	// ⚠️ 刻意**不收** "quota exceeded"：历史上有 90 次，但它既可能是账号超额、
+	// 也可能是单请求 max_tokens 超限，两种含义的后果完全相反，而它只出现在
+	// 已轮转的最老日志里、当前所有会话均未复现。宁可漏判也不误杀健康渠道。
+	//
+	// 同样刻意不收（会自愈，是熔断的活）："rpm exhausted"、"您已达到并发请求数限制"、
+	// "您已达到请求数限制：N分钟内最多请求N次"、"免费模型…每天限 N 次…明天重置"、
+	// "Upstream service temporarily unavailable"、"No available channel for model …"
+	//（后者是模型级，渠道本身还服务其它模型）、"bad response status code"（语义不唯一）。
 }
 
 func AutomaticDisableKeywordsToString() string {
