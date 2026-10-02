@@ -94,15 +94,22 @@ func TestBuildRealisticChatProbeAllEndpoints(t *testing.T) {
 		{"openai responses", constant.EndpointTypeOpenAIResponse, func(t *testing.T, req dto.Request) {
 			r, ok := req.(*dto.OpenAIResponsesRequest)
 			require.True(t, ok)
+			// Responses 端点的系统指令走顶层 instructions、input 只放对话轮次，
+			// 这才是真实 Codex CLI 的形状（见 probeResponsesInstructions 注释）。
+			// 「探针必须带 system」这条不变式仍然成立，只是换了字段承载。
+			rawInstructions, err := json.Marshal(r.Instructions)
+			require.NoError(t, err)
+			var sys string
+			require.NoError(t, json.Unmarshal(rawInstructions, &sys), "instructions 应是一个 JSON 字符串")
+			assert.Contains(t, probeSystemPrompts, sys)
 			var msgs []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			}
 			require.NoError(t, json.Unmarshal(r.Input, &msgs))
-			require.Len(t, msgs, 2)
-			assert.Equal(t, "system", msgs[0].Role)
-			assert.Equal(t, "user", msgs[1].Role)
-			assert.Greater(t, len([]rune(msgs[1].Content)), probeMinUserRunes)
+			require.Len(t, msgs, 1, "input 只应含 user 轮次，system 不得再塞进 input")
+			assert.Equal(t, "user", msgs[0].Role)
+			assert.Greater(t, len([]rune(msgs[0].Content)), probeMinUserRunes)
 		}},
 		{"openai chat", constant.EndpointTypeOpenAI, func(t *testing.T, req dto.Request) {
 			r, ok := req.(*dto.GeneralOpenAIRequest)
