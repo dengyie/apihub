@@ -128,6 +128,15 @@ var QuotaForInvitee = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
+
+// AutomaticDisableModelScope 让「上游说这个模型不存在」这一类失败只摘
+// (渠道, 模型) 这一对，而不是把整条渠道置为自动禁用。
+//
+// 默认 false：per-model 自动禁用会改 abilities 表的路由数据，开错的后果是
+// 「模型消失了但没人知道为什么」，属于那种上线后要盯一阵子才敢确认的改动。
+// 与 breaker 的 per_model 开关一样，代码先以关闭状态上线，确认无误再翻一行
+// options 打开，60 秒热生效、无需重启。
+var AutomaticDisableModelScope = false
 var QuotaRemindThreshold = 1000
 
 // PreConsumedQuota is retained for old option clients; token reservations now

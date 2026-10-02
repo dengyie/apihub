@@ -196,7 +196,16 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
 	if ShouldDisableChannel(channelError.ChannelId, err) && channelError.AutoBan {
 		reason := err.MaskSensitiveErrorWithStatusCode()
+		// 必须在 gopool.Go 之前把模型名取成字符串：gin.Context 随请求结束被回收，
+		// 闭包里再读 c 拿到的是已复用的内存，读出来的模型名会是别的请求的。
+		// modelScoped 与 modelName 都是值类型，进闭包是安全的。
+		modelScoped := isModelScopedAutoDisable(err)
+		modelName := c.GetString("original_model")
 		gopool.Go(func() {
+			if modelScoped {
+				DisableChannelForModel(channelError, modelName, reason)
+				return
+			}
 			DisableChannel(channelError, reason)
 		})
 	}

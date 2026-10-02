@@ -69,6 +69,17 @@ type ChannelInfo struct {
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+
+	// 按 (渠道, 模型) 粒度的自动禁用记录，模型名 -> 原因/时间。
+	//
+	// 与 MultiKeyDisabledReason 同一层问题、同一套解法：多 key 渠道把「哪把 key
+	// 坏了」记在这里，自动禁用则把「哪个模型坏了」记在这里。abilities.enabled
+	// 才是权威开关，这两张表是「为什么」的可读留痕 —— 日报与人工排障要能回答
+	// 「这个渠道为什么少了这个模型」，靠的就是它们。
+	//
+	// 只在 MEMORY_CACHE_ENABLED 关闭时生效（详见 DisableChannelModel）。
+	ModelDisabledReason map[string]string `json:"model_disabled_reason,omitempty"`
+	ModelDisabledTime   map[string]int64  `json:"model_disabled_time,omitempty"`
 }
 
 type ChannelSortOptions struct {
@@ -423,6 +434,154 @@ func (channel *Channel) saveStatusState(tx *gorm.DB) error {
 		updates["channel_info"] = channel.ChannelInfo
 	}
 	return tx.Model(&Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
+}
+
+// saveChannelInfo persists channel_info alone.
+//
+// saveStatusState deliberately restricts itself to status + other_info and only
+// widens to channel_info for multi-key channels — its allowlist exists to keep
+// a stale channel snapshot from overwriting credentials. Per-model disable has
+// no such hazard (it writes nothing but the two model-disabled maps) but does
+// need to persist on single-key channels too, so it gets its own narrow path
+// rather than loosening the status allowlist.
+func (channel *Channel) saveChannelInfo(tx *gorm.DB) error {
+	if channel.Id == 0 {
+		return errors.New("channel ID is 0")
+	}
+	return tx.Model(&Channel{}).Where("id = ?", channel.Id).
+		Update("channel_info", channel.ChannelInfo).Error
+}
+
+// ErrChannelModelNotServed 表示该渠道在目标分组下并不服务这个模型。
+//
+// 单独成一个哨兵错误而不是返回 (false, nil)，是因为「翻 abilities 没生效」和
+// 「生效了，而且这个渠道还有别的模型可用」在调用方眼里必须是两回事：前者要
+// 决定是否退回整渠道禁用，后者不用。
+var ErrChannelModelNotServed = errors.New("channel does not serve this model")
+
+// DisableChannelModel 把单个 (渠道, 模型) 退出轮转，渠道本身保持启用。
+//
+// 与 UpdateChannelStatus 的整渠道禁用相比，代价小得多：一条渠道通常同时服务
+// 多个模型，为其中一个模型的确定性失效把整条渠道摘掉，等于让其余健康模型
+// 陪葬。生产实测（2026-10-02）18 条被自动禁用的渠道平均各带 5.1 个模型，
+// 一次「某模型 404」连带下线 91 个模型。
+//
+// 权威开关是 abilities.enabled。内存缓存关闭时（生产现状）选路每请求现查
+// 它，所以这里写完立即生效，无需任何缓存失效；缓存打开时本函数不会被调用，
+// 见 service.DisableChannelForModel 的降级兜底。
+//
+// 返回的 needsChannelDisable 表示「摘掉这个模型后该渠道已无任何可用模型」，
+// 调用方须据此升级为整渠道禁用 —— 否则会留下一条 status=1 却永远选不中的
+// 僵尸渠道，比不禁用更难排查。
+func DisableChannelModel(channelID int, modelName string, reason string) (needsChannelDisable bool, err error) {
+	if channelID <= 0 || modelName == "" {
+		return false, ErrChannelModelNotServed
+	}
+
+	// 与 handlerMultiKeyUpdate 共用这把锁：两者都写 channel_info 的 JSON 快照，
+	// 交错执行会互相覆盖对方的字段。
+	pollingLock := GetChannelPollingLock(channelID)
+	pollingLock.Lock()
+	defer pollingLock.Unlock()
+
+	var served bool
+	var stillEnabled int64
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&Ability{}).
+			Where("channel_id = ? and model = ? and enabled = ?", channelID, modelName, true).
+			Update("enabled", false)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		served = true
+
+		if err := tx.Model(&Ability{}).
+			Where("channel_id = ? and enabled = ?", channelID, true).
+			Count(&stillEnabled).Error; err != nil {
+			return err
+		}
+
+		var channel Channel
+		if err := tx.Omit("key").First(&channel, "id = ?", channelID).Error; err != nil {
+			return err
+		}
+		if channel.ChannelInfo.ModelDisabledReason == nil {
+			channel.ChannelInfo.ModelDisabledReason = map[string]string{}
+		}
+		if channel.ChannelInfo.ModelDisabledTime == nil {
+			channel.ChannelInfo.ModelDisabledTime = map[string]int64{}
+		}
+		channel.ChannelInfo.ModelDisabledReason[modelName] = reason
+		channel.ChannelInfo.ModelDisabledTime[modelName] = common.GetTimestamp()
+		return channel.saveChannelInfo(tx)
+	})
+	if err != nil {
+		return false, err
+	}
+	if !served {
+		return false, ErrChannelModelNotServed
+	}
+	return stillEnabled == 0, nil
+}
+
+// EnableChannelModel 撤销单个 (渠道, 模型) 的禁用，并把留痕一并清掉。
+//
+// 只在 channel_info 里确实记过该模型时才动 abilities：否则一次普通的
+// 渠道测活就会把「本来就没被禁用」的 ability 重写成 enabled，顺带把因渠道级
+// 禁用而失效的行错误复活。
+func EnableChannelModel(channelID int, modelName string) (cleared bool, err error) {
+	if channelID <= 0 || modelName == "" {
+		return false, nil
+	}
+	pollingLock := GetChannelPollingLock(channelID)
+	pollingLock.Lock()
+	defer pollingLock.Unlock()
+
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var channel Channel
+		if err := tx.Omit("key").First(&channel, "id = ?", channelID).Error; err != nil {
+			return err
+		}
+		if _, recorded := channel.ChannelInfo.ModelDisabledReason[modelName]; !recorded {
+			return nil
+		}
+		if err := tx.Model(&Ability{}).
+			Where("channel_id = ? and model = ?", channelID, modelName).
+			Update("enabled", true).Error; err != nil {
+			return err
+		}
+		delete(channel.ChannelInfo.ModelDisabledReason, modelName)
+		delete(channel.ChannelInfo.ModelDisabledTime, modelName)
+		cleared = true
+		return channel.saveChannelInfo(tx)
+	})
+	return cleared, err
+}
+
+// ChannelModelDisabled 是一条 per-model 禁用的可读快照。
+type ChannelModelDisabled struct {
+	ChannelId   int    `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	Model       string `json:"model"`
+}
+
+// ListChannelModelDisabled 列出当前真正处于 per-model 禁用状态的 (渠道, 模型)。
+//
+// 判据是「ability 关着、但渠道本身是启用的」——渠道级禁用同样会把 abilities
+// 全部置灰，不加这个条件会把两种完全不同的故障混在一张清单里。禁用原因与时间
+// 存在 channel_info 的嵌套 JSON 里，跨库方言地抽 JSON 并不划算，调用方
+// （日报脚本）自己读那一列更简单。
+func ListChannelModelDisabled() ([]ChannelModelDisabled, error) {
+	var out []ChannelModelDisabled
+	err := DB.Model(&Ability{}).
+		Select("abilities.channel_id as channel_id, abilities.model as model, channels.name as channel_name").
+		Joins("left join channels on channels.id = abilities.channel_id").
+		Where("abilities.enabled = ? and channels.status = ?", false, common.ChannelStatusEnabled).
+		Find(&out).Error
+	return out, err
 }
 
 func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool, sortOptions ...ChannelSortOptions) ([]*Channel, error) {
