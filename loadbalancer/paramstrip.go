@@ -588,54 +588,24 @@ func (s BreakerScope) String() string {
 
 // BreakerScopeOf 判定一次上游失败该熔多大范围。
 //
-// 判据只有一条：**这条错误是否可证明关于账号 / 密钥 / 中继本身**，
-// 而不是关于某个模型。可证明的才熔整渠道，其余一律只熔该模型。
-// 拿不准时选 ScopeModel —— 少熔的代价是本该退出的渠道多挨几次请求
-// （而递增退避会让它很快退出）；过熔的代价是该渠道上百个健康模型
-// 集体消失，这是 v29.10 的老毛病，也是这次要修的东西。两者不对称，
-// 所以默认偏向 ScopeModel。
+// **v29.14 起恒为 ScopeModel：熔断一律按 (渠道, 模型) 粒度。**
 //
-// 系统性故障不会因此漏网：若某个账号级问题其实表现在很多模型上，
-// 每个模型会各自熔断并各自升级退避，最终收敛到「全渠道退出」这个
-// 同样的终点，只是慢 N 步。代价是有界的，收益是不误伤。
+// 决策依据是生产数据。v29.11 把「模型级不可用」判据搬到了本函数最前面，
+// 但 controller/relay.go 里 5 个分支绕过了本函数直接 `TripBreaker(id, "")`
+// 硬编码渠道级，其中就包括中继代理异常那条 —— 而它认的关键词里恰好包含
+// `no available channel for model`。结果判据在这条路径上从未生效：
+// 2026-10-02 全天 257 次熔断里 33 次、当天 17:40 之后的窗口 11 次里有 6 次，
+// 都是「上游这个模型没有渠道」被判成账号级故障，把该渠道其余模型一起熔掉。
+//
+// 为什么敢全改：账号级失效并不靠熔断兜底。401 / 额度耗尽 / 关键词命中走的是
+// **自动下线**那条路（`AutomaticDisableChannelEnabled`，已在线上为 true），
+// 渠道照样整体退出轮转；熔断只负责「快速绕开」，不需要承担账号级语义。
+// 代价是系统性故障收敛慢 N 步（每个模型各自累计到阈值、各自升级退避），
+// 终点相同，且 `inflight` 并发计数始终在渠道级，不受影响。
 func BreakerScopeOf(err *types.NewAPIError) BreakerScope {
-	if err == nil {
-		return ScopeModel
-	}
-	// 模型级不可用必须**先于**中继代理异常判定。
-	//
-	// 上游分销商说「这个模型没有可用渠道 / 未知 provider」时，故障范围就是那个
-	// 模型，和代理本身坏了完全是两回事。但 IsUpstreamRelayError 认这两句话
-	//（它们本来就是借中继错误通道报出来的，日志里也显示为「中继代理异常」）。
-	// 不在这里先拦一道，一次「该模型在分销商那边没有渠道」就会熔掉整个渠道的
-	// 所有模型——正是 v29.11 要消除的那类过熔。
-	msg := strings.ToLower(err.Error())
-	if IsUpstreamModelUnavailableError(err) ||
-		strings.Contains(msg, "no available channel for model") ||
-		strings.Contains(msg, "unknown provider for model") {
-		return ScopeModel
-	}
-	// 账号 / 密钥 / 中继级：与具体哪个模型无关
-	if IsCurfewError(err) || // 宵禁是账号的时段限制
-		IsUpstreamQuotaError(err) || // 余额/额度，全模型失效
-		IsUpstreamPermissionError(err) || // 令牌停用、分组无权
-		IsUpstreamRelayError(err) || // 中继代理自身故障
-		IsUpstreamRoutingError(err) || // 上游网关会话路由失败（缺 x-opencode-session）
-		IsUpstreamRateLimitError(err) { // 429/RPM：保守按渠道，冷却仅 30s
-		return ScopeChannel
-	}
-	return ScopeModel
-}
-
-// BreakerScopeForStatusCode 由 HTTP 状态码判熔断范围。
-//
-// 401 是密钥失效（账号级），其余可确定的永久失败按模型级处理。
-// 单独拎出来是因为自动禁用的 disable_ranges 目前只含 401，而熔断侧
-// 需要在拿到状态码的第一时间就知道该熔多大范围。
-func BreakerScopeForStatusCode(statusCode int) BreakerScope {
-	if statusCode == 401 {
-		return ScopeChannel
-	}
+	// 保留入参与函数形状：调用点与测试都按它取范围，将来若要恢复分级
+	// 只需改这里，不必再动 controller/relay.go 的调用结构。
+	_ = err
 	return ScopeModel
 }
 

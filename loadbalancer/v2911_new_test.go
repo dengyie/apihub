@@ -147,28 +147,35 @@ func TestInflightStaysChannelScopedAcrossModels(t *testing.T) {
 	assert.True(t, ok, "槽位归还后应恢复可用: "+reason)
 }
 
-// 失败分级：只有可证明是账号/密钥/中继级的问题才熔整渠道。
-func TestBreakerScopeClassification(t *testing.T) {
+// 熔断粒度：v29.14 起**一律** ScopeModel。
+//
+// 这张表原来还把「额度耗尽 / 宵禁 / 会话路由失败 / 中继代理异常 / 上游限流」
+// 判成 ScopeChannel。生产数据推翻了那个分级：controller/relay.go 里对应分支
+// 硬编码了 `TripBreaker(id, "")`，绕过了本函数，判据从未生效；同时中继代理
+// 异常的关键词表含 `no available channel for model`，一句话把「上游缺这个模型」
+// 变成整渠道下线。账号级失效改由自动下线兜底，熔断只负责快速绕开。
+func TestBreakerScopeAlwaysModel(t *testing.T) {
 	cases := []struct {
 		name string
 		err  *types.NewAPIError
-		want BreakerScope
 	}{
-		{"额度耗尽", &types.NewAPIError{StatusCode: http.StatusForbidden, Err: errors.New("insufficient_user_quota")}, ScopeChannel},
-		{"宵禁", &types.NewAPIError{StatusCode: http.StatusForbidden, Err: errors.New("provider_code=system_curfew")}, ScopeChannel},
-		{"会话路由失败", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("missing x-opencode-session")}, ScopeChannel},
-		{"中继代理异常", &types.NewAPIError{StatusCode: http.StatusBadGateway, Err: errors.New("bad response status code")}, ScopeChannel},
-		{"上游限流", &types.NewAPIError{StatusCode: http.StatusTooManyRequests, Err: errors.New("rate limit exceeded")}, ScopeChannel},
-		{"模型不存在", &types.NewAPIError{StatusCode: http.StatusNotFound, Err: errors.New("The model `x` does not exist")}, ScopeModel},
-		{"上游无该模型渠道", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("No available channel for model deepseek-v4-pro under group default (distributor)")}, ScopeModel},
-		{"上游未知 provider", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("unknown provider for model foo")}, ScopeModel},
-		{"模型 EOL", &types.NewAPIError{StatusCode: http.StatusGone, Err: errors.New("gone")}, ScopeModel},
-		{"通用 500", &types.NewAPIError{StatusCode: http.StatusInternalServerError, Err: errors.New("upstream boom")}, ScopeModel},
-		{"nil", nil, ScopeModel},
+		{"额度耗尽", &types.NewAPIError{StatusCode: http.StatusForbidden, Err: errors.New("insufficient_user_quota")}},
+		{"宵禁", &types.NewAPIError{StatusCode: http.StatusForbidden, Err: errors.New("provider_code=system_curfew")}},
+		{"会话路由失败", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("missing x-opencode-session")}},
+		{"中继代理异常", &types.NewAPIError{StatusCode: http.StatusBadGateway, Err: errors.New("bad response status code")}},
+		{"上游限流", &types.NewAPIError{StatusCode: http.StatusTooManyRequests, Err: errors.New("rate limit exceeded")}},
+		{"令牌停用", &types.NewAPIError{StatusCode: http.StatusUnauthorized, Err: errors.New("API key not recognised")}},
+		{"模型不存在", &types.NewAPIError{StatusCode: http.StatusNotFound, Err: errors.New("The model `x` does not exist")}},
+		{"上游无该模型渠道", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("No available channel for model deepseek-v4-pro under group default (distributor)")}},
+		{"上游未知 provider", &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New("unknown provider for model foo")}},
+		{"模型 EOL", &types.NewAPIError{StatusCode: http.StatusGone, Err: errors.New("gone")}},
+		{"通用 500", &types.NewAPIError{StatusCode: http.StatusInternalServerError, Err: errors.New("upstream boom")}},
+		{"nil", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, BreakerScopeOf(c.err))
+			assert.Equal(t, ScopeModel, BreakerScopeOf(c.err),
+				"v29.14 起熔断一律按模型粒度")
 		})
 	}
 }

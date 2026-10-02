@@ -49,12 +49,14 @@ func TestEffectiveModelNameReportsModelWhenPerModelOn(t *testing.T) {
 	}
 }
 
-// 账号级错误即使开关打开也必须是渠道级：开关只决定粒度，不改判据。
-func TestEffectiveModelNameChannelScopedErrorStaysChannelScoped(t *testing.T) {
+// v29.14 起不再有渠道级判据：账号级错误也按模型粒度熔断。
+// 账号整体退出轮转由自动下线（AutomaticDisableChannelEnabled）负责，
+// 熔断侧只负责「快速绕开」，不承担账号级语义。
+func TestEffectiveModelNameAccountErrorAlsoModelScoped(t *testing.T) {
 	installPolicy(t, perModelPolicy(2))
 	err := quotaErr()
-	if got := EffectiveModelName(1, testModel, err); got != "" {
-		t.Fatalf("账号级错误必须是渠道级，got %q", got)
+	if got := EffectiveModelName(1, testModel, err); got != testModel {
+		t.Fatalf("v29.14 起额度耗尽也按模型粒度，got %q", got)
 	}
 }
 
