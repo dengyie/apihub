@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -91,19 +92,30 @@ func TestChannelTestOpenAIChatCompatibility(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			request, ok := buildTestRequest(tt.model, tt.endpoint, &model.Channel{}, tt.stream).(*dto.GeneralOpenAIRequest)
 			require.True(t, ok)
+			// 拟真探针：system + user 两段，内容来自固定池，user 必须是真实长度的正文
+			require.Len(t, request.Messages, 2)
+			assert.Equal(t, "system", request.Messages[0].Role)
+			assert.Contains(t, probeSystemPrompts, request.Messages[0].Content)
+			assert.Equal(t, "user", request.Messages[1].Role)
+			assert.Contains(t, probeUserPrompts, request.Messages[1].StringContent())
+			assert.Greater(t, len([]rune(request.Messages[1].StringContent())), 100,
+				"探针 user 消息必须达到真实流量长度，否则会被上游反测活识别")
+
 			encoded := convertChatCompatibilityRequest(t, request, tt.channelType, map[string]string{tt.model: tt.upstream})
-			want := map[string]any{
-				"model":      tt.upstream,
-				"messages":   []dto.Message{{Role: "user", Content: "hi"}},
-				"stream":     tt.stream,
-				tt.wantLimit: 16,
+			var got map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(string(encoded), &got))
+			assert.Equal(t, tt.upstream, got["model"])
+			assert.Equal(t, tt.stream, got["stream"])
+			limit, ok := got[tt.wantLimit]
+			require.True(t, ok, "缺少限流字段 %s", tt.wantLimit)
+			wantLimit := probeMaxTokens
+			if strings.Contains(strings.ToLower(tt.model), "o1") || strings.Contains(strings.ToLower(tt.model), "o3") {
+				wantLimit = probeReasoningMaxTokens
 			}
+			assert.EqualValues(t, wantLimit, limit)
 			if tt.stream {
-				want["stream_options"] = map[string]any{"include_usage": true}
+				assert.Equal(t, map[string]any{"include_usage": true}, got["stream_options"])
 			}
-			wantJSON, err := common.Marshal(want)
-			require.NoError(t, err)
-			assert.JSONEq(t, string(wantJSON), string(encoded))
 		})
 	}
 }

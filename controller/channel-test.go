@@ -3,7 +3,6 @@ package controller
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -746,8 +745,6 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 }
 
 func buildTestRequest(model string, endpointType string, channel *model.Channel, isStream bool) dto.Request {
-	testResponsesInput := json.RawMessage(`[{"role":"user","content":"hi"}]`)
-
 	// 根据端点类型构建不同的测试请求
 	if endpointType != "" {
 		switch constant.EndpointType(endpointType) {
@@ -755,13 +752,13 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 			// 返回 EmbeddingRequest
 			return &dto.EmbeddingRequest{
 				Model: model,
-				Input: []any{"hello world"},
+				Input: []any{probeEmbeddingInput},
 			}
 		case constant.EndpointTypeImageGeneration:
 			// 返回 ImageRequest
 			return &dto.ImageRequest{
 				Model:  model,
-				Prompt: "a cute cat",
+				Prompt: probeImagePrompt,
 				N:      lo.ToPtr(uint(1)),
 				Size:   "1024x1024",
 			}
@@ -769,63 +766,19 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 			// 返回 RerankRequest
 			return &dto.RerankRequest{
 				Model:     model,
-				Query:     "What is Deep Learning?",
-				Documents: []any{"Deep Learning is a subset of machine learning.", "Machine learning is a field of artificial intelligence."},
+				Query:     probeRerankQuery,
+				Documents: probeRerankDocs,
 				TopN:      lo.ToPtr(2),
-			}
-		case constant.EndpointTypeOpenAIResponse:
-			// 返回 OpenAIResponsesRequest
-			return &dto.OpenAIResponsesRequest{
-				Model:  model,
-				Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
-				Stream: lo.ToPtr(isStream),
 			}
 		case constant.EndpointTypeOpenAIResponseCompact:
 			// 返回 OpenAIResponsesCompactionRequest
 			return &dto.OpenAIResponsesCompactionRequest{
 				Model: model,
-				Input: testResponsesInput,
+				Input: probeResponsesInput(),
 			}
-		case constant.EndpointTypeAnthropic:
-			return &dto.ClaudeRequest{
-				Model:     model,
-				Stream:    lo.ToPtr(isStream),
-				MaxTokens: lo.ToPtr(uint(16)),
-				Messages: []dto.ClaudeMessage{
-					{
-						Role:    "user",
-						Content: "hi",
-					},
-				},
-			}
-		case constant.EndpointTypeGemini:
-			return &dto.GeminiChatRequest{
-				Contents: []dto.GeminiChatContent{
-					{
-						Role:  "user",
-						Parts: []dto.GeminiPart{{Text: "hi"}},
-					},
-				},
-				GenerationConfig: dto.GeminiChatGenerationConfig{
-					MaxOutputTokens: lo.ToPtr(uint(3000)),
-				},
-			}
-		case constant.EndpointTypeOpenAI:
-			req := &dto.GeneralOpenAIRequest{
-				Model:  model,
-				Stream: lo.ToPtr(isStream),
-				Messages: []dto.Message{
-					{
-						Role:    "user",
-						Content: "hi",
-					},
-				},
-				MaxTokens: lo.ToPtr(uint(16)),
-			}
-			if isStream {
-				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
-			}
-			return req
+		default:
+			// 聊天族端点（anthropic / gemini / responses / openai）统一走拟真探针
+			return buildRealisticChatProbe(model, constant.EndpointType(endpointType), isStream)
 		}
 	}
 
@@ -833,8 +786,8 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	if strings.Contains(strings.ToLower(model), "rerank") {
 		return &dto.RerankRequest{
 			Model:     model,
-			Query:     "What is Deep Learning?",
-			Documents: []any{"Deep Learning is a subset of machine learning.", "Machine learning is a field of artificial intelligence."},
+			Query:     probeRerankQuery,
+			Documents: probeRerankDocs,
 			TopN:      lo.ToPtr(2),
 		}
 	}
@@ -846,7 +799,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		// 返回 EmbeddingRequest
 		return &dto.EmbeddingRequest{
 			Model: model,
-			Input: []any{"hello world"},
+			Input: []any{probeEmbeddingInput},
 		}
 	}
 
@@ -854,39 +807,13 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	if strings.Contains(strings.ToLower(model), "codex") {
 		return &dto.OpenAIResponsesRequest{
 			Model:  model,
-			Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
+			Input:  probeResponsesInput(),
 			Stream: lo.ToPtr(isStream),
 		}
 	}
 
-	// Chat/Completion 请求 - 返回 GeneralOpenAIRequest
-	testRequest := &dto.GeneralOpenAIRequest{
-		Model:  model,
-		Stream: lo.ToPtr(isStream),
-		Messages: []dto.Message{
-			{
-				Role:    "user",
-				Content: "hi",
-			},
-		},
-	}
-	if isStream {
-		testRequest.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
-	}
-
-	if dto.IsOpenAIReasoningOModel(model) {
-		testRequest.MaxCompletionTokens = lo.ToPtr(uint(16))
-	} else if strings.Contains(model, "thinking") {
-		if !strings.Contains(model, "claude") {
-			testRequest.MaxTokens = lo.ToPtr(uint(50))
-		}
-	} else if strings.Contains(model, "gemini") {
-		testRequest.MaxTokens = lo.ToPtr(uint(3000))
-	} else {
-		testRequest.MaxTokens = lo.ToPtr(uint(16))
-	}
-
-	return testRequest
+	// Chat/Completion 请求（自动检测兜底路径，同样拟真）
+	return buildRealisticChatProbe(model, constant.EndpointTypeOpenAI, isStream)
 }
 
 func TestChannel(c *gin.Context) {
@@ -947,6 +874,25 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
+	// 手动测通某个模型，就撤销这个模型上的 per-model 自动禁用。
+	//
+	// 只挂在手动路径上：per-model 禁用是「上游说这个模型不存在」这种确定性失效，
+	// 不会自愈，自动恢复没有意义；而且自动路径每轮只测一个模型（见
+	// selectChannelsForAutomaticTest 与 testChannel 的模型选取），拿这一次成功去
+	// 恢复渠道会反复抖动 —— 生产实测 #84 两轮测同一个模型都通过，却是被另一个
+	// 模型的 404 禁用的。管理员指定模型测一次是明确的意图，才是可信的恢复信号。
+	//
+	// testModel 是请求参数 ?model=，为空时 testChannel 内部会回落到渠道首个模型，
+	// 此时读 original_model 拿到的正是实际测的那个模型。
+	if result.context != nil {
+		if testedModel := result.context.GetString(string(constant.ContextKeyOriginalModel)); testedModel != "" {
+			if cleared, err := model.EnableChannelModel(channel.Id, testedModel); err != nil {
+				common.SysLog(fmt.Sprintf("failed to clear per-model disable: channel_id=%d, model=%s, error=%v", channel.Id, testedModel, err))
+			} else if cleared {
+				common.SysLog(fmt.Sprintf("渠道「%s」（#%d）的模型「%s」测活通过，已撤销该模型的自动禁用", channel.Name, channel.Id, testedModel))
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -982,7 +928,15 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		shouldBanChannel = service.ShouldDisableChannel(channel.Id, result.newAPIError)
 	}
 
-	if common.AutomaticDisableChannelEnabled && !shouldBanChannel {
+	// 响应时间阈值只在「允许禁用」的测试模式下生效（scheduled_all / auto_ban_only）。
+	//
+	// passive_recovery（自动复活）这一轮的目的是把还能用的渠道捞回来，allowDisable=false
+	// 意味着 shouldBanChannel 根本不会被消费 —— 此时把阈值塞进 newAPIError 只有一个效果：
+	// 让 ShouldEnableChannel 因为 newAPIError != nil 而拒绝复活。拟真探针要真实生成几百
+	// token（2026-10-02 之前是 2 个 token 的 "hi"，1 秒内返回；现在正常模型也要 5~20 秒），
+	// 而阈值只有 5 秒 —— 不加这个豁免，所有慢一点的健康渠道会永远无法自动复活。
+	// 慢渠道的真实保护在熔断器（TTFT 超时 → 按模型熔断），不在这里。
+	if allowDisable && common.AutomaticDisableChannelEnabled && !shouldBanChannel {
 		if milliseconds > disableThreshold {
 			err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
 			newAPIError = types.NewOpenAIError(err, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)
