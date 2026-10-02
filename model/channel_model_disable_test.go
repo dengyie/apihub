@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -135,25 +136,102 @@ func TestEnableChannelModelIgnoresUnrecordedModel(t *testing.T) {
 	assert.False(t, abilityEnabled(t, channel.Id, "m1"), "没有留痕的行必须保持原状")
 }
 
-// 清单只收「渠道启用、但这个模型被关着」的组合；渠道级禁用会把该渠道所有
-// abilities 一起置灰，混进来就分不清两种完全不同的故障了。
-func TestListChannelModelDisabledExcludesChannelLevelDisable(t *testing.T) {
+// 整渠道禁用必须清掉 per-model 留痕，否则恢复时两张表会互相矛盾。
+//
+// UpdateAbilityStatus 是无差别覆写：恢复渠道会把所有 ability 置回 true，包括
+// 被 per-model 禁用摘掉的那几个。若留痕不清，abilities 说模型在架、channel_info
+// 说它已下线，而留痕正是 EnableChannelModel 唯一的准入凭据 —— 矛盾会让手动
+// 测活去改一条本来就没被禁用的 ability，日报也会把同一模型报成两种状态。
+// 这是自动恢复链路的常规动作（每小时一轮），不是边缘情况。
+func TestWholeChannelDisableClearsPerModelRecords(t *testing.T) {
 	setupChannelStatusTest(t)
-	perModel := seedChannelWithModels(t, "per-model", []string{"m1", "m2"}, true)
-	_, err := DisableChannelModel(perModel.Id, "m1", "模型不存在")
+	channel := seedChannelWithModels(t, "recover", []string{"m1", "m2"}, true)
+
+	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err)
+	require.False(t, abilityEnabled(t, channel.Id, "m1"), "前置：m1 已退出轮转")
+
+	// 渠道因账号级原因整条被自动禁用（余额不足等）
+	require.True(t, UpdateChannelStatus(channel.Id, "", common.ChannelStatusAutoDisabled, "余额不足"))
+
+	var afterDisable Channel
+	require.NoError(t, DB.First(&afterDisable, channel.Id).Error)
+	assert.Empty(t, afterDisable.ChannelInfo.ModelDisabledReason,
+		"整渠道禁用后 per-model 留痕必须一并清掉，否则恢复时会与 abilities 矛盾")
+	assert.Empty(t, afterDisable.ChannelInfo.ModelDisabledTime)
+
+	// 自动恢复测通、整条恢复
+	require.True(t, UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, ""))
+	assert.True(t, abilityEnabled(t, channel.Id, "m1"),
+		"留痕已清，恢复后 m1 回到轮转是预期行为 —— 它会再失败一次并被重新禁用")
+
+	// 关键：清掉留痕后，EnableChannelModel 不该把 m1 当成「曾被 per-model 禁用」
+	var afterRecovery Channel
+	require.NoError(t, DB.First(&afterRecovery, channel.Id).Error)
+	cleared, err := EnableChannelModel(channel.Id, "m1")
+	require.NoError(t, err)
+	assert.False(t, cleared, "没有留痕就不该动 abilities —— 这正是矛盾状态会触发的误改")
+}
+
+// 多 key 渠道停用单把 key 时，渠道本身仍是启用态、abilities 原封不动，
+// per-model 留痕必须保留。
+//
+// 清留痕的判据若读「传入的 status」而不是「handlerMultiKeyUpdate 跑完之后
+// 实际的 channel.Status」，这条路径就会误清 —— 留痕没了、ability 却还关着，
+// 变成与本次修复目标完全相反的反向矛盾。
+func TestPerModelRecordsSurviveSingleKeyDisable(t *testing.T) {
+	setupChannelStatusTest(t)
+
+	channel := Channel{
+		Name:   "multi-key-per-model",
+		Key:    "key-a\nkey-b",
+		Group:  "default",
+		Models: "m1,m2",
+		Status: common.ChannelStatusEnabled,
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+			MultiKeyMode: constant.MultiKeyModePolling,
+		},
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+	for _, m := range []string{"m1", "m2"} {
+		require.NoError(t, DB.Create(&Ability{
+			Group: "default", Model: m, ChannelId: channel.Id, Enabled: true,
+		}).Error)
+	}
+
+	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
 	require.NoError(t, err)
 
-	wholeChannel := seedChannelWithModels(t, "whole", []string{"m1"}, true)
-	// 走真实的整渠道禁用路径：status 与 abilities 是一起改的，只翻 abilities
-	// 造出来的状态在生产里并不存在，那样测的就不是筛选逻辑本身了。
-	require.True(t, UpdateChannelStatus(wholeChannel.Id, "", common.ChannelStatusAutoDisabled, "余额不足"))
+	// 只停用 key-a：渠道仍是启用态
+	require.True(t, UpdateChannelStatus(channel.Id, "key-a", common.ChannelStatusAutoDisabled, "上游拒绝该 key"))
 
-	list, err := ListChannelModelDisabled()
+	var stored Channel
+	require.NoError(t, DB.First(&stored, channel.Id).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, stored.Status, "只停用一把 key 不该改变渠道状态")
+	assert.Contains(t, stored.ChannelInfo.ModelDisabledReason, "m1",
+		"渠道仍启用，留痕必须保留 —— 清掉它会造出「留痕没了但 ability 还关着」的反向矛盾")
+	assert.False(t, abilityEnabled(t, channel.Id, "m1"), "m1 仍应退出轮转")
+	assert.True(t, abilityEnabled(t, channel.Id, "m2"), "m2 不该受影响")
+}
+
+// 渠道一直健康（从未整渠道禁用）时，留痕必须原样保留：恢复路径之外的任何
+// 状态变更都不该动它。
+func TestPerModelRecordsSurviveUnrelatedStatusChanges(t *testing.T) {
+	setupChannelStatusTest(t)
+	channel := seedChannelWithModels(t, "healthy", []string{"m1", "m2"}, true)
+
+	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
 	require.NoError(t, err)
-	require.Len(t, list, 1)
-	assert.Equal(t, perModel.Id, list[0].ChannelId)
-	assert.Equal(t, "m1", list[0].Model)
-	assert.Equal(t, "per-model", list[0].ChannelName)
+
+	// 重复设置同一个状态：早退路径，不该清留痕
+	require.False(t, UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, ""))
+
+	var stored Channel
+	require.NoError(t, DB.First(&stored, channel.Id).Error)
+	assert.Contains(t, stored.ChannelInfo.ModelDisabledReason, "m1",
+		"渠道本就启用、无整渠道状态变更，留痕必须保留")
 }
 
 func TestPerModelDisableRejectsDegenerateInput(t *testing.T) {

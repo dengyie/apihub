@@ -473,6 +473,18 @@ var ErrChannelModelNotServed = errors.New("channel does not serve this model")
 // 返回的 needsChannelDisable 表示「摘掉这个模型后该渠道已无任何可用模型」，
 // 调用方须据此升级为整渠道禁用 —— 否则会留下一条 status=1 却永远选不中的
 // 僵尸渠道，比不禁用更难排查。
+//
+// **这里刻意不按 group 收窄，尽管 abilities 的主键是 (group, model, channel_id)、
+// 且选路 loadEnabledAbilities 是按 group 过滤的。** 收窄看起来更贴合选路口径，
+// 但语义是错的：abilities 的行是「一条渠道的 Models × Group」的叉积
+// （model/ability.go 的 Insert），同一条渠道在所有分组下共用同一把 key、同一个
+// base_url —— GetNextEnabledKey 按轮询/随机下标选 key，从不按 group 选。
+// 也就是说，「上游没有这个模型」是**凭据级**的事实，不是分组级的事实：
+// 一旦在某个分组观测到，它对该渠道的所有分组同时成立。
+//
+// 若按 group 收窄，后果是把故障范围缩小成「只在被观测到的那个分组不可用」，
+// 其余分组照旧路由到同一个没有该模型的上游，于是同一故障换个分组再发一遍、
+// 再被禁用一次，变成一条更慢更难查的循环。
 func DisableChannelModel(channelID int, modelName string, reason string) (needsChannelDisable bool, err error) {
 	if channelID <= 0 || modelName == "" {
 		return false, ErrChannelModelNotServed
@@ -532,6 +544,12 @@ func DisableChannelModel(channelID int, modelName string, reason string) (needsC
 // 只在 channel_info 里确实记过该模型时才动 abilities：否则一次普通的
 // 渠道测活就会把「本来就没被禁用」的 ability 重写成 enabled，顺带把因渠道级
 // 禁用而失效的行错误复活。
+//
+// 脏入参返回 (false, nil) 而不是 ErrChannelModelNotServed，是刻意的：撤销是
+// 「让状态回到干净」的幂等操作，参数无效时无事可做本就无害，报错反而会让调用
+// 方以为「该渠道不服务这个模型」而做出降级禁用 —— 那正好是它要避免的副作用。
+// 方向性由 DisableChannelModel 承担：那边是「记录一次故障」，入参无效必须
+// 报错，否则一次无效调用会被当成「已禁用」而吞掉。
 func EnableChannelModel(channelID int, modelName string) (cleared bool, err error) {
 	if channelID <= 0 || modelName == "" {
 		return false, nil
@@ -559,29 +577,6 @@ func EnableChannelModel(channelID int, modelName string) (cleared bool, err erro
 		return channel.saveChannelInfo(tx)
 	})
 	return cleared, err
-}
-
-// ChannelModelDisabled 是一条 per-model 禁用的可读快照。
-type ChannelModelDisabled struct {
-	ChannelId   int    `json:"channel_id"`
-	ChannelName string `json:"channel_name"`
-	Model       string `json:"model"`
-}
-
-// ListChannelModelDisabled 列出当前真正处于 per-model 禁用状态的 (渠道, 模型)。
-//
-// 判据是「ability 关着、但渠道本身是启用的」——渠道级禁用同样会把 abilities
-// 全部置灰，不加这个条件会把两种完全不同的故障混在一张清单里。禁用原因与时间
-// 存在 channel_info 的嵌套 JSON 里，跨库方言地抽 JSON 并不划算，调用方
-// （日报脚本）自己读那一列更简单。
-func ListChannelModelDisabled() ([]ChannelModelDisabled, error) {
-	var out []ChannelModelDisabled
-	err := DB.Model(&Ability{}).
-		Select("abilities.channel_id as channel_id, abilities.model as model, channels.name as channel_name").
-		Joins("left join channels on channels.id = abilities.channel_id").
-		Where("abilities.enabled = ? and channels.status = ?", false, common.ChannelStatusEnabled).
-		Find(&out).Error
-	return out, err
 }
 
 func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool, sortOptions ...ChannelSortOptions) ([]*Channel, error) {
@@ -1002,6 +997,34 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			shouldUpdateAbilities = true
 		}
 
+		// 整渠道禁用会 supersede 掉 per-model 留痕，必须一并清掉。
+		//
+		// 留痕与 abilities 是同一份事实的两张表，而 UpdateAbilityStatus 是无差别
+		// 覆写：恢复渠道时它会把该渠道所有 ability 置回 true，包括当初被
+		// per-model 禁用摘掉的那几个。若留痕不清，两张表就对同一个模型给出互相
+		// 矛盾的说法（abilities 说在架、留痕说已下线），而留痕正是
+		// EnableChannelModel 唯一的准入凭据 —— 矛盾会让管理员手动测活去改一条
+		// 本来就没被禁用的 ability，日报也会把同一模型同时报成两种状态。
+		//
+		// 清掉之后不变量是「per-model 留痕只在渠道启用期间存在」：两个状态
+		// 从不重叠，覆写 abilities 就不可能与留痕冲突。代价是渠道恢复后那个
+		// 模型会再失败一次并被重新禁用一轮，但那是真实故障，重试一轮本就是
+		// 正确行为；反过来保留留痕才是制造出解释不通的状态。
+		//
+		// 判据读的是 handlerMultiKeyUpdate 跑完之后的 channel.Status，不是传入的
+		// status。多 key 渠道带 usingKey 进来时只停用那一把 key、渠道本身仍是
+		// 启用态（此时 shouldUpdateAbilities 为 false、abilities 原封不动），
+		// 若按传入的 status 判断就会误清留痕、清出一个「留痕没了但 ability 还
+		// 关着」的反向矛盾 —— 正是本次要消灭的那类不一致。
+		clearedModelDisabled := false
+		if channel.Status != common.ChannelStatusEnabled &&
+			(len(channel.ChannelInfo.ModelDisabledReason) > 0 ||
+				len(channel.ChannelInfo.ModelDisabledTime) > 0) {
+			channel.ChannelInfo.ModelDisabledReason = nil
+			channel.ChannelInfo.ModelDisabledTime = nil
+			clearedModelDisabled = true
+		}
+
 		// channels 与 abilities 是同一份事实的两张表，必须同生共死。
 		// 此前 abilities 的更新挂在 defer 上、失败只打日志，两张表因此可以永久
 		// 漂移：channels 已禁用而 abilities 仍是 enabled，生产实测会让已禁用的
@@ -1009,6 +1032,13 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		err = DB.Transaction(func(tx *gorm.DB) error {
 			if err := channel.saveStatusState(tx); err != nil {
 				return err
+			}
+			// saveStatusState 的白名单只对多 key 渠道写 channel_info，非多 key
+			// 渠道要单独补一次，否则清掉的留痕根本落不了盘。
+			if clearedModelDisabled && !channel.ChannelInfo.IsMultiKey {
+				if err := channel.saveChannelInfo(tx); err != nil {
+					return err
+				}
 			}
 			if shouldUpdateAbilities {
 				return UpdateAbilityStatus(tx, channelId, status == common.ChannelStatusEnabled)

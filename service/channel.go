@@ -137,7 +137,12 @@ func DisableChannelForModel(channelError types.ChannelError, modelName string, r
 
 	subject := fmt.Sprintf("通道「%s」（#%d）的模型「%s」已被禁用", channelError.ChannelName, channelError.ChannelId, modelName)
 	content := fmt.Sprintf("通道「%s」（#%d）的模型「%s」已被禁用，原因：%s（该渠道其余模型不受影响）", channelError.ChannelName, channelError.ChannelId, modelName, reason)
-	NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
+	// 通知 type 必须与整渠道禁用区分开。CheckNotificationLimit 按
+	// (userId, notifyType, hour) 计数、默认每小时 2 条；沿用整渠道的 type 会让
+	// per-model 通知把该渠道的整渠道禁用通知挤掉 —— 而 per-model 禁用是每请求
+	// 都可能触发的，撞上限流的机会远高于整渠道禁用，被挤掉的恰好总是更严重
+	// 的那一类。带上模型名还顺带按模型分别计数，避免多个模型共用一个桶。
+	NotifyRootUser(fmt.Sprintf("%s_model_%s", formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), modelName), subject, content)
 }
 
 func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
