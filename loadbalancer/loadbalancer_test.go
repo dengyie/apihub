@@ -320,6 +320,25 @@ func TestIsParamNotSupportedError(t *testing.T) {
 	assert.True(t, okLevel2)
 	assert.Equal(t, "reasoning_effort", pLevel2)
 
+	// huan666 / pydantic 风格：复数 (s) + 反引号包裹（渠道 #68 生产实测报文）。
+	// 这是渠道 #68 每请求白烧一轮 400 的根因：老的 "parameter:" 字面量匹配不到 "parameter(s):"。
+	errParen := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("status_code=400, Validation: Unsupported parameter(s): `enable_thinking`"),
+	}
+	pParen, okParen := IsParamNotSupportedError(errParen)
+	assert.True(t, okParen, "复数 parameter(s) 必须被识别")
+	assert.Equal(t, "enable_thinking", pParen)
+
+	// 复数无 (s)、无引号包裹
+	errPlainPlural := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("Unsupported parameters: top_k"),
+	}
+	pPlainPlural, okPlainPlural := IsParamNotSupportedError(errPlainPlural)
+	assert.True(t, okPlainPlural)
+	assert.Equal(t, "top_k", pPlainPlural)
+
 	// 500 不应触发参数裁剪
 	err4 := &types.NewAPIError{
 		StatusCode: 500,

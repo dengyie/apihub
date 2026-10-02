@@ -227,7 +227,12 @@ var unsupportedParamPatterns = []*regexp.Regexp{
 	// "thinking" is not supported on /v1/chat/completions
 	regexp.MustCompile(`["']([a-zA-Z_][a-zA-Z0-9_]*)["']\s+is not supported`),
 	// Unsupported parameter: 'reasoning_effort'
-	regexp.MustCompile(`[Uu]nsupported parameter:\s*["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?`),
+	// Unsupported parameter(s): `enable_thinking`
+	//   ↑ 复数 (s) 与反引号包裹（pydantic / FastAPI 风格，huan666 等中转站用它）。
+	//   原先字面量写死 "parameter:"，遇到 "parameter(s):" 直接漏识别——生产实测
+	//   渠道 #68 因这一条白烧了 68 次 400。分隔符用「非标识符字符」类匹配，
+	//   不枚举引号种类（Go 原始字符串里也无法写反引号）。
+	regexp.MustCompile(`[Uu]nsupported parameters?(?:\(s\))?:\s*[^a-zA-Z0-9_]{0,2}([a-zA-Z_][a-zA-Z0-9_]*)`),
 	// Unrecognized request argument supplied: stream_options
 	regexp.MustCompile(`[Uu]nrecognized request argument supplied:\s*["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?`),
 	// Additional properties are not allowed ('foo' was unexpected)
