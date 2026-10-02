@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 
@@ -452,11 +453,18 @@ func (channel *Channel) saveChannelInfo(tx *gorm.DB) error {
 		Update("channel_info", channel.ChannelInfo).Error
 }
 
-// ErrChannelModelNotServed 表示该渠道在目标分组下并不服务这个模型。
+// ErrChannelModelNotServed 表示该渠道根本不服务这个模型 —— abilities 里
+// 压根没有 (渠道, 模型) 的行。
 //
 // 单独成一个哨兵错误而不是返回 (false, nil)，是因为「翻 abilities 没生效」和
 // 「生效了，而且这个渠道还有别的模型可用」在调用方眼里必须是两回事：前者要
 // 决定是否退回整渠道禁用，后者不用。
+//
+// ⚠️ 判据是「有没有这一行」，**不是**「这一行现在是不是 enabled」。上游真的
+// 掉了一个模型时，同时在途的请求不止一个，第一个禁用成功之后，后续每一个的
+// UPDATE 都会 RowsAffected=0 —— 若把这当成「不服务」，调用方就会把整条渠道
+// 禁用，恰好把本特性要避免的「一个模型失效、其余模型陪葬」原样演一遍，而且
+// 每次必然发生。「已禁用」是幂等成功，不是降级理由。
 var ErrChannelModelNotServed = errors.New("channel does not serve this model")
 
 // DisableChannelModel 把单个 (渠道, 模型) 退出轮转，渠道本身保持启用。
@@ -499,21 +507,37 @@ func DisableChannelModel(channelID int, modelName string, reason string) (needsC
 	var served bool
 	var stillEnabled int64
 	err = DB.Transaction(func(tx *gorm.DB) error {
+		// 先问「有没有这一行」，再问「这一行是不是还开着」。两者不能合并：
+		// 并发在途请求里，第一个已经把 enabled 打成 0，后面的都撞上
+		// RowsAffected=0，那属于「已经禁好了」，不是「不服务这个模型」。
+		var rowsForModel int64
+		if err := tx.Model(&Ability{}).
+			Where("channel_id = ? and model = ?", channelID, modelName).
+			Count(&rowsForModel).Error; err != nil {
+			return err
+		}
+		if rowsForModel == 0 {
+			return nil
+		}
+		served = true
+
 		res := tx.Model(&Ability{}).
 			Where("channel_id = ? and model = ? and enabled = ?", channelID, modelName, true).
 			Update("enabled", false)
 		if res.Error != nil {
 			return res.Error
 		}
-		if res.RowsAffected == 0 {
-			return nil
-		}
-		served = true
 
 		if err := tx.Model(&Ability{}).
 			Where("channel_id = ? and enabled = ?", channelID, true).
 			Count(&stillEnabled).Error; err != nil {
 			return err
+		}
+
+		// 已禁用（RowsAffected=0）时不再重写留痕：原因与时间已经记过一次，
+		// 覆盖成后来的措辞只会把真正的首次发生时刻冲掉。
+		if res.RowsAffected == 0 {
+			return nil
 		}
 
 		var channel Channel
@@ -1053,12 +1077,69 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	return true
 }
 
+// lockChannelsInIdOrder 按 id 升序取回一组渠道的 polling lock 并返回释放函数。
+//
+// 取锁顺序必须全系统统一：DisableChannelModel / EnableChannelModel /
+// UpdateChannelStatus 都是「先取锁、再开事务」，若批量路径反过来（先开事务再
+// 取锁）就会与它们互等 —— 持事务等锁、对方持锁等事务，SQLite 串行化写锁下
+// 直接死锁。升序是最省事的全局定序。
+func lockChannelsInIdOrder(channels []Channel) func() {
+	sorted := make([]Channel, len(channels))
+	copy(sorted, channels)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Id < sorted[j].Id })
+	locks := make([]*sync.Mutex, 0, len(sorted))
+	for i := range sorted {
+		lock := GetChannelPollingLock(sorted[i].Id)
+		lock.Lock()
+		locks = append(locks, lock)
+	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Unlock()
+		}
+	}
+}
+
+// clearModelDisabledRecords 清空一组渠道的 per-model 留痕。
+//
+// 留痕的前提不变式是「只在渠道启用期间存在」，因为它记录的是「这个模型被
+// 单独摘掉了」这件事。UpdateAbilityStatusByTag 一次性把整批 ability 全部翻面，
+// 之后每条渠道要么全开要么全关，「单独摘掉某个模型」这个状态不复存在 ——
+// 留痕留着就是一句谎话：EnableChannelByTag 之后它会声称模型仍被禁用、实际却
+// 已经全部回到轮转；DisableChannelByTag 之后它会声称是模型级、实际却是渠道级
+// 全灭。这正是 UpdateChannelStatus 已经在清的那类矛盾，按 tag 批量操作必须
+// 同样清一遍。
+func clearModelDisabledRecords(tx *gorm.DB, channels []Channel) error {
+	for i := range channels {
+		channel := &channels[i]
+		if len(channel.ChannelInfo.ModelDisabledReason) == 0 &&
+			len(channel.ChannelInfo.ModelDisabledTime) == 0 {
+			continue
+		}
+		channel.ChannelInfo.ModelDisabledReason = nil
+		channel.ChannelInfo.ModelDisabledTime = nil
+		if err := channel.saveChannelInfo(tx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func EnableChannelByTag(tag string) error {
+	var channels []Channel
+	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
+		return err
+	}
+	unlock := lockChannelsInIdOrder(channels)
+	defer unlock()
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error; err != nil {
 			return err
 		}
-		return UpdateAbilityStatusByTag(tx, tag, true)
+		if err := UpdateAbilityStatusByTag(tx, tag, true); err != nil {
+			return err
+		}
+		return clearModelDisabledRecords(tx, channels)
 	})
 }
 
@@ -1069,6 +1150,9 @@ func DisableChannelByTag(tag string) error {
 	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
 		return err
 	}
+	// 那批「所有 key 都不可用」的渠道走 UpdateChannelStatus，它自己会取锁并清
+	// 留痕；这里必须排在取锁之前，否则会在 UpdateChannelStatus 已经持锁时
+	// 再去取同一把锁 —— 自死锁。
 	for _, channel := range channels {
 		if channel.ChannelInfo.IsMultiKey && channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled {
 			if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusManuallyDisabled, "manual tag operation") {
@@ -1076,12 +1160,22 @@ func DisableChannelByTag(tag string) error {
 			}
 		}
 	}
-	// 与 EnableChannelByTag 同理：状态与 abilities 投影同生共死。
+	// 重新读一次：上面那批渠道的 status 已被 UpdateChannelStatus 改过。
+	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
+		return err
+	}
+	unlock := lockChannelsInIdOrder(channels)
+	defer unlock()
+	// 与 EnableChannelByTag 同理：状态与 abilities 投影同生共死，per-model
+	// 留痕也必须跟着清，否则整批翻面之后留痕全是废话。
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error; err != nil {
 			return err
 		}
-		return UpdateAbilityStatusByTag(tx, tag, false)
+		if err := UpdateAbilityStatusByTag(tx, tag, false); err != nil {
+			return err
+		}
+		return clearModelDisabledRecords(tx, channels)
 	})
 }
 

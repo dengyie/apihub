@@ -124,6 +124,27 @@ func TestDisableChannelForModelHappyPathOnlyAffectsThatModel(t *testing.T) {
 		"per-model 禁用不得改渠道状态")
 }
 
+// 同一 (渠道, 模型) 上有两个并发在途请求、上游同样回「没有这个模型」。
+// 第二个必须被当成幂等成功，**绝不能**降级为整渠道禁用 —— 否则本特性在生产
+// 上必然退化成 v29.14 的行为：模型刚掉的那一刻在途请求有好几个，第一个摘掉
+// 那个模型，其余每一个都把整条渠道连同 4 个健康模型一起摘了。
+func TestDisableChannelForModelConcurrentHitDoesNotEscalate(t *testing.T) {
+	ch := setupModelScopeTestDB(t)
+	withModelScopeEnabled(t, false)
+
+	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "concurrent", AutoBan: true}
+	DisableChannelForModel(channelError, "m1", "模型不存在")
+	require.Equal(t, common.ChannelStatusEnabled, channelStatus(t, ch.Id), "第一次只摘模型")
+
+	DisableChannelForModel(channelError, "m1", "模型不存在")
+
+	assert.Equal(t, common.ChannelStatusEnabled, channelStatus(t, ch.Id),
+		"重复命中同一失效模型不得把整条渠道禁用 —— m2/m3 会被连坐下线")
+	assert.False(t, abilityEnabled(t, ch.Id, "m1"))
+	assert.True(t, abilityEnabled(t, ch.Id, "m2"))
+	assert.True(t, abilityEnabled(t, ch.Id, "m3"))
+}
+
 // modelName 为空：没有模型名就没有降级依据，必须退回整渠道禁用。
 func TestDisableChannelForModelFallsBackOnEmptyModelName(t *testing.T) {
 	ch := setupModelScopeTestDB(t)

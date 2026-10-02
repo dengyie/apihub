@@ -91,8 +91,13 @@ func TestDisableChannelModelRejectsUnservedModel(t *testing.T) {
 	assert.True(t, abilityEnabled(t, channel.Id, "m1"), "失败的调用不得留下副作用")
 }
 
-// 重复禁用同一个模型是幂等的：第二次没有 enabled 行可翻，必须报未服务而不是
-// 静默成功，否则上游连续两次 404 会把两次失败记成两次独立禁用。
+// 重复禁用必须幂等成功，**绝不能**退化成 ErrChannelModelNotServed。
+//
+// 这条用例此前名叫 IsIdempotent、断言的却是 `ErrorIs(err, ErrChannelModelNotServed)`
+// —— 名字与断言相反，把缺陷钉进了测试。上游真掉一个模型时同时在途的请求不止
+// 一个，第一个禁用成功后其余全部 RowsAffected=0，被判成「不服务该模型」，调用
+// 方据此退回整渠道禁用：本特性要避免的「一个模型失效、其余模型陪葬」于是
+// 每次必然发生，特性等于没上线。
 func TestDisableChannelModelIsIdempotent(t *testing.T) {
 	setupChannelStatusTest(t)
 	channel := seedChannelWithModels(t, "twice", []string{"m1", "m2"}, true)
@@ -100,8 +105,63 @@ func TestDisableChannelModelIsIdempotent(t *testing.T) {
 	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
 	require.NoError(t, err)
 	_, err = DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err, "重复禁用是幂等成功，不是「不服务该模型」")
+	assert.True(t, abilityEnabled(t, channel.Id, "m2"), "兄弟模型不受影响")
+}
+
+// 幂等重复禁用同样要评估升级：若该渠道确实已无任何可用模型，重复命中也应当
+// 升级为整渠道禁用，而不是因为「这次没改动任何行」就漏掉，留下僵尸渠道。
+func TestDisableChannelModelIdempotentStillEscalatesWhenExhausted(t *testing.T) {
+	setupChannelStatusTest(t)
+	channel := seedChannelWithModels(t, "only", []string{"m1"}, true)
+
+	needs, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err)
+	assert.True(t, needs)
+
+	needs, err = DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err)
+	assert.True(t, needs, "已无可用模型时，重复命中同样该升级")
+}
+
+// 真正没有这一行才算「不服务」：判据是行是否存在，不是行当前是否 enabled。
+func TestDisableChannelModelNotServedOnlyWhenNoRowExists(t *testing.T) {
+	setupChannelStatusTest(t)
+	channel := seedChannelWithModels(t, "served", []string{"m1", "m2"}, true)
+
+	_, err := DisableChannelModel(channel.Id, "never-served", "模型不存在")
 	require.ErrorIs(t, err, ErrChannelModelNotServed)
-	assert.True(t, abilityEnabled(t, channel.Id, "m2"))
+}
+
+// 按 tag 批量启停会一次性翻面整批 abilities，留痕必须跟着清 —— 否则
+// EnableChannelByTag 之后留痕声称「模型仍被禁用」、实际已全部回到轮转。
+func TestTagOperationsClearPerModelRecords(t *testing.T) {
+	setupChannelStatusTest(t)
+	channel := seedChannelWithModels(t, "tagged", []string{"m1", "m2"}, true)
+	channel.Tag = common.GetPointer("ops")
+	require.NoError(t, DB.Save(channel).Error)
+	require.NoError(t, DB.Model(&Ability{}).Where("channel_id = ?", channel.Id).
+		Update("tag", "ops").Error)
+
+	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err)
+	var before Channel
+	require.NoError(t, DB.First(&before, channel.Id).Error)
+	require.NotEmpty(t, before.ChannelInfo.ModelDisabledReason, "前置条件：留痕已写入")
+
+	require.NoError(t, DisableChannelByTag("ops"))
+	var after Channel
+	require.NoError(t, DB.First(&after, channel.Id).Error)
+	assert.Equal(t, common.ChannelStatusManuallyDisabled, after.Status)
+	assert.Empty(t, after.ChannelInfo.ModelDisabledReason, "整批翻面后留痕必须清空")
+	assert.Empty(t, after.ChannelInfo.ModelDisabledTime)
+
+	require.NoError(t, EnableChannelByTag("ops"))
+	var restored Channel
+	require.NoError(t, DB.First(&restored, channel.Id).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, restored.Status)
+	assert.Empty(t, restored.ChannelInfo.ModelDisabledReason, "恢复后不能留下过期留痕")
+	assert.True(t, abilityEnabled(t, restored.Id, "m1"), "整批恢复后 m1 应回到轮转")
 }
 
 func TestEnableChannelModelRestoresOnlyRecordedModel(t *testing.T) {
