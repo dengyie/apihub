@@ -241,7 +241,11 @@ func TestDistributeHidesTaskPluginDetailsButLogsDiagnostics(t *testing.T) {
 				require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 				requestID := recorder.Header().Get(common.RequestIdKey)
 				require.NotEmpty(t, requestID)
-				assert.JSONEq(t, fmt.Sprintf(`{"error":{"message":%q,"type":"new_api_error","code":"model_not_found"}}`,
+				// code 用 no_available_channel 而不是 model_not_found：这一类是
+				// 「本组没有能服务该模型的渠道」（路由池状态、会自愈），不是
+				// 「上游凭据没有这个模型」。两者曾共用一个码，导致运维据日志
+				// 得出「渠道缺该模型」的错误结论，进而差点按错误方向去禁用。
+				assert.JSONEq(t, fmt.Sprintf(`{"error":{"message":%q,"type":"new_api_error","code":"no_available_channel"}}`,
 					locale.message+" (request id: "+requestID+")"), recorder.Body.String())
 				assert.NotContains(t, recorder.Body.String(), "disable or override")
 				for _, key := range keys {

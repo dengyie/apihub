@@ -569,6 +569,39 @@ func IsUpstreamModelUnavailableError(err *types.NewAPIError) bool {
 	return false
 }
 
+// IsRoutingExhaustedError 判断「选不出渠道」这一类**路由池状态**，而不是
+// 「这条凭据没有这个模型」。
+//
+// 两者都表现为 503、都可能带上 model 字样，但因果完全相反：
+//
+//   - 上游说没有该模型 → 凭据级、确定性、不会自愈 → 该禁用（IsUpstreamModelUnavailableError）
+//   - 池子里此刻没有能服务该模型的渠道 → 渠道可能只是被熔断/自动禁用/过载，
+//     过一会儿就回来 → **绝不能禁用**
+//
+// 文本上两者高度相似，所以这里必须显式识别并显式排除，不能指望
+// IsUpstreamModelUnavailableError 的白名单「恰好」漏掉它 —— 那是把安全
+// 建立在子串巧合上：任何人日后往那张表里补一条 "no available channel"，
+// 就会把一条 85% 可用的渠道整条摘掉，而线上不会有任何报错。
+//
+// 生产实测 #144（cpa-kuaipao）：40 分钟成功 39 次、失败 7 次，失败全是
+// "No available channel for model glm-5.3-flash under group codex (distributor)"。
+// 该措辞来自 new-api 家族自己的 distributor 模板（i18n/locales/en.yaml 的
+// distributor.no_available_channel），本网关与上游 CPA 用的是同一句，
+// 所以文本匹配对两者都成立。
+func IsRoutingExhaustedError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	// 机器可读码优先：本网关自己产出的这一类现在带 no_available_channel。
+	if err.GetErrorCode() == types.ErrorCodeNoAvailableChannel {
+		return true
+	}
+	// 上游透传的同款措辞（上游也是 new-api 家族），此时 error_code 由上游决定、
+	// 未必是本码，只能回退到文本。
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no available channel for model")
+}
+
 // BreakerScope 一次上游失效的熔断范围。
 type BreakerScope int
 

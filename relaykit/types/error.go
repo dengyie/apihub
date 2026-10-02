@@ -84,6 +84,18 @@ const (
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
 	ErrorCodeModelNotFound          ErrorCode = "model_not_found"
 	ErrorCodePromptBlocked          ErrorCode = "prompt_blocked"
+	// ErrorCodeNoAvailableChannel 表示「该分组下没有任何能服务该模型的渠道」，
+	// 也就是 distributor 选不出渠道。**刻意与 ErrorCodeModelNotFound 分开。**
+	//
+	// 两者被混为一谈过一次，后果不是标签难看而是判断出错：`model_not_found`
+	// 读起来是「上游凭据没有这个模型」，而这一类实际上是**路由池状态**——
+	// 候选渠道可能只是此刻被熔断/自动禁用/过载，等一会儿就恢复。生产实测
+	// #144（cpa-kuaipao）40 分钟内成功 39 次、失败 7 次，失败全是这一类；
+	// 按「凭据没有该模型」去禁用，会把一条 85% 可用的渠道整条摘掉。
+	//
+	// 机器可读码必须能区分这两件事。面向人的文案（MessageID / message）
+	// 保持原样，不影响按文本匹配的调用方。
+	ErrorCodeNoAvailableChannel ErrorCode = "no_available_channel"
 
 	// sql error
 	ErrorCodeQueryDataError  ErrorCode = "query_data_error"

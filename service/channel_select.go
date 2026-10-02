@@ -547,7 +547,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 			}
 			return nil, selectGroup, &ChannelSelectError{
-				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorGetChannelFailed,
+				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeGetChannelFailed, MessageID: i18n.MsgDistributorGetChannelFailed,
 				Params: map[string]any{"Group": showGroup, "Model": modelName, "Error": err.Error()},
 			}
 		}
@@ -557,7 +557,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			// 原本没有任何记录，靠客户端来报障。这里留一条可聚合的证据。
 			loadbalancer.RecordModelExhausted(modelName, "group="+usingGroup)
 			return nil, selectGroup, &ChannelSelectError{
-				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
+				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeNoAvailableChannel, MessageID: i18n.MsgDistributorNoAvailableChannel,
 				Params: map[string]any{"Group": usingGroup, "Model": modelName}, NoAvailableChannel: true,
 			}
 		}
@@ -565,7 +565,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
 		loadbalancer.RecordModelExhausted(modelName, "filter="+string(kind))
 		return nil, selectGroup, &ChannelSelectError{
-			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
+			StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeNoAvailableChannel, MessageID: i18n.MsgDistributorNoAvailableChannel,
 			Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 			FilterKind: kind, Channel: channel, NoAvailableChannel: true,
 		}
