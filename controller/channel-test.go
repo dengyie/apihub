@@ -273,7 +273,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
-	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	request := buildTestRequest(testModel, endpointType, isStream)
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -744,7 +744,7 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 	return message
 }
 
-func buildTestRequest(model string, endpointType string, channel *model.Channel, isStream bool) dto.Request {
+func buildTestRequest(model string, endpointType string, isStream bool) dto.Request {
 	// 根据端点类型构建不同的测试请求
 	if endpointType != "" {
 		switch constant.EndpointType(endpointType) {
@@ -928,14 +928,13 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		shouldBanChannel = service.ShouldDisableChannel(channel.Id, result.newAPIError)
 	}
 
-	// 响应时间阈值只在「允许禁用」的测试模式下生效（scheduled_all / auto_ban_only）。
+	// 响应时长阈值只在「允许禁用」的测试模式下生效（scheduled_all / auto_ban_only）。
 	//
 	// passive_recovery（自动复活）这一轮的目的是把还能用的渠道捞回来，allowDisable=false
-	// 意味着 shouldBanChannel 根本不会被消费 —— 此时把阈值塞进 newAPIError 只有一个效果：
-	// 让 ShouldEnableChannel 因为 newAPIError != nil 而拒绝复活。拟真探针要真实生成几百
-	// token（2026-10-02 之前是 2 个 token 的 "hi"，1 秒内返回；现在正常模型也要 5~20 秒），
-	// 而阈值只有 5 秒 —— 不加这个豁免，所有慢一点的健康渠道会永远无法自动复活。
-	// 慢渠道的真实保护在熔断器（TTFT 超时 → 按模型熔断），不在这里。
+	// 意味着 shouldBanChannel 之外的一切禁用理由都不该有 —— 拟真探针正常也要
+	// 5~20 秒，阈值标在 60s（见 common.ChannelDisableThreshold）之后，这一豁免
+	// 仍然必要：一轮恢复不该因为「生成得慢」把探针判成失败。慢渠道的真实保护
+	// 在熔断器（TTFT 超时 → 按模型熔断）与请求预算，不在这里。
 	if allowDisable && common.AutomaticDisableChannelEnabled && !shouldBanChannel {
 		if milliseconds > disableThreshold {
 			err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
@@ -944,24 +943,86 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		}
 	}
 
-	if newAPIError == nil {
+	act := decideChannelHealthAction(decideChannelHealthInput{
+		LocalErr:         result.localErr,
+		NewAPIError:      newAPIError,
+		ShouldBan:        shouldBanChannel,
+		AllowDisable:     allowDisable,
+		IsChannelEnabled: isChannelEnabled,
+		AutoBan:          channel.GetAutoBan(),
+		AutomaticEnable:  common.AutomaticEnableChannelEnabled,
+		Status:           channel.Status,
+	})
+
+	if act.Succeeded {
 		summary.Succeeded++
 	} else {
 		summary.Failed++
 	}
 
-	if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
+	if act.Ban {
 		processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, nil)
 		summary.Disabled++
 	}
 
-	if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-		service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
-		summary.Enabled++
+	if act.Enable {
+		// EnableChannel 会把落库结果带回来；计数器必须跟事实走 —— 否则报表里的
+		// 「恢复 N 次」会把没写进去的也数上（2026-10-02 那轮排查正是靠这个计数器
+		// 对账，计数虚高会直接把排障带偏）。
+		if service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name) {
+			summary.Enabled++
+		}
 	}
 
 	channel.UpdateResponseTime(milliseconds)
 	return summary
+}
+
+// decideChannelHealthInput 是一次测活结束后、执行任何副作用之前的全部判据。
+type decideChannelHealthInput struct {
+	LocalErr    error
+	NewAPIError *types.NewAPIError
+	ShouldBan   bool // service.ShouldDisableChannel 的结论（依赖全局开关与豁免表，由调用方喂入）
+	// AllowDisable 模式是否允许禁用：scheduled_all / auto_ban_only 为 true，
+	// passive_recovery（自动复活）恒为 false。
+	AllowDisable bool
+	// IsChannelEnabled 测活开始时渠道是否在架。
+	IsChannelEnabled bool
+	AutoBan          bool // 渠道自身的 auto_ban 白名单
+	AutomaticEnable  bool // 全局自动恢复开关（common.AutomaticEnableChannelEnabled）
+	Status           int  // 测活开始时的渠道状态（快照）
+}
+
+// channelHealthAction 是测活判定要执行的副作用与计数。
+type channelHealthAction struct {
+	Ban       bool // 提交 processChannelError（整渠道或按模型，由错误分类决定）
+	Enable    bool // 提交 EnableChannel
+	Succeeded bool // 计入 succeeded（否则计入 failed）
+}
+
+// decideChannelHealthAction 由测活结果推导要执行的动作。
+//
+// 刻意做成纯函数：禁用/恢复的全部判据集中在这里，副作用留在调用方，这样
+// 「passive_recovery 绝不禁用」「恢复只认真实落库」这类不变式才能被表驱动
+// 测试锁住 —— 2026-10-03 的 P1（5 秒阈值把健康渠道成批禁掉）正是从这个
+// 函数的前身毫无测试的空白里漏过去的。
+func decideChannelHealthAction(in decideChannelHealthInput) channelHealthAction {
+	act := channelHealthAction{}
+	if in.NewAPIError == nil {
+		act.Succeeded = true
+	}
+	// 禁用四条件缺一不可：模式允许、渠道本来在架、判为该禁、渠道开了 autoBan。
+	if in.AllowDisable && in.IsChannelEnabled && in.ShouldBan && in.AutoBan {
+		act.Ban = true
+	}
+	// 恢复三条件：请求本身没失败（localErr 与 newAPIError 都为 nil，二者并不
+	// 等价 —— newAPIError 可能由时长阈值凭空造出）、渠道本来就不在架、状态是
+	// 自动禁用而非手动禁用。手动禁用永远等管理员。
+	if in.LocalErr == nil && in.NewAPIError == nil && !in.IsChannelEnabled &&
+		in.AutomaticEnable && in.Status == common.ChannelStatusAutoDisabled {
+		act.Enable = true
+	}
+	return act
 }
 
 // runChannelTestWorkers executes independent channel tests with bounded

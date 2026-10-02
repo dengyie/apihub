@@ -88,26 +88,23 @@ func probeSystemMessage() dto.Message {
 	return dto.Message{Role: "system", Content: probePick(probeSystemPrompts)}
 }
 
-// probeResponsesInput 构造 Responses 端点的拟真 Input：system + user 两轮，
-// 与真实 codex 类客户端的请求形状一致。
-func probeResponsesInput() json.RawMessage {
-	payload := []map[string]any{
-		{"role": "system", "content": probePick(probeSystemPrompts)},
-		{"role": "user", "content": probePick(probeUserPrompts)},
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return json.RawMessage(`[{"role":"user","content":` + jsonQuote(probePick(probeUserPrompts)) + `}]`)
-	}
+// probeResponsesInstructions 返回 Responses 端点的 instructions 字段（JSON 字符串）。
+// 真实 Codex CLI 把系统指令放在顶层 instructions、input 里只放对话轮次 ——
+// v29.15 一度把 system 塞进 input 数组，那不是任何真实客户端的形状，对
+// codex 型上游是否被接受也没验证过；对齐真实形状后该风险不复存在。
+func probeResponsesInstructions() json.RawMessage {
+	raw, _ := json.Marshal(probePick(probeSystemPrompts))
 	return raw
 }
 
-func jsonQuote(s string) string {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return `""`
+// probeResponsesInput 构造 Responses 端点的拟真 Input：仅 user 轮次，
+// 系统指令走顶层 instructions（见上）。
+func probeResponsesInput() json.RawMessage {
+	payload := []map[string]any{
+		{"role": "user", "content": probePick(probeUserPrompts)},
 	}
-	return string(b)
+	raw, _ := json.Marshal(payload)
+	return raw
 }
 
 // buildRealisticChatProbe 按端点类型构造拟真测活请求。
@@ -139,11 +136,13 @@ func buildRealisticChatProbe(model string, endpointType constant.EndpointType, i
 				MaxOutputTokens: lo.ToPtr(uint(3000)),
 			},
 		}
-	case constant.EndpointTypeOpenAIResponse, constant.EndpointTypeOpenAIResponseCompact:
+	case constant.EndpointTypeOpenAIResponse:
+		// Compact 端点由 buildTestRequest 自行构造 CompactionRequest，不经过这里。
 		return &dto.OpenAIResponsesRequest{
-			Model:  model,
-			Input:  probeResponsesInput(),
-			Stream: lo.ToPtr(isStream),
+			Model:        model,
+			Instructions: probeResponsesInstructions(),
+			Input:        probeResponsesInput(),
+			Stream:       lo.ToPtr(isStream),
 		}
 	default:
 		// OpenAI chat completions（含自动检测兜底路径）
@@ -177,10 +176,11 @@ var probeRerankDocs = []any{
 
 // probeMaxTokensForModel 按模型形状决定 completion 上限：思考型模型必须留足
 // 思考配额，否则会出现「配额被思考耗尽、正文为空」的假失败，把健康渠道误判为故障。
+// o 系列判定复用 dto.IsOpenAIReasoningOModel（前缀语义），不另造一套包含匹配。
 func probeMaxTokensForModel(model string) uint {
 	lower := strings.ToLower(model)
 	if strings.Contains(lower, "thinking") || strings.Contains(lower, "-high") ||
-		strings.Contains(lower, "o1") || strings.Contains(lower, "o3") || strings.Contains(lower, "o4") {
+		dto.IsOpenAIReasoningOModel(model) {
 		return probeReasoningMaxTokens
 	}
 	return probeMaxTokens

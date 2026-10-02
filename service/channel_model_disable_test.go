@@ -112,7 +112,7 @@ func TestDisableChannelForModelFallsBackUnderMemoryCache(t *testing.T) {
 // 兄弟模型与渠道状态都不受影响。这是整个特性的主路径，此前零覆盖。
 func TestDisableChannelForModelHappyPathOnlyAffectsThatModel(t *testing.T) {
 	ch := setupModelScopeTestDB(t)
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "happy", AutoBan: true}
 	DisableChannelForModel(channelError, "m2", "模型不存在")
@@ -130,7 +130,7 @@ func TestDisableChannelForModelHappyPathOnlyAffectsThatModel(t *testing.T) {
 // 那个模型，其余每一个都把整条渠道连同 4 个健康模型一起摘了。
 func TestDisableChannelForModelConcurrentHitDoesNotEscalate(t *testing.T) {
 	ch := setupModelScopeTestDB(t)
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "concurrent", AutoBan: true}
 	DisableChannelForModel(channelError, "m1", "模型不存在")
@@ -148,7 +148,7 @@ func TestDisableChannelForModelConcurrentHitDoesNotEscalate(t *testing.T) {
 // modelName 为空：没有模型名就没有降级依据，必须退回整渠道禁用。
 func TestDisableChannelForModelFallsBackOnEmptyModelName(t *testing.T) {
 	ch := setupModelScopeTestDB(t)
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "ch", AutoBan: true}
 	DisableChannelForModel(channelError, "", "模型不存在")
@@ -166,7 +166,7 @@ func TestDisableChannelForModelFallsBackOnEmptyModelName(t *testing.T) {
 // 也正是「宁可多熔不可假装生效」这条原则的代价。真正该断言的是「确实降级了」。
 func TestDisableChannelForModelFallsBackWhenModelNotServed(t *testing.T) {
 	ch := setupModelScopeTestDB(t)
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "ch", AutoBan: true}
 	DisableChannelForModel(channelError, "not-mine", "模型不存在")
@@ -179,7 +179,7 @@ func TestDisableChannelForModelFallsBackWhenModelNotServed(t *testing.T) {
 // 的僵尸渠道。
 func TestDisableChannelForModelEscalatesWhenNoModelLeft(t *testing.T) {
 	ch := setupModelScopeTestDB(t, "only")
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "last", AutoBan: true}
 	DisableChannelForModel(channelError, "only", "模型不存在")
@@ -192,7 +192,7 @@ func TestDisableChannelForModelEscalatesWhenNoModelLeft(t *testing.T) {
 // model 层与 service 层两道闸。
 func TestDisableChannelForModelRespectsAutoBanOff(t *testing.T) {
 	ch := setupModelScopeTestDB(t)
-	withModelScopeEnabled(t, false)
+	withModelScopeOnCacheOff(t)
 
 	channelError := types.ChannelError{ChannelId: ch.Id, ChannelName: "ch", AutoBan: false}
 	DisableChannelForModel(channelError, "m2", "模型不存在")
@@ -243,12 +243,14 @@ func setupModelScopeTestDB(t *testing.T, models ...string) *model.Channel {
 
 // withModelScopeEnabled 打开 AutomaticDisableModelScope 并按需关掉内存缓存，
 // 让用例进入真正的模型级路径而不是降级分支。
-func withModelScopeEnabled(t *testing.T, memoryCache bool) {
+// withModelScopeOnCacheOff 固定「开关打开 + 内存缓存关闭」——生产现状，也是
+// 模型级禁用真正生效的组合。降级分支（开关关 / 缓存开）各测试自行覆写全局值。
+func withModelScopeOnCacheOff(t *testing.T) {
 	t.Helper()
 	previousSwitch := common.AutomaticDisableModelScope
 	previousCache := common.MemoryCacheEnabled
 	common.AutomaticDisableModelScope = true
-	common.MemoryCacheEnabled = memoryCache
+	common.MemoryCacheEnabled = false
 	t.Cleanup(func() {
 		common.AutomaticDisableModelScope = previousSwitch
 		common.MemoryCacheEnabled = previousCache
@@ -268,4 +270,90 @@ func channelStatus(t *testing.T, channelID int) int {
 	var channel model.Channel
 	require.NoError(t, model.DB.First(&channel, channelID).Error)
 	return channel.Status
+}
+
+// 「选不出渠道」是**路由池状态**、会自愈，不是「这条凭据没有这个模型」。
+//
+// 这条不变量此前**靠巧合成立**：IsUpstreamModelUnavailableError 的白名单是
+// 子串匹配，恰好没收 "no available channel for model …"。任何人日后往那张表
+// 补一条同措辞，一条 85% 可用的渠道就会被整条摘掉，且线上零报错。生产实测
+// #144（cpa-kuaipao）40 分钟成功 39 次、失败 7 次，失败全是这一类。
+//
+// 这里从两个方向钉死：ShouldDisableChannel（整渠道）与 isModelScopedAutoDisable
+// （per-model）都必须拒绝它，同时真正的「上游说没有该模型」必须仍然命中 ——
+// 否则就是把安全换成了漏报。
+func TestRoutingExhaustedIsNeverAutoDisabled(t *testing.T) {
+	prevDisable := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevDisable })
+
+	upstreamWording := types.NewErrorWithStatusCode(
+		errString("status_code=503, No available channel for model glm-5.3-flash under group codex (distributor) (request id: abc)"),
+		types.ErrorCodeBadResponse, 503)
+	// 本网关自己产出的同一类，现在带专属 error code。
+	ownCode := types.NewErrorWithStatusCode(
+		errString("分组 codex 下模型 x 无可用渠道（distributor）"),
+		types.ErrorCodeNoAvailableChannel, 503)
+
+	for name, err := range map[string]*types.NewAPIError{
+		"上游透传的同款措辞":        upstreamWording,
+		"本网关自带 error code": ownCode,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.True(t, loadbalancer.IsRoutingExhaustedError(err), "必须被识别为路由池耗尽")
+			assert.False(t, ShouldDisableChannel(0, err),
+				"路由池耗尽不得触发整渠道禁用 —— 候选渠道只是暂时被熔断/过载")
+			assert.False(t, isModelScopedAutoDisable(err),
+				"路由池耗尽不得触发 per-model 禁用 —— 它会自愈，不是确定性失效")
+		})
+	}
+}
+
+// 反向：真正的「上游说没有这个模型」必须仍然命中两个判据，否则就是在用
+// 漏报换误报。
+func TestGenuineModelUnavailableStillDisables(t *testing.T) {
+	prevDisable := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevDisable })
+
+	for _, wording := range []string{
+		"404, message: 模型不存在",
+		"model_not_found",
+		"no such model: gpt-9",
+		"The model `x` does not exist",
+	} {
+		err := types.NewErrorWithStatusCode(errString(wording), types.ErrorCodeBadResponse, 404)
+		assert.False(t, loadbalancer.IsRoutingExhaustedError(err),
+			"确定性失效不得被误判成路由池耗尽：%s", wording)
+		assert.True(t, ShouldDisableChannel(0, err),
+			"上游明确说没有该模型时仍应禁用：%s", wording)
+		assert.True(t, isModelScopedAutoDisable(err),
+			"上游明确说没有该模型时仍应走 per-model：%s", wording)
+	}
+}
+
+// 守卫**真正兜住**的是这一条：白名单是子串匹配表，日后任何人往里补一句
+// "no available channel"（动机完全合理 —— 它确实提到 model），这一类就会
+// 被判成确定性失效并整条禁用渠道，而它其实是会自愈的池状态。
+//
+// 因此构造一条**同时**满足两侧判据的报文：正文既像池耗尽、又像确定性失效。
+// 守卫必须以前者（正文语义）为准。这是 mutation 可验证的负载点。
+func TestRoutingExhaustedWinsOverWhitelistAccidentalMatch(t *testing.T) {
+	prevDisable := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevDisable })
+
+	// 模拟「白名单被补宽后」的最坏情况：两条判据同时命中。
+	err := types.NewErrorWithStatusCode(
+		errString("status_code=503, No available channel for model glm-5.3-flash under group codex (distributor); model not found"),
+		types.ErrorCodeBadResponse, 503)
+
+	require.True(t, loadbalancer.IsUpstreamModelUnavailableError(err),
+		"前置条件：该报文命中 model-unavailable 白名单")
+	require.True(t, loadbalancer.IsRoutingExhaustedError(err),
+		"前置条件：同时它也是路由池耗尽")
+
+	assert.False(t, ShouldDisableChannel(0, err),
+		"池耗尽必须压过白名单的偶然命中，否则补宽词表就会误禁健康渠道")
+	assert.False(t, isModelScopedAutoDisable(err), "per-model 侧同理")
 }

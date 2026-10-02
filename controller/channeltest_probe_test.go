@@ -137,7 +137,7 @@ func TestNonChatProbePayloads(t *testing.T) {
 		assert.Greater(t, len([]rune(s)), 40)
 	}
 
-	req := buildTestRequest("text-embedding-3-small", string(constant.EndpointTypeEmbeddings), nil, false)
+	req := buildTestRequest("text-embedding-3-small", string(constant.EndpointTypeEmbeddings), false)
 	er, ok := req.(*dto.EmbeddingRequest)
 	require.True(t, ok)
 	assert.Equal(t, []any{probeEmbeddingInput}, er.Input)

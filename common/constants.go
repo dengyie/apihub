@@ -125,7 +125,17 @@ var TelegramBotName = ""
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
-var ChannelDisableThreshold = 5.0
+// ChannelDisableThreshold 测活探针的全时长禁用阈值（秒）。
+//
+// ⚠️ 标定基准是「拟真探针」而非真实流量：探针会真实生成最多 1024 token
+// （思考模型 4096），非流式生成 237 token 的生产中位耗时就在 5~8 秒。
+// v29.15 之前探针只有 2 个 token、1 秒内返回，标 5 秒量的是「上游病态慢」；
+// 探针拟真化之后 5 秒量的是「正常生成 completion 的速度」，会把健康渠道成批
+// 禁掉（2026-10-03 code review 定性 P1：scheduled_all 下一次「测试所有渠道」
+// 即可打掉大半健康池）。60 秒 = 中位耗时的 ~7 倍余量，仍小于请求预算
+// （request_timeout_ms 默认 180s），拦得住真正挂死/病态慢的渠道。
+// 被动复活轮（passive_recovery）不适用本阈值，见 controller.testChannelForHealthCheck。
+var ChannelDisableThreshold = 60.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
 

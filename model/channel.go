@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sort"
 	"strings"
 	"sync"
 
@@ -1083,13 +1082,10 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 // UpdateChannelStatus 都是「先取锁、再开事务」，若批量路径反过来（先开事务再
 // 取锁）就会与它们互等 —— 持事务等锁、对方持锁等事务，SQLite 串行化写锁下
 // 直接死锁。升序是最省事的全局定序。
-func lockChannelsInIdOrder(channels []Channel) func() {
-	sorted := make([]Channel, len(channels))
-	copy(sorted, channels)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Id < sorted[j].Id })
-	locks := make([]*sync.Mutex, 0, len(sorted))
-	for i := range sorted {
-		lock := GetChannelPollingLock(sorted[i].Id)
+func lockChannelsInIdOrder(ids []int) func() {
+	locks := make([]*sync.Mutex, 0, len(ids))
+	for _, id := range ids {
+		lock := GetChannelPollingLock(id)
 		lock.Lock()
 		locks = append(locks, lock)
 	}
@@ -1098,6 +1094,17 @@ func lockChannelsInIdOrder(channels []Channel) func() {
 			locks[i].Unlock()
 		}
 	}
+}
+
+// tagChannelIds 返回 tag 下全部渠道 id（SQL 侧升序，作为锁的全局定序）。
+//
+// id 在运行期不变，可以先于取锁查询；渠道的其余字段（尤其 channel_info 的
+// 留痕）必须在锁内、事务内重新读 —— 锁外快照可能与即将到来的写入脱节，
+// 用旧快照覆写会丢掉刚写入的 per-model 留痕。
+func tagChannelIds(tag string) ([]int, error) {
+	var ids []int
+	err := DB.Model(&Channel{}).Where("tag = ?", tag).Order("id ASC").Pluck("id", &ids).Error
+	return ids, err
 }
 
 // clearModelDisabledRecords 清空一组渠道的 per-model 留痕。
@@ -1126,17 +1133,24 @@ func clearModelDisabledRecords(tx *gorm.DB, channels []Channel) error {
 }
 
 func EnableChannelByTag(tag string) error {
-	var channels []Channel
-	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
+	ids, err := tagChannelIds(tag)
+	if err != nil {
 		return err
 	}
-	unlock := lockChannelsInIdOrder(channels)
+	unlock := lockChannelsInIdOrder(ids)
 	defer unlock()
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error; err != nil {
 			return err
 		}
 		if err := UpdateAbilityStatusByTag(tx, tag, true); err != nil {
+			return err
+		}
+		// 留痕快照必须在锁内、事务内取：锁外读到的 channel_info 可能已经落后
+		// （本函数取锁前后，单渠道路径可能刚写入一条留痕），用旧快照覆写会把它
+		// 丢掉，留下「ability 关着、留痕没了」的反向矛盾。
+		var channels []Channel
+		if err := tx.Omit("key").Where("tag = ?", tag).Find(&channels).Error; err != nil {
 			return err
 		}
 		return clearModelDisabledRecords(tx, channels)
@@ -1151,8 +1165,9 @@ func DisableChannelByTag(tag string) error {
 		return err
 	}
 	// 那批「所有 key 都不可用」的渠道走 UpdateChannelStatus，它自己会取锁并清
-	// 留痕；这里必须排在取锁之前，否则会在 UpdateChannelStatus 已经持锁时
-	// 再去取同一把锁 —— 自死锁。
+	// 留痕；这里必须排在批量取锁之前，否则会在 UpdateChannelStatus 已经持锁时
+	// 再去取同一把锁 —— 自死锁。这一次 Find 只用来筛多 key 渠道，真正的留痕
+	// 快照在下面事务里锁内重取。
 	for _, channel := range channels {
 		if channel.ChannelInfo.IsMultiKey && channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled {
 			if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusManuallyDisabled, "manual tag operation") {
@@ -1160,14 +1175,14 @@ func DisableChannelByTag(tag string) error {
 			}
 		}
 	}
-	// 重新读一次：上面那批渠道的 status 已被 UpdateChannelStatus 改过。
-	if err := DB.Where("tag = ?", tag).Find(&channels).Error; err != nil {
+	ids, err := tagChannelIds(tag)
+	if err != nil {
 		return err
 	}
-	unlock := lockChannelsInIdOrder(channels)
+	unlock := lockChannelsInIdOrder(ids)
 	defer unlock()
 	// 与 EnableChannelByTag 同理：状态与 abilities 投影同生共死，per-model
-	// 留痕也必须跟着清，否则整批翻面之后留痕全是废话。
+	// 留痕也必须跟着清，否则整批翻面之后留痕全是废话；快照同样必须锁内取。
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error; err != nil {
 			return err
@@ -1175,7 +1190,11 @@ func DisableChannelByTag(tag string) error {
 		if err := UpdateAbilityStatusByTag(tx, tag, false); err != nil {
 			return err
 		}
-		return clearModelDisabledRecords(tx, channels)
+		var fresh []Channel
+		if err := tx.Omit("key").Where("tag = ?", tag).Find(&fresh).Error; err != nil {
+			return err
+		}
+		return clearModelDisabledRecords(tx, fresh)
 	})
 }
 

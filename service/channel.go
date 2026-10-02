@@ -47,13 +47,20 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 	}
 }
 
-func EnableChannel(channelId int, usingKey string, channelName string) {
+// EnableChannel 把渠道恢复为启用态，返回是否真的落库。
+//
+// 返回值必须被计数方消费：报表里的「自动恢复 N 次」如果对着返回 true 之外也
+// 计数，就会把没写进 DB 的也算成恢复（UpdateChannelStatus 可能因渠道并发消失、
+// 状态已被人工改过等原因拒绝写入）—— 2026-10-02 对账自动恢复事件时，计数器
+// 与 channels.status 的对不上正是这类问题的排障成本。
+func EnableChannel(channelId int, usingKey string, channelName string) bool {
 	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
 	if success {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
 	}
+	return success
 }
 
 // isModelScopedAutoDisable 判定一次自动禁用该摘多大范围。
@@ -78,6 +85,12 @@ func isModelScopedAutoDisable(err *types.NewAPIError) bool {
 	// IsUpstreamModelUnavailableError 混进了 "cannot fetch token"，那是令牌级
 	// 问题：只摘一个模型毫无意义，其余模型照样拿不到 token。必须拆出来。
 	if strings.Contains(strings.ToLower(err.Error()), "cannot fetch token") {
+		return false
+	}
+	// 「选不出渠道」是池状态、自愈，不该进 per-model 路径。与 ShouldDisableChannel
+	// 里的同名守卫构成双保险：万一上游改了措辞让上面那张白名单命中了，这里
+	// 仍然拦住，不会把「暂时没渠道」误记成「这个模型被摘了」。
+	if loadbalancer.IsRoutingExhaustedError(err) {
 		return false
 	}
 	return loadbalancer.IsUpstreamModelUnavailableError(err)
@@ -173,6 +186,14 @@ func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
 	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) {
 		return false
 	}
+	// 「选不出渠道」是路由池状态，不是「这条凭据没有这个模型」。显式排除，
+	// 不依赖下面 IsUpstreamModelUnavailableError 的白名单恰好漏掉它 —— 那一层
+	// 是子串匹配，日后谁往表里补一条同措辞，就会把一条 85% 可用的渠道整条
+	// 摘掉，且线上不会有任何报错。生产实测 #144 40 分钟成功 39 次、失败 7 次，
+	// 失败全是这一类。
+	if loadbalancer.IsRoutingExhaustedError(err) {
+		return false
+	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。
@@ -194,15 +215,6 @@ func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
 	return search
 }
 
-func ShouldEnableChannel(newAPIError *types.NewAPIError, status int) bool {
-	if !common.AutomaticEnableChannelEnabled {
-		return false
-	}
-	if newAPIError != nil {
-		return false
-	}
-	if status != common.ChannelStatusAutoDisabled {
-		return false
-	}
-	return true
-}
+// ShouldEnableChannel 已并入 controller.decideChannelHealthAction（唯一调用方，
+// 判据整体迁走后这里只留注释防「加回来」）。
+
