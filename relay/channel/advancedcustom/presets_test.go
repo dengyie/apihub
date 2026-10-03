@@ -58,10 +58,27 @@ func TestSGLangChannelProtocols(t *testing.T) {
 	adaptor.Init(info)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	// 「无需跨协议转换」时本适配器把请求原样交给 openai 适配器的直通分支；但那个分支
+	// 自 2026-09-29 (v29.7) 起会**浅拷贝**请求再改写（reasoning_effort 归一、渠道级
+	// 参数裁剪），理由是外层渠道重试要复用未被污染的原始结构
+	// （relay/channel/openai/adaptor.go:311）。因此这里断言的是「内容等价」，而不是
+	// 指针同一 —— 本用例写于 2026-09-21，早于那次改动，当时确实返回同一个指针。
 	request := &dto.GeneralOpenAIRequest{Model: "served-model"}
 	converted, err := adaptor.ConvertOpenAIRequest(c, info, request)
 	require.NoError(t, err)
-	assert.Same(t, request, converted)
+	passThrough, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok, "直通分支不得改变请求类型：%T", converted)
+	assert.Equal(t, request, passThrough, "直通分支不得改写请求内容")
+
+	// 直通 ≠ 就地改写：reasoning_effort="max" 会被归一为 "high"，而调用方持有的原始
+	// 请求必须保持 "max"，否则第二次重试看到的就是上一次尝试的残留。
+	retryRequest := &dto.GeneralOpenAIRequest{Model: "served-model", ReasoningEffort: "max"}
+	retryConverted, err := adaptor.ConvertOpenAIRequest(c, info, retryRequest)
+	require.NoError(t, err)
+	retryPassThrough, ok := retryConverted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok, "直通分支不得改变请求类型：%T", retryConverted)
+	assert.Equal(t, "high", retryPassThrough.ReasoningEffort, "归一化必须在拷贝上生效")
+	assert.Equal(t, "max", retryRequest.ReasoningEffort, "归一化不得写回调用方的原始请求")
 	info.RequestURLPath = "/v1/messages"
 	adaptor = &advancedcustom.Adaptor{}
 	adaptor.Init(info)

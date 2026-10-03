@@ -126,6 +126,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
+	// 记账必须用**父 context**，不能用 c.Request.Context()。
+	//
+	// armRequestBudget 会把 c.Request 换成带超时的预算 context，而它的 cancel
+	// 注册得比下面这个 defer 晚 —— Go 的 defer 是 LIFO，cancelRequestBudget()
+	// 先跑，RecordRelayResult 再跑时看到的必然是 context.Canceled。那是我们
+	// 自己释放预算造成的，不是客户端断开。
+	//
+	// ClassifyRelayOutcome 里有一条 `ctx.Err() == context.Canceled → OutcomeIgnored`，
+	// 本意是排除「客户端自己掐掉」的请求（那不该记进渠道健康度），但在这里会把
+	// **每一个**非流式请求都误判成客户端取消：生产策略 request_timeout_ms=180000 > 0，
+	// 所有非流式请求都会套上预算 context，于是它们的 perf 指标全部静默丢失。
+	// 流式不受影响 —— armRequestBudget 对流式直接返回 nil，这也正是该缺陷
+	// 长期没被发现的原因：只有非流式路径是黑的，而那部分没人查。
+	accountingCtx := c.Request.Context()
+
 	defer func() {
 		recovered := recover()
 		resultErr := newAPIError
@@ -133,7 +148,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			resultErr = types.NewError(fmt.Errorf("relay panic: %v", recovered), types.ErrorCodeBadResponse)
 		}
 		if relayFormat != types.RelayFormatOpenAIRealtime {
-			perfmetrics.RecordRelayResult(c.Request.Context(), relayInfo, resultErr)
+			perfmetrics.RecordRelayResult(accountingCtx, relayInfo, resultErr)
 		}
 		if recovered != nil {
 			panic(recovered)

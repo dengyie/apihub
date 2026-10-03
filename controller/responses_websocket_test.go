@@ -1015,15 +1015,25 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 }
 
 func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
+	// clientStatus 是**客户端看到**的状态码，不是上游返回的那个。
+	//
+	// 上游 4xx 一律经 applyRelayTerminalStatusShield 改写成 502，让客户端 SDK
+	// 不会把网关侧的渠道故障误当成自己的凭证错误（controller/relay.go 的
+	// 函数注释写明了这条意图，TestUpstreamChannelErrorStatusShielding 逐条
+	// 钉住）。本用例写于 2026-09-21，盾标在 2026-09-30 的 v29.7 才落地，
+	// 当时没有回填断言，于是这三个子用例一直红着 —— 是过期期望，不是回归。
+	// 下面显式断言 502 而不是把上游码抄一遍，免得盾标被改回去时无人察觉。
 	for _, tc := range []struct {
 		name, code            string
-		firstStatus, attempts int
+		firstStatus           int
+		clientStatus          int
+		attempts              int
 		success               bool
 		ignored               bool
 	}{
-		{"business rejection", "context_length_exceeded", 400, 1, false, true},
-		{"credentials rejected as 400", "invalid_api_key", 400, 1, false, false},
-		{"retry succeeds", "server_error", 500, 2, true, false},
+		{name: "business rejection", code: "context_length_exceeded", firstStatus: 400, clientStatus: http.StatusBadGateway, attempts: 1, success: false, ignored: true},
+		{name: "credentials rejected as 400", code: "invalid_api_key", firstStatus: 400, clientStatus: http.StatusBadGateway, attempts: 1, success: false, ignored: false},
+		{name: "retry succeeds", code: "server_error", firstStatus: 500, clientStatus: http.StatusOK, attempts: 2, success: true, ignored: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
@@ -1042,6 +1052,24 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("name = ?", "responses-ws-upstream").Update("base_url", upstream.URL).Error)
+			if tc.attempts > 1 {
+				// 换渠道重试需要**第二条**渠道可选。fixture 只建了一条，
+				// 而熔断与排除的粒度是 (渠道, 模型)：首渠道一失败，该组合即被
+				// 避让，重试阶段会直接命中「无可用渠道」——重试压根没发生，
+				// 上游只被打了 1 次。这不是回归，是单渠道池的固有结果，
+				// 原来的断言（期望上游被打 2 次）建立在线程模型不同的旧行为上。
+				// 补一条同模型、同上游的渠道，重试才有一条真实可走的路。
+				spare := &model.Channel{
+					Name: "responses-http-spare", Key: "spare-key", Status: common.ChannelStatusEnabled,
+					Type: constant.ChannelTypeOpenAI, Group: "default", Models: "ws-billing", BaseURL: &upstream.URL,
+				}
+				require.NoError(t, model.DB.Create(spare).Error)
+				require.NoError(t, model.DB.Create(&model.Ability{ChannelId: spare.Id, Model: "ws-billing", Group: "default", Enabled: true}).Error)
+				t.Cleanup(func() {
+					require.NoError(t, model.DB.Where("channel_id = ?", spare.Id).Delete(&model.Ability{}).Error)
+					require.NoError(t, model.DB.Delete(spare).Error)
+				})
+			}
 			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hello"}`))
 			require.NoError(t, err)
 			request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
@@ -1058,11 +1086,7 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 			}
 			fixture.closeAndWait(t)
 			assert.Equal(t, int64(tc.attempts), attempts.Load())
-			if !tc.success {
-				assert.Equal(t, tc.firstStatus, response.StatusCode)
-			} else {
-				assert.Equal(t, http.StatusOK, response.StatusCode)
-			}
+			assert.Equal(t, tc.clientStatus, response.StatusCode)
 			if tc.ignored {
 				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
 				require.NoError(t, err)
