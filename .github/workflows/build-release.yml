@@ -22,7 +22,7 @@ jobs:
   linux:
     name: linux/${{ matrix.goarch }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -45,10 +45,48 @@ jobs:
             go.sum
             relaykit/go.sum
 
-      - name: Create frontend embed placeholder
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        # 必须真构建，不能占位：`web/dist` 被 .gitignore 排除、git 里 0 个跟踪
+        # 文件，而 main.go 是 `//go:embed web/dist`。只 mkdir + touch 一个空
+        # index.html，go build 会顺利通过、产出一个**没有前端**的二进制，线上
+        # 表现为首页返回 200 但正文 0 字节（后台白屏）——光看状态码查不出来。
+        working-directory: web
+        env:
+          DISABLE_ESLINT_PLUGIN: 'true'
+          VITE_REACT_APP_VERSION: v29.21
+        run: bun run build
+
+      - name: Verify frontend bundle is not a placeholder
         run: |
-          mkdir -p web/dist
-          touch web/dist/index.html
+          set -euo pipefail
+          if [ ! -f web/dist/index.html ]; then
+            echo "::error::web/dist/index.html 不存在：前端没有被打进二进制"
+            exit 1
+          fi
+          size=$(wc -c < web/dist/index.html)
+          if [ "$size" -lt 200 ]; then
+            echo "::error::index.html 仅 ${size} 字节，疑似占位文件；真实构建约 1KB"
+            exit 1
+          fi
+          if [ ! -d web/dist/static ]; then
+            echo "::error::web/dist/static 缺失：前端资源目录不存在"
+            exit 1
+          fi
+          assets=$(find web/dist/static -type f | wc -l)
+          echo "index.html ${size} 字节，static 资源 ${assets} 个文件"
+          if [ "$assets" -lt 10 ]; then
+            echo "::error::static 资源只有 ${assets} 个，远少于真实构建应有的数量"
+            exit 1
+          fi
 
       - name: Build
         id: build
@@ -83,6 +121,18 @@ jobs:
             exit 1
           fi
           file "$bin" || true
+
+      - name: Verify frontend is embedded in the binary
+        # 产物级断言。上面那道 dist 闸门检查的是构建目录，这里检查的是最终二进制：
+        # `go:embed` 在哪一步静默跳过、哪一步把空文件打进去，只有对成品 grep 才抓得到。
+        run: |
+          set -euo pipefail
+          bin="new-api-${{ steps.build.outputs.version }}-linux-${{ matrix.goarch }}"
+          if ! grep -aq 'static/js/index\.' "$bin"; then
+            echo "::error::$bin 里找不到前端 bundle 标记，产出的很可能是个没有界面的二进制"
+            exit 1
+          fi
+          echo "二进制内含前端 bundle 标记"
 
       - name: Upload artifact
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
