@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -251,6 +252,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	}
 
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
+
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if streamErr != nil {
 			sr.Stop(streamErr)
@@ -262,6 +270,11 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			logger.LogError(c, "failed to unmarshal responses stream event: "+err.Error())
 			sr.Error(err)
 			return
+		}
+
+		if streamResp.Type == "response.completed" || streamResp.Type == "response.done" ||
+			(streamResp.Response != nil && relaycommon.IsResponsesTerminalStatus(streamResp.Response.Status)) {
+			info.StreamStatus.MarkCompleted()
 		}
 
 		if streamResp.Response != nil {
@@ -298,6 +311,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	if streamErr != nil {
 		return nil, streamErr
+	}
+
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final response frames", info.StreamStatus.Summary()))
+		return nil, types.NewErrorWithStatusCode(
+			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
+			types.ErrorCodeBadResponseBody,
+			http.StatusBadGateway,
+		)
 	}
 
 	usage := state.Usage()

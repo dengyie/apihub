@@ -299,3 +299,36 @@ func TestStreamStatus_UpstreamFaultStillDetected(t *testing.T) {
 	assert.False(t, nilStatus.IsUpstreamStreamFault())
 	assert.False(t, nilStatus.IsClientAbort())
 }
+
+func TestStreamStatus_Concurrent_ReadWrite(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 50; i++ {
+		s := NewStreamStatus()
+		s.RequireTerminal()
+
+		var wg sync.WaitGroup
+		wg.Add(4)
+
+		go func() {
+			defer wg.Done()
+			s.SetEndReason(StreamEndReasonEOF, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.IsNormalEnd()
+			_ = s.IsClientAbort()
+		}()
+		go func() {
+			defer wg.Done()
+			s.MarkCompleted()
+			_ = s.Summary()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.OutcomeSnapshot()
+			_ = s.IsUpstreamStreamFault()
+		}()
+
+		wg.Wait()
+	}
+}

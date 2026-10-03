@@ -1,11 +1,14 @@
 package xai
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/loadbalancer"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -43,12 +46,25 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	helper.SetEventStreamHeaders(c)
 
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
+
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var xAIResp *dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &xAIResp); err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())
 			sr.Error(err)
 			return
+		}
+
+		for _, choice := range xAIResp.Choices {
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				info.StreamStatus.MarkCompleted()
+			}
 		}
 
 		// 把 xAI 的usage转换为 OpenAI 的usage
@@ -67,6 +83,15 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	})); streamErr != nil {
 		return nil, streamErr
+	}
+
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final [DONE] frame", info.StreamStatus.Summary()))
+		return nil, types.NewErrorWithStatusCode(
+			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
+			types.ErrorCodeBadResponseBody,
+			http.StatusBadGateway,
+		)
 	}
 
 	if !containStreamUsage {

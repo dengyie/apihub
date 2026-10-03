@@ -214,3 +214,25 @@ func TestRoutingExhaustedNeverAutoDisables(t *testing.T) {
 		assert.False(t, ShouldDisableChannelCorroborated(channelID, "gpt-4o", exhausted))
 	}
 }
+
+// TestGatewayModelDisabledNeverAutoDisables 验证上游网关报告「模型已禁用」等临时网关策略时，
+// 绝不得触发自动禁用，即使尝试 20 次也不会累积佐证导致整渠道下线。
+func TestGatewayModelDisabledNeverAutoDisables(t *testing.T) {
+	newCorroborationFixture(t, 3)
+	const channelID = 9208
+	defer loadbalancer.ResetCorroborationForChannel(channelID)
+
+	gatewayDisabledErr := types.NewErrorWithStatusCode(
+		stdErrors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest)
+
+	require.True(t, loadbalancer.IsUpstreamGatewayModelDisabled(gatewayDisabledErr),
+		"前置条件：该措辞被识别为网关侧模型禁用")
+
+	for i := 0; i < 20; i++ {
+		assert.False(t, ShouldDisableChannelCorroborated(channelID, "deepseek-v4.1-flash", gatewayDisabledErr),
+			"网关侧模型禁用不得触发自动禁用整渠道")
+	}
+	assert.False(t, classifyAutoDisable(channelID, gatewayDisabledErr).Disable)
+}

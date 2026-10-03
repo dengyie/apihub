@@ -96,6 +96,9 @@ func isModelScopedAutoDisable(err *types.NewAPIError) bool {
 	if loadbalancer.IsRoutingExhaustedError(err) {
 		return false
 	}
+	if loadbalancer.IsUpstreamGatewayModelDisabled(err) {
+		return false
+	}
 	return loadbalancer.IsUpstreamModelUnavailableError(err)
 }
 
@@ -221,6 +224,11 @@ func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdi
 	if loadbalancer.IsRoutingExhaustedError(err) {
 		return autoDisableVerdict{}
 	}
+	// 上游网关临时禁用/暂不可用（如 "disabled on this gateway"）属于网关侧策略或路由池状态，
+	// 触发重试与按模型熔断冷却，但不得触发不可逆的自动禁用（避免未开模型级禁用时整渠道下线）。
+	if loadbalancer.IsUpstreamGatewayModelDisabled(err) {
+		return autoDisableVerdict{}
+	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。
@@ -297,6 +305,3 @@ func ShouldDisableChannelCorroborated(channelId int, modelName string, err *type
 	}
 	return ready
 }
-
-// ShouldEnableChannel 已并入 controller.decideChannelHealthAction（唯一调用方，
-// 判据整体迁走后这里只留注释防「加回来」）。

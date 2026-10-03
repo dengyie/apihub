@@ -594,6 +594,20 @@ func IsUpstreamModelUnavailableError(err *types.NewAPIError) bool {
 	return false
 }
 
+// IsUpstreamGatewayModelDisabled 判定上游中继网关报告的模型被禁用/暂不可用（如 "disabled on this gateway"）。
+// 这属于网关侧策略或临时路由状态，触发重试与按模型熔断冷却，但不得触发不可逆的自动禁用。
+func IsUpstreamGatewayModelDisabled(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "disabled on this gateway") ||
+		strings.Contains(msg, "model is disabled") ||
+		strings.Contains(msg, "model_is_disabled") ||
+		strings.Contains(msg, "model is not available") ||
+		strings.Contains(msg, "model not available")
+}
+
 // IsRoutingExhaustedError 判断「选不出渠道」这一类**路由池状态**，而不是
 // 「这条凭据没有这个模型」。
 //

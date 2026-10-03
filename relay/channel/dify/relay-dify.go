@@ -13,6 +13,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -228,6 +230,14 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	usage := &dto.Usage{}
 	var nodeToken int
 	helper.SetEventStreamHeaders(c)
+
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
+
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var difyResponse DifyChunkChatCompletionResponse
 		if err := json.Unmarshal([]byte(data), &difyResponse); err != nil {
@@ -237,6 +247,7 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		}
 		if difyResponse.Event == "message_end" {
 			usage = &difyResponse.MetaData.Usage
+			info.StreamStatus.MarkCompleted()
 			sr.Done()
 			return
 		} else if difyResponse.Event == "error" {
@@ -257,6 +268,16 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	})); streamErr != nil {
 		return nil, streamErr
 	}
+
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final [DONE] frame", info.StreamStatus.Summary()))
+		return nil, types.NewErrorWithStatusCode(
+			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
+			types.ErrorCodeBadResponseBody,
+			http.StatusBadGateway,
+		)
+	}
+
 	helper.Done(c)
 	if usage.TotalTokens == 0 {
 		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())

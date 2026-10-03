@@ -81,6 +81,8 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 		return
 	}
 	s.endOnce.Do(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.EndReason = reason
 		s.EndError = err
 	})
@@ -253,6 +255,8 @@ func (s *StreamStatus) IsClientAbort() bool {
 	if s == nil {
 		return false
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.EndReason == StreamEndReasonClientGone {
 		return true
 	}
@@ -282,19 +286,17 @@ func (s *StreamStatus) IsNormalEnd() bool {
 		return true
 	}
 	s.mu.Lock()
-	expectsTerminal := s.expectsTerminal
-	response := s.response
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
 	if s.EndReason == StreamEndReasonDone || s.EndReason == StreamEndReasonHandlerStop {
 		return true
 	}
 	if s.EndReason == StreamEndReasonEOF {
-		if expectsTerminal {
+		if s.expectsTerminal {
 			// 若协议要求显式终止帧（如 OpenAI 的 [DONE]、Claude 的 message_stop），
 			// 只有明确收到了完成标识（MarkCompleted）时，EOF 才算正常收尾。
 			// 否则中途断开（无 finish_reason/stop）属于异常截断。
-			return response == ResponseOutcomeCompleted
+			return s.response == ResponseOutcomeCompleted
 		}
 		return true
 	}
@@ -305,15 +307,31 @@ func (s *StreamStatus) Summary() string {
 	if s == nil {
 		return "StreamStatus<nil>"
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	b := &strings.Builder{}
 	fmt.Fprintf(b, "reason=%s", s.EndReason)
 	if s.EndError != nil {
 		fmt.Fprintf(b, " end_error=%q", s.EndError.Error())
 	}
-	s.mu.Lock()
 	if s.ErrorCount > 0 {
 		fmt.Fprintf(b, " soft_errors=%d", s.ErrorCount)
 	}
-	s.mu.Unlock()
 	return b.String()
+}
+
+// IsResponsesTerminalStatus reports whether the raw JSON status field of an OpenAI Responses object
+// represents a terminal status (e.g. "completed", "failed", "cancelled", "canceled", "incomplete").
+func IsResponsesTerminalStatus(status []byte) bool {
+	if len(status) == 0 {
+		return false
+	}
+	s := strings.Trim(string(status), "\" \t\r\n")
+	switch strings.ToLower(s) {
+	case "completed", "failed", "cancelled", "canceled", "incomplete":
+		return true
+	default:
+		return false
+	}
 }

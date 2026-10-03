@@ -1045,7 +1045,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		if firstModel != "" {
 			loadbalancer.ResetCorroboration(channel.Id, firstModel)
 		}
-		if followup != nil {
+		if followup != nil && followup.context != nil {
 			if m := common.GetContextKeyString(followup.context, constant.ContextKeyOriginalModel); m != "" {
 				loadbalancer.ResetCorroboration(channel.Id, m)
 			}
