@@ -76,7 +76,7 @@ func RecordAutoDisableSignal(channelID int, modelName, class string) (ready bool
 		window = 10 * time.Minute
 	}
 
-	key := fmt.Sprintf("%d|%s|%s", channelID, modelName, class)
+	key := corroborationKey(channelID, modelName, class)
 	now := time.Now()
 
 	corroborationRegistry.mu.Lock()
@@ -141,16 +141,40 @@ func PeekAutoDisableCorroboration(channelID int, modelName, class string) bool {
 	return CorroborationCount(channelID, modelName, class)+1 >= threshold
 }
 
+// corroborationClasses 是判据类别的全集 —— 封闭集合，不是可扩展的。
+//
+// 复位按**精确键**删除而不是前缀扫描，根因是 modelName 来自客户端：模型名里
+// 只要出现一个 "|"，前缀扫就会连兄弟桶一起删（复位 "a" 会把 "a|b" 的计数也
+// 清掉）。类别既然是这四个固定值，逐个构造精确键既无歧义，也只要 4 次删除 ——
+// 这正是它能被放进成功路径的原因：原先的全表扫描代价随注册表增长，
+// 每个成功请求都调一次是不可接受的。
+var corroborationClasses = [...]string{
+	CorroborationClassModelUnavailable,
+	CorroborationClassChannelError,
+	CorroborationClassStatusCode,
+	CorroborationClassKeyword,
+}
+
+// corroborationKey 是佐证注册表键的唯一构造处。class 恒为上述四个常量之一，
+// 因此键尾部的 "|class" 不可能被客户端提供的模型名伪造出来，跨 (模型, 类别)
+// 的碰撞构造不出来。
+func corroborationKey(channelID int, modelName, class string) string {
+	return fmt.Sprintf("%d|%s|%s", channelID, modelName, class)
+}
+
 // ResetCorroboration 清掉某 (渠道, 模型) 的佐证计数。
 // 渠道测活成功、或人工恢复后调用，避免旧信号把下一次故障直接顶到阈值。
+//
+// **正常流量请求成功时也必须调用**（见 service.MarkRequestPolicySuccess）：
+// 佐证要回答的是「这次失效是偶发还是持续」，而持续性该由**实际表现**回答，
+// 不能只由时间窗回答。原先只有测活与人工恢复会复位，于是「攒到 2/3 → 渠道
+// 自行恢复并成功跑了几十次 → 窗口内再来一次失败仍到 3/3 被摘」是可能的：
+// 计数器只在时间流逝时衰减，不被恢复本身抵消。
 func ResetCorroboration(channelID int, modelName string) {
-	prefix := fmt.Sprintf("%d|%s|", channelID, modelName)
 	corroborationRegistry.mu.Lock()
 	defer corroborationRegistry.mu.Unlock()
-	for k := range corroborationRegistry.m {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			delete(corroborationRegistry.m, k)
-		}
+	for _, class := range corroborationClasses {
+		delete(corroborationRegistry.m, corroborationKey(channelID, modelName, class))
 	}
 }
 
@@ -172,7 +196,7 @@ func ResetCorroborationForChannel(channelID int) {
 
 // CorroborationCount 返回当前累计次数，仅供日志与测试观察。
 func CorroborationCount(channelID int, modelName, class string) int {
-	key := fmt.Sprintf("%d|%s|%s", channelID, modelName, class)
+	key := corroborationKey(channelID, modelName, class)
 	corroborationRegistry.mu.Lock()
 	defer corroborationRegistry.mu.Unlock()
 	if st := corroborationRegistry.m[key]; st != nil {

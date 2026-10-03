@@ -46,6 +46,11 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
+	// 响应已提交（首字节/SSE 事件已写出给下游客户端）：不能再向同一个连接缝合其他渠道的响应流，
+	// 必须立即停止换渠道重试，交由终结错误处理器向客户端发送标准 SSE 错误帧。
+	if c != nil && c.Writer.Written() {
+		return PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}
+	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {
@@ -144,14 +149,18 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
 		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
-		// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
-		if loadbalancer.IsThinkingModeHistoryError(err) {
-			return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
-		}
-		// 智能负载：上游中继站报告代理异常（如 "来自上游渠道的报错: bad response status code 400"，换渠道重试）
-		if loadbalancer.IsUpstreamRelayError(err) {
-			return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
-		}
+	// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
+	if loadbalancer.IsThinkingModeHistoryError(err) {
+		return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
+	}
+	// 智能负载：上游模型不可用/已禁用/未配置（如 "model not found"、"model is disabled on this gateway"），换渠道重试
+	if loadbalancer.IsUpstreamModelUnavailableError(err) {
+		return PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}
+	}
+	// 智能负载：上游中继站报告代理异常（如 "来自上游渠道的报错: bad response status code 400"，换渠道重试）
+	if loadbalancer.IsUpstreamRelayError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
+	}
 		if operation_setting.ShouldRetryByStatusCode(code) {
 			return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 		}

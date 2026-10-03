@@ -198,6 +198,21 @@ func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdi
 	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) {
 		return autoDisableVerdict{}
 	}
+	// TTFT 超时是**延迟**信号，不是凭据失效信号，而且熔断器早就明确把它排除在
+	// 失败计数之外了（controller/relay.go 里 lbAttempt.End 传的是
+	// !loadbalancer.IsTTFTTimeout(...)）。两道防线对同一个事件给出相反判断，
+	// 而自动禁用这一侧的后果是渠道级的、不可逆的。
+	//
+	// 根因在 types.IsChannelError：它是纯粹的「错误码带 channel: 前缀即渠道级」
+	// 总闸，而 TTFT 的错误码恰恰就叫 channel:response_time_exceeded
+	//（relaykit/types/error.go）。于是纯延迟抖动攒够 3 次佐证，就能把一条
+	// 只是慢的渠道整条摘掉 —— 这与 classifyAutoDisable 上面那些守卫要防的
+	// 「把可自愈的问题当确定性失效」是同一类错误，只是走了另一条道进来。
+	//
+	// 延迟的正确处置是熔断：按 (渠道, 模型) 粒度、冷却后自愈，不留痕不可逆。
+	if loadbalancer.IsTTFTTimeout(err) {
+		return autoDisableVerdict{}
+	}
 	// 「选不出渠道」是路由池状态，不是「这条凭据没有这个模型」。显式排除，
 	// 不依赖下面 IsUpstreamModelUnavailableError 的白名单恰好漏掉它 —— 那一层
 	// 是子串匹配，日后谁往表里补一条同措辞，就会把一条 85% 可用的渠道整条

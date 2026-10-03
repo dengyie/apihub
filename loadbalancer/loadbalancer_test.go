@@ -474,6 +474,25 @@ func TestIsUpstreamRelayError(t *testing.T) {
 		Err:        errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"),
 	}
 	assert.True(t, IsUpstreamRelayError(errReasoning))
+
+	// 上游网关模型禁用与暂不可用等 400/503 报错必须识别为中继失效并触发重试
+	errGatewayDisabled := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"),
+	}
+	assert.True(t, IsUpstreamRelayError(errGatewayDisabled))
+
+	errModelTempUnavailable := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("status_code=400, 模型 'deepseek-v4-pro-free' 暂不可用，请稍后重试。"),
+	}
+	assert.True(t, IsUpstreamRelayError(errModelTempUnavailable))
+
+	errNoAvailableChannel := &types.NewAPIError{
+		StatusCode: 503,
+		Err:        errors.New("当前分组无可用渠道服务该模型"),
+	}
+	assert.True(t, IsUpstreamRelayError(errNoAvailableChannel))
 }
 
 func TestIsThinkingModeHistoryError(t *testing.T) {
@@ -798,14 +817,15 @@ func TestOverloadRefundKeepsProbeCountNonNegative(t *testing.T) {
 // 默认自动禁用状态码只有 401，覆盖不到 404 的「模型不存在」，这些渠道因此永远
 // 留在池子里，每次命中都白烧一轮换渠道重试。
 func TestIsUpstreamModelUnavailableError(t *testing.T) {
-	deterministic := []*types.NewAPIError{
-		{StatusCode: 404, Err: errors.New("模型不存在")},
-		{StatusCode: 404, Err: errors.New("status_code=404, 模型不存在")},
-		{StatusCode: 404, Err: errors.New("The model `grok-4.6` does not exist")},
-		{StatusCode: 400, Err: errors.New("model_not_found: unknown model")},
-		{StatusCode: 404, Err: errors.New("no such model: deepseek-v4-flash")},
-		{StatusCode: 400, Err: errors.New("failed to get access token: oauth2: cannot fetch token: 400 Bad Request")},
-	}
+		deterministic := []*types.NewAPIError{
+			{StatusCode: 404, Err: errors.New("模型不存在")},
+			{StatusCode: 404, Err: errors.New("status_code=404, 模型不存在")},
+			{StatusCode: 404, Err: errors.New("The model `grok-4.6` does not exist")},
+			{StatusCode: 400, Err: errors.New("model_not_found: unknown model")},
+			{StatusCode: 404, Err: errors.New("no such model: deepseek-v4-flash")},
+			{StatusCode: 400, Err: errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash")},
+			{StatusCode: 400, Err: errors.New("failed to get access token: oauth2: cannot fetch token: 400 Bad Request")},
+		}
 	for i, err := range deterministic {
 		assert.True(t, IsUpstreamModelUnavailableError(err), "case %d 应当判为永不恢复的上游失效: %v", i, err)
 	}

@@ -490,6 +490,21 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "error from provider") ||
 		strings.Contains(msg, "unknown provider for model") ||
 		strings.Contains(msg, "no available channel for model") ||
+		strings.Contains(msg, "no available channel") ||
+		strings.Contains(msg, "无可用渠道") ||
+		strings.Contains(msg, "暂无可用渠道") ||
+		strings.Contains(msg, "所有渠道均不可用") ||
+		strings.Contains(msg, "当前分组无可用渠道") ||
+		strings.Contains(msg, "暂不可用") ||
+		strings.Contains(msg, "暂时不可用") ||
+		strings.Contains(msg, "disabled on this gateway") ||
+		strings.Contains(msg, "model is disabled") ||
+		strings.Contains(msg, "model_is_disabled") ||
+		strings.Contains(msg, "model is not available") ||
+		strings.Contains(msg, "model not available") ||
+		strings.Contains(msg, "model is not supported") ||
+		strings.Contains(msg, "model not supported") ||
+		strings.Contains(msg, "channel is not available") ||
 		strings.Contains(msg, "reasoning_content") ||
 		strings.Contains(msg, "thinking mode must be passed back") {
 		return true
@@ -565,6 +580,11 @@ func IsUpstreamModelUnavailableError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "model_not_found") ||
 		strings.Contains(msg, "unknown model") ||
 		strings.Contains(msg, "no such model") ||
+		strings.Contains(msg, "disabled on this gateway") ||
+		strings.Contains(msg, "model is disabled") ||
+		strings.Contains(msg, "model_is_disabled") ||
+		strings.Contains(msg, "model is not available") ||
+		strings.Contains(msg, "model not available") ||
 		// "The model `x` does not exist" 这类措辞只有和 model 同时出现才算数：
 		// 单独的 "does not exist" 会把 "session does not exist" 之类的无关 404 一起误伤。
 		(strings.Contains(msg, "does not exist") && strings.Contains(msg, "model")) ||

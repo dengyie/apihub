@@ -450,15 +450,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				tripped := tripModelScope(newAPIError, time.Time{})
 				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
 			}
-			// 智能负载：上游中继代理异常（bad response status code / 来自上游渠道的报错）。
-			// v29.14 起按模型粒度：IsUpstreamRelayError 的关键词表含
-			// `no available channel for model`，而那句话说的是「上游没有这个模型」，
-			// 不是代理坏了。原先这里硬编码 `TripBreaker(id, "")` 整渠道退出，
-			// 导致 BreakerScopeOf 里已修好的模型级判据在这条路径上从未生效。
-			if loadbalancer.IsUpstreamRelayError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
+				// 智能负载：上游模型不可用/已禁用/未配置。
+				// 立即对该模型熔断，并将机会让渡给重试池中的其他可用渠道。
+				if loadbalancer.IsUpstreamModelUnavailableError(newAPIError) {
+					tripped := tripModelScope(newAPIError, time.Time{})
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型不可用/已禁用，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+				} else if loadbalancer.IsUpstreamRelayError(newAPIError) {
+					tripped := tripModelScope(newAPIError, time.Time{})
+					logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+				}
 			// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持。
 			// v29.14 起同样按模型粒度，令牌整体失效由自动下线兜底。
 			if loadbalancer.IsUpstreamPermissionError(newAPIError) {
@@ -609,12 +609,13 @@ func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIErr
 	}
 	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
 	if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-		if loadbalancer.IsEOLError(newAPIError) ||
-			loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-			loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-			loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-			loadbalancer.IsUpstreamRelayError(newAPIError) ||
-			loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+			if loadbalancer.IsEOLError(newAPIError) ||
+				loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+				loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+				loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+				loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
+				loadbalancer.IsUpstreamRelayError(newAPIError) ||
+				loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
 			newAPIError.StatusCode == http.StatusForbidden ||
 			newAPIError.StatusCode == http.StatusUnauthorized ||
 			newAPIError.StatusCode == http.StatusGone ||

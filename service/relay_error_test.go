@@ -172,8 +172,13 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			RequestPolicy(c).SessionModeSource = "global"
 		}, want: PolicyDecision{Action: "stop", Reason: "strict_session", Source: "global"}},
 		{name: "nil error", retries: 1, want: PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}},
-		{name: "client aborted never retries", err: types.NewClientAbortedError(context.Canceled), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}},
-		{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},
+			{name: "client aborted never retries", err: types.NewClientAbortedError(context.Canceled), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}},
+			{name: "response committed never retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
+				_, _ = c.Writer.Write([]byte("data: partial response\n\n"))
+			}, want: PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}},
+			{name: "upstream model disabled on gateway 400 retries", err: types.NewOpenAIError(errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}},
+			{name: "upstream model temporarily unavailable 400 retries", err: types.NewOpenAIError(errors.New("模型 'deepseek-v4-pro-free' 暂不可用，请稍后重试。"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
+			{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},
 		{name: "empty stream still retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamError{ChannelID: 1}, types.ErrorCodeBadResponseBody, http.StatusBadGateway), retries: 2, want: PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
