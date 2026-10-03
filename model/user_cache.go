@@ -207,7 +207,7 @@ func RefreshUserGroupCache(userId int) error {
 		return fmt.Errorf("invalid user id")
 	}
 	var authoritative User
-	if err := DB.Select("id", "auth_version", commonGroupCol).Where("id = ?", userId).First(&authoritative).Error; err != nil {
+	if err := DB.Select("id", "auth_version", commonGroupCol()).Where("id = ?", userId).First(&authoritative).Error; err != nil {
 		return err
 	}
 	// Group transitions intentionally keep the same authentication version. A
@@ -220,7 +220,7 @@ func RefreshUserGroupCache(userId int) error {
 		}
 
 		var verified User
-		if err := DB.Select("id", "auth_version", commonGroupCol).Where("id = ?", userId).First(&verified).Error; err != nil {
+		if err := DB.Select("id", "auth_version", commonGroupCol()).Where("id = ?", userId).First(&verified).Error; err != nil {
 			return err
 		}
 		if verified.AuthVersion == authoritative.AuthVersion && verified.Group == authoritative.Group {

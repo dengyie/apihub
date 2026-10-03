@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -48,10 +49,81 @@ var buildFS embed.FS
 //go:embed web/dist/index.html
 var indexPage []byte
 
+// 前端嵌入的完整性下限。这三个数字必须与 Makefile 的 verify-embed 和
+// .github/workflows/build-release.yml 的同名步骤保持一致 —— 白屏事故正是因为
+// 闸门只建在 CI 这一条路径上，且阈值无处对照，所以改动请同时改三处。
+const (
+	// minEmbeddedIndexBytes：真实构建的 index.html 约 1KB（线上实测 1047 字节）。
+	minEmbeddedIndexBytes = 200
+	// minEmbeddedStaticFiles：真实构建的 static 资源在两位数以上。
+	minEmbeddedStaticFiles = 10
+)
+
+// embeddedFrontend 是这道闸门要检查的那份快照。抽成结构体是为了可测：embed
+// 在编译期就定死，测试没法真的伪造一个 0 字节的 indexPage。
+type embeddedFrontend struct {
+	indexPage       []byte
+	staticFileCount int
+}
+
+// checkEmbeddedFrontend 返回所有不合格项，空切片代表通过。
+func checkEmbeddedFrontend(b embeddedFrontend) []string {
+	var problems []string
+	if len(b.indexPage) < minEmbeddedIndexBytes {
+		problems = append(problems, fmt.Sprintf("index.html 仅 %d 字节（要求 ≥ %d）", len(b.indexPage), minEmbeddedIndexBytes))
+	}
+	if b.staticFileCount < minEmbeddedStaticFiles {
+		problems = append(problems, fmt.Sprintf("static 资源只有 %d 个（要求 ≥ %d）", b.staticFileCount, minEmbeddedStaticFiles))
+	}
+	return problems
+}
+
+// verifyEmbeddedFrontend 是「二进制里到底有没有界面」的最后一道闸门。
+//
+// 为什么需要它：`web/dist` 被 .gitignore 排除、git 里 0 个跟踪文件，而上面两个
+// go:embed 是唯一的装配路径。go:embed 对**目录不存在**和**目录为空**都会报错
+// （已实测），所以那两种情况是安全的；但只要 web/dist/index.html 存在，哪怕
+// 是 0 字节或几十字节的占位文件，go:embed 就会成功，产出的是一个能启动、能
+// 响应 200、首页正文 0 字节的二进制 —— 后台表现为白屏，而 curl -w %{http_code}
+// 完全查不出来。2026-10-03 生产上就是这么白屏了 2h41m。
+//
+// 为什么放在二进制自己身上而不只放在 CI：CI 只是一条构建路径，`make build` 与
+// 裸 `go build` 同样能产出空界面二进制。闸门装在运行时，才对所有构建方式生效。
+//
+// 检查放在 plugin 子命令之后 —— 插件 CLI 不经 HTTP 提供界面，不该被拦。
+// countStaticFiles 数 root 下 regular file 的个数（目录不计入）。
+func countStaticFiles(fsys fs.FS, root string) int {
+	n := 0
+	_ = fs.WalkDir(fsys, root, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
+}
+
+func verifyEmbeddedFrontend() {
+	problems := checkEmbeddedFrontend(embeddedFrontend{
+		indexPage:       indexPage,
+		staticFileCount: countStaticFiles(buildFS, "web/dist/static"),
+	})
+	if len(problems) == 0 {
+		return
+	}
+	common.FatalLog(fmt.Sprintf(
+		"内置前端不完整：%s。这个二进制没有界面，会表现为「后台白屏 + 首页 200 但正文为空」。"+
+			"请先执行 `make build-web`（或 cd web && bun install --frozen-lockfile && bun run build）再重新构建；"+
+			"不要用 touch web/dist/index.html 之类的方式占位。",
+		strings.Join(problems, "；")))
+	os.Exit(1)
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "plugin" {
 		os.Exit(jsplugin.RunCLI(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	verifyEmbeddedFrontend()
 	startTime := time.Now()
 	kitutil.SetLogging(common.SysLog, func(message string) {
 		logger.LogError(nil, message)

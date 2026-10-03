@@ -201,7 +201,7 @@ func dbChannelCandidates(group string, modelName string, filters []dto.ChannelFi
 // the routing-normalized model name when the exact name has no rows.
 func loadEnabledAbilities(group string, modelName string) ([]Ability, error) {
 	var abilities []Ability
-	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).
+	err := DB.Where(commonGroupCol()+" = ? and model = ? and enabled = ?", group, modelName, true).
 		Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err
@@ -213,7 +213,7 @@ func loadEnabledAbilities(group string, modelName string) ([]Ability, error) {
 	if normalized == "" || normalized == modelName {
 		return nil, nil
 	}
-	err = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalized, true).
+	err = DB.Where(commonGroupCol()+" = ? and model = ? and enabled = ?", group, normalized, true).
 		Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err

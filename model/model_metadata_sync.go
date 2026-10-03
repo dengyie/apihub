@@ -32,7 +32,7 @@ func lockMetadataMutation(tx *gorm.DB) error {
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&anchor).Error; err != nil {
 		return err
 	}
-	return lockForUpdate(tx).Where(commonKeyCol+" = ?", anchor.Key).First(&anchor).Error
+	return lockForUpdate(tx).Where(commonKeyCol()+" = ?", anchor.Key).First(&anchor).Error
 }
 
 var ErrMetadataSyncConflict = errors.New("metadata changed; preview again before applying")

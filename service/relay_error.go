@@ -204,7 +204,13 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	// modelScoped / modelName 都是值类型，进闭包是安全的。
 	modelScoped := isModelScopedAutoDisable(err)
 	modelName := c.GetString("original_model")
-	if ShouldDisableChannelCorroborated(channelError.ChannelId, modelName, err) && channelError.AutoBan {
+	// AutoBan 必须写在左边：ShouldDisableChannelCorroborated 不是纯读，它内部
+	// 会 RecordAutoDisableSignal（计数 +1）并打出「holding back disable」那行
+	// 日志。写在左边时 Go 从左往右求值，一个 auto_ban=0 的渠道也会照常累加
+	// 计数、并被告知「闸门在拦我」——而它永远不会被摘掉。两处后果：日志在
+	// 排障时把人引向错误方向；以及运维日后给这条渠道打开 auto_ban，第一次
+	// 真实失败就顶到阈值被摘掉，恰好是佐证机制要防的「一次即禁」。
+	if channelError.AutoBan && ShouldDisableChannelCorroborated(channelError.ChannelId, modelName, err) {
 		reason := err.MaskSensitiveErrorWithStatusCode()
 		gopool.Go(func() {
 			if modelScoped {

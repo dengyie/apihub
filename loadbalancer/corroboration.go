@@ -2,9 +2,14 @@ package loadbalancer
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
+
+// corroborationEvictThreshold 超过它就在下一次建键时清扫一次。给得宽松，
+// 正常规模（渠道数 × 模型数 × 4 个判据类别）远达不到，只有异常增长才触发。
+const corroborationEvictThreshold = 4096
 
 // 「确定性失效」的佐证计数器。
 //
@@ -82,10 +87,27 @@ func RecordAutoDisableSignal(channelID int, modelName, class string) (ready bool
 
 	// 与 exhaustionRegistry 同一理由：模型名来自客户端，是无界输入，
 	// 不淘汰就是别人用随机模型名把这张表撑爆。
-	if len(corroborationRegistry.m) > 4096 {
+	//
+	// 两道闸门互补：先删已过窗口的（正常路径，代价 O(n) 且删得准），仍超上限
+	// 再按最旧硬丢（见 evict.go）—— 只做前者的话，一个窗口之内涌入的互不相同
+	// 的键一条也删不掉，map 会一直长到攻击停止为止。
+	if len(corroborationRegistry.m) > corroborationEvictThreshold {
 		for k, st := range corroborationRegistry.m {
 			if now.Sub(st.windowStart) > window {
 				delete(corroborationRegistry.m, k)
+			}
+		}
+		if len(corroborationRegistry.m) > corroborationCap {
+			keys := make([]string, 0, len(corroborationRegistry.m))
+			for k := range corroborationRegistry.m {
+				keys = append(keys, k)
+			}
+			dropped := dropOldestWhenOverCap(keys,
+				func(st *corroborationState) time.Time { return st.windowStart },
+				corroborationRegistry.m, corroborationCap)
+			if dropped > 0 {
+				log.Printf("loadbalancer: corroboration registry hit hard cap %d, dropped %d oldest entries (key contains a client-supplied model name)",
+					corroborationCap, dropped)
 			}
 		}
 	}

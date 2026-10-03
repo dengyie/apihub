@@ -50,6 +50,17 @@ jobs:
         with:
           bun-version: '1.4.0'
 
+      - name: Resolve version
+        # 前后端版本号必须同源。Go 侧的版本串在下面的 Build 步骤里由
+        # `$(cat VERSION)` + commit 推出；前端此前是写死的字面量，改 VERSION
+        # 时只记得改一边，于是同一个部署里 /api/status 报 v29.22+abc 而前端
+        # build rev 里嵌着 v29.21 —— 正是 v29.16 引入「版本串绑定 commit」要
+        # 消灭的那类事后无法判断。这里把 VERSION 注入成环境变量，删掉字面量。
+        run: |
+          set -euo pipefail
+          echo "VITE_REACT_APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+          echo "resolved VITE_REACT_APP_VERSION=$(cat VERSION)"
+
       - name: Install frontend dependencies
         working-directory: web
         run: bun install --frozen-lockfile
@@ -59,10 +70,11 @@ jobs:
         # 文件，而 main.go 是 `//go:embed web/dist`。只 mkdir + touch 一个空
         # index.html，go build 会顺利通过、产出一个**没有前端**的二进制，线上
         # 表现为首页返回 200 但正文 0 字节（后台白屏）——光看状态码查不出来。
+        # main.go 的 verifyEmbeddedFrontend 与 Makefile 的 verify-embed 现在也
+        # 各自守着同一道闸门，三处阈值必须一起改。
         working-directory: web
         env:
           DISABLE_ESLINT_PLUGIN: 'true'
-          VITE_REACT_APP_VERSION: v29.21
         run: bun run build
 
       - name: Verify frontend bundle is not a placeholder

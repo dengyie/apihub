@@ -90,8 +90,3 @@ func TestTripBreakerStillEscalatesNormally(t *testing.T) {
 }
 
 // TestPolicyReliableDefaultsTrue 未经过 Init 时判据可信，单测与编程式配置不受影响。
-func TestPolicyReliableDefaultsTrue(t *testing.T) {
-	if !PolicyReliable() {
-		t.Fatal("未发生首次加载失败时 PolicyReliable 应为 true")
-	}
-}

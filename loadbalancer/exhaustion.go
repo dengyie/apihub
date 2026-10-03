@@ -23,6 +23,10 @@ import (
 // 节流是必须的：客户端重试风暴会在几秒内打出上百次同类 503，不节流的日志
 // 只会把真正的信号淹掉。
 
+// exhaustionEvictThreshold 超过它就在下一次记录时清扫一次。给得宽松：正常
+// 规模是「在售模型数」量级，远达不到，只有异常增长才触发。
+const exhaustionEvictThreshold = 1024
+
 // 每个模型一条：窗口内的累计次数、窗口起点、上次告警时刻、最近原因。
 var exhaustionRegistry struct {
 	mu sync.Mutex
@@ -62,10 +66,29 @@ func RecordModelExhausted(model, reason string) {
 
 	// 顺带做一次清扫：模型名来自客户端请求，是**无界输入**，不淘汰就是
 	// 别人用一个随机模型名就能把这张表撑爆。与 breakers 用同一套理由。
-	if len(exhaustionRegistry.m) > 1024 {
+	//
+	// 这张表的键**就是**模型名本身，比佐证表更容易被灌：任何一次 503
+	// no available channel 都会记一条，随机模型名必然选不出渠道，所以一个
+	// 持有效 token 的客户端可以稳定地往里灌。因此除了「删过期的」，还必须
+	// 有硬上限（见 evict.go）—— 只做前者的话，一个窗口之内涌入的互不相同
+	// 的模型名一条也删不掉。
+	if len(exhaustionRegistry.m) > exhaustionEvictThreshold {
 		for k, st := range exhaustionRegistry.m {
 			if now.Sub(st.windowStart) > window && now.Sub(st.lastAlert) > cooldown {
 				delete(exhaustionRegistry.m, k)
+			}
+		}
+		if len(exhaustionRegistry.m) > exhaustionCap {
+			keys := make([]string, 0, len(exhaustionRegistry.m))
+			for k := range exhaustionRegistry.m {
+				keys = append(keys, k)
+			}
+			dropped := dropOldestWhenOverCap(keys,
+				func(st *exhaustionState) time.Time { return st.windowStart },
+				exhaustionRegistry.m, exhaustionCap)
+			if dropped > 0 {
+				log.Printf("loadbalancer: exhaustion registry hit hard cap %d, dropped %d oldest entries (keys are client-supplied model names)",
+					exhaustionCap, dropped)
 			}
 		}
 	}

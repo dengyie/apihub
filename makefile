@@ -8,7 +8,7 @@ DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
 
-.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
+.PHONY: all build-web build-all-web verify-embed build-api start-api dev dev-api dev-api-rebuild dev-web reset-setup test
 
 all: build-all-web start-api
 
@@ -19,7 +19,43 @@ build-web:
 
 build-all-web: build-web
 
-start-api:
+# 前端嵌入完整性闸门。
+#
+# web/dist 被 .gitignore 排除、git 里 0 个跟踪文件，而 main.go 用 //go:embed
+# 把它打进二进制。go:embed 对「目录不存在」「目录为空」都会报错（安全），但只要
+# web/dist/index.html 存在 —— 哪怕是 0 字节占位文件 —— 构建就会成功，产出的是
+# 一个「能启动、能响应 200、首页正文 0 字节」的二进制：后台白屏，且状态码查不
+# 出来。2026-10-03 生产上因此白屏 2h41m。
+#
+# 这两个阈值必须与 main.go 的 minEmbeddedIndexBytes / minEmbeddedStaticFiles
+# 以及 .github/workflows/build-release.yml 的同名步骤保持一致，改一处要改三处。
+verify-embed:
+	@set -e; \
+	if [ ! -f $(WEB_DIR)/dist/index.html ]; then \
+		echo "ERROR: $(WEB_DIR)/dist/index.html 不存在 —— 先跑 'make build-web'"; exit 1; \
+	fi; \
+	size=$$(wc -c < $(WEB_DIR)/dist/index.html | tr -d ' '); \
+	if [ "$$size" -lt 200 ]; then \
+		echo "ERROR: index.html 仅 $$size 字节，疑似占位文件；真实构建约 1KB"; exit 1; \
+	fi; \
+	if [ ! -d $(WEB_DIR)/dist/static ]; then \
+		echo "ERROR: $(WEB_DIR)/dist/static 缺失：前端资源目录不存在"; exit 1; \
+	fi; \
+	assets=$$(find $(WEB_DIR)/dist/static -type f | wc -l | tr -d ' '); \
+	if [ "$$assets" -lt 10 ]; then \
+		echo "ERROR: static 资源只有 $$assets 个，远少于真实构建应有的数量"; exit 1; \
+	fi; \
+	echo "embed 校验通过：index.html $$size 字节，static 资源 $$assets 个"
+
+# 本地构建生产二进制。版本串绑定 commit（v29.16 起的约定），与 CI 保持同一形状：
+# 三个不同产物共用同一个标签，事后无法判断跑的是哪次提交。
+build-api: verify-embed
+	@echo "Building api binary..."
+	@cd $(API_DIR) && go build \
+		-ldflags "-X 'github.com/QuantumNous/new-api/common.Version=$$(cat VERSION)+$$(git rev-parse --short=9 HEAD)'" \
+		-o new-api
+
+start-api: verify-embed
 	@echo "Starting api dev server..."
 	@cd $(API_DIR) && go run main.go &
 

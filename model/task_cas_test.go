@@ -28,7 +28,6 @@ func TestMain(m *testing.M) {
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true
-	initCol()
 
 	sqlDB, err := db.DB()
 	if err != nil {

@@ -269,7 +269,7 @@ func TestChannelCandidatesExclusionDatabaseMode(t *testing.T) {
 // resolution against real SQLite, MySQL and PostgreSQL instances.
 //
 // The reason this cannot be a SQLite-only test is the reserved-word quoting:
-// abilities are filtered with `commonGroupCol`, which is `"group"` on
+// abilities are filtered with `commonGroupCol()`, which is `"group"` on
 // PostgreSQL and backticked elsewhere. A statement that is valid on SQLite and
 // MySQL is a syntax error on PostgreSQL, so a green SQLite run says nothing
 // about the dialect production actually runs on.
@@ -308,7 +308,7 @@ func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
 			previousMemoryCache := common.MemoryCacheEnabled
 			DB = db
 			common.MemoryCacheEnabled = false
-			// initCol derives commonGroupCol from the main database type, so it
+			// initCol derives commonGroupCol() from the main database type, so it
 			// has to be re-run for every dialect or the backtick form leaks into
 			// the PostgreSQL subtest and the failure looks like a code bug.
 			switch dialect {
@@ -319,12 +319,10 @@ func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
 			case "postgres":
 				common.SetMainDatabaseType(common.DatabaseTypePostgreSQL)
 			}
-			initCol()
 			t.Cleanup(func() {
 				DB = previousDB
 				common.MemoryCacheEnabled = previousMemoryCache
 				common.SetMainDatabaseType(previousMainType)
-				initCol()
 				require.NoError(t, db.Migrator().DropTable(&Channel{}, &Ability{}))
 				require.NoError(t, sqlDB.Close())
 			})

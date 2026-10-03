@@ -166,8 +166,6 @@ type autoDisableVerdict struct {
 	// Disable 为 true 时 Class 必有值，指明是哪条判据命中的。
 	Disable bool
 	Class   string
-	// ModelName 是这次实际打给上游的模型名，仅在 Class 为模型级判据时有意义。
-	ModelName string
 }
 
 // classifyAutoDisable 是 ShouldDisableChannel 的本体，**纯函数**：不碰任何

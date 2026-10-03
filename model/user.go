@@ -468,7 +468,7 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 
 	query = query.Where("("+likeCondition+")", likeArgs...)
 	if group != "" {
-		query = query.Where(commonGroupCol+" = ?", group)
+		query = query.Where(commonGroupCol()+" = ?", group)
 	}
 	if role != nil {
 		query = query.Where("role = ?", *role)
@@ -1011,7 +1011,7 @@ func (user *User) HardDelete() (int64, error) {
 			return err
 		}
 		if common.RedisEnabled {
-			if err := tx.Unscoped().Select("id", commonKeyCol).Where("user_id = ?", user.Id).Find(&tokens).Error; err != nil {
+			if err := tx.Unscoped().Select("id", commonKeyCol()).Where("user_id = ?", user.Id).Find(&tokens).Error; err != nil {
 				return err
 			}
 		}
@@ -1291,7 +1291,7 @@ func GetUserGroup(id int, fromDB bool) (group string, err error) {
 		// Don't return error - fall through to DB
 	}
 	fromDB = true
-	err = DB.Model(&User{}).Where("id = ?", id).Select(commonGroupCol).Find(&group).Error
+	err = DB.Model(&User{}).Where("id = ?", id).Select(commonGroupCol()).Find(&group).Error
 	if err != nil {
 		return "", err
 	}

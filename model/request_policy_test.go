@@ -51,7 +51,6 @@ func TestRequestPolicyDatabaseMatrix(t *testing.T) {
 			common.OptionMapRWMutex.Unlock()
 			DB = db
 			common.SetMainDatabaseType(common.DatabaseType(dialect))
-			initCol()
 			t.Cleanup(func() {
 				require.NoError(t, db.Migrator().DropTable(&Option{}))
 				for k, v := range previousSnapshot.Options {
@@ -63,7 +62,6 @@ func TestRequestPolicyDatabaseMatrix(t *testing.T) {
 				common.OptionMapRWMutex.Unlock()
 				DB = previousDB
 				common.SetMainDatabaseType(previousType)
-				initCol()
 				require.NoError(t, sqlDB.Close())
 			})
 			require.NoError(t, db.AutoMigrate(&Option{}))

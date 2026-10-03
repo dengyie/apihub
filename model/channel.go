@@ -152,9 +152,9 @@ func NormalizeChannelGroupFilter(group string) string {
 
 func channelGroupFilterCondition() string {
 	if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
-		return `CONCAT(',', ` + commonGroupCol + `, ',') LIKE ? ESCAPE '!'`
+		return `CONCAT(',', ` + commonGroupCol() + `, ',') LIKE ? ESCAPE '!'`
 	}
-	return `(',' || ` + commonGroupCol + ` || ',') LIKE ? ESCAPE '!'`
+	return `(',' || ` + commonGroupCol() + ` || ',') LIKE ? ESCAPE '!'`
 }
 
 func channelGroupFilterPattern(group string) string {
@@ -646,7 +646,7 @@ func SearchChannels(keyword string, group string, model string, idSort bool, sor
 	baseQuery := DB.Model(&Channel{}).Omit("key")
 
 	// 构造WHERE子句
-	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
+	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol() + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
 	args := []any{common.String2Int(keyword), "%" + keyword + "%", keyword, "%" + keyword + "%", "%" + model + "%"}
 	baseQuery = ApplyChannelGroupFilter(baseQuery.Where(whereClause, args...), group)
 
@@ -1319,7 +1319,7 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 	baseQuery := DB.Model(&Channel{}).Omit("key")
 
 	// 构造WHERE子句
-	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
+	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol() + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
 	args := []any{common.String2Int(keyword), "%" + keyword + "%", keyword, "%" + keyword + "%", "%" + model + "%"}
 	baseQuery = ApplyChannelGroupFilter(baseQuery.Where(whereClause, args...), group)
 

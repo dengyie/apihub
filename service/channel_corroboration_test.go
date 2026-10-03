@@ -189,3 +189,27 @@ func TestClassifyAutoDisableRespectsGlobalSwitch(t *testing.T) {
 			"总开关关闭时，佐证机制不得成为绕过它的后门")
 	}
 }
+// TestProcessChannelErrorDoesNotCountWhenAutoBanOff 钉住求值顺序。
+//
+// 禁用闸门写的是 `AutoBan && ShouldDisableChannelCorroborated(...)`，而不是
+// 反过来。ShouldDisableChannelCorroborated 不是纯读 —— 它会
+// RecordAutoDisableSignal（计数 +1）并打出「holding back disable」。写在左边
+// 时 Go 从左往右求值，于是 auto_ban=0 的渠道也照常累加计数、并被告知「闸门
+// 在拦我」，而它永远不会被摘掉：日志把人引向错误方向，而日后一旦打开
+// auto_ban，第一次真实失败就顶到阈值被摘掉 —— 恰好是佐证要防的「一次即禁」。
+func TestProcessChannelErrorDoesNotCountWhenAutoBanOff(t *testing.T) {
+	newCorroborationFixture(t, 3)
+	const channelID = 9101
+	const model = "model-that-autoban-would-forbid"
+	defer loadbalancer.ResetCorroborationForChannel(channelID)
+
+	c := clampTestContext()
+	c.Set("original_model", model)
+
+	for i := 0; i < 5; i++ {
+		ProcessChannelError(c, types.ChannelError{ChannelId: channelID, AutoBan: false}, authError(), nil)
+	}
+
+	assert.Equal(t, 0, loadbalancer.CorroborationCount(channelID, model, loadbalancer.CorroborationClassStatusCode),
+		"auto_ban 关闭的渠道不得累加佐证计数")
+}

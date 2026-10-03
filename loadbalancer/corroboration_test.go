@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -271,4 +272,29 @@ func TestCorroborationRegistryBounded(t *testing.T) {
 	size := len(corroborationRegistry.m)
 	corroborationRegistry.mu.Unlock()
 	assert.LessOrEqual(t, size, 4096, "佐证表必须有界")
+}
+// 佐证表的键含客户端给的模型名。已有并发用例只覆盖了「有界」这个结论，
+// 没有覆盖触发它的机制：并发下每条 key 各不相同，靠的是过期清扫那条路径。
+// 这里钉住第二道闸门 —— 一个窗口之内涌入的互不相同的键一条也过期不了，
+// 过期清扫等于没做，必须有总量硬上限兜底。
+func TestCorroborationRegistryHardCap(t *testing.T) {
+	defer resetCorroborationForTest()()
+	prev := GetPolicy()
+	// 阈值调高，让所有信号都停在「未达阈值」，从而不会互相干扰计数
+	SetPolicy(corroborationPolicyForTest(1000000, 600))
+	t.Cleanup(func() { SetPolicy(prev) })
+
+	flood := corroborationCap + 2000
+	for i := 0; i < flood; i++ {
+		RecordAutoDisableSignal(1, fmt.Sprintf("flood-model-%d", i), CorroborationClassStatusCode)
+	}
+
+	corroborationRegistry.mu.Lock()
+	size := len(corroborationRegistry.m)
+	corroborationRegistry.mu.Unlock()
+	// 清扫发生在本条记录写入之前，稳态上限是 cap+1，理由同 exhaustion。
+	assert.LessOrEqual(t, size, corroborationCap+1,
+		"未过期的键也必须有硬上限，否则随机模型名可以把佐证表撑爆")
+	assert.Greater(t, size, corroborationCap/2,
+		"硬上限不应误伤正常规模的条目")
 }

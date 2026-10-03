@@ -53,7 +53,7 @@ func GetPerfMetrics(modelName string, group string, startTs int64, endTs int64) 
 	query := DB.Model(&PerfMetric{}).
 		Where("model_name = ? AND bucket_ts >= ? AND bucket_ts <= ?", modelName, startTs, endTs)
 	if group != "" {
-		query = query.Where(commonGroupCol+" = ?", group)
+		query = query.Where(commonGroupCol()+" = ?", group)
 	}
 	err := query.Order("bucket_ts ASC").Find(&metrics).Error
 	return metrics, err
@@ -87,7 +87,7 @@ func GetPerfMetricsSummaryAll(startTs int64, endTs int64, groups []string) ([]Pe
 		if len(groups) == 0 {
 			return summaries, nil
 		}
-		query = query.Where(commonGroupCol+" IN ?", groups)
+		query = query.Where(commonGroupCol()+" IN ?", groups)
 	}
 	err := query.
 		Group("model_name").
@@ -105,7 +105,7 @@ func GetPerfMetricsSummaryBucketsAll(startTs int64, endTs int64, groups []string
 		if len(groups) == 0 {
 			return summaries, nil
 		}
-		query = query.Where(commonGroupCol+" IN ?", groups)
+		query = query.Where(commonGroupCol()+" IN ?", groups)
 	}
 	err := query.
 		Group("model_name, bucket_ts").

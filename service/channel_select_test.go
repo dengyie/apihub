@@ -193,13 +193,15 @@ func TestSharedType61IdentityFilterContainsAllCandidateKeys(t *testing.T) {
 	assert.Empty(t, filters[0].TaskPluginChannelTypes)
 }
 
-// setupChannelSelectTest gives a selection test its own SQLite database. The
-// reserved-word column names come from InitCol, which production reaches via
-// InitDB; a test database built by hand has to ask for it explicitly.
+// setupChannelSelectTest gives a selection test its own SQLite database.
+//
+// 这里曾经需要显式调一次 model.InitCol()：保留字列名（`group` / `key`）当时是
+// 全局变量，必须有人记得在建连后初始化一次，漏调的唯一表现是运行时拼出错的
+// SQL。列名改成按当前方言现算的函数后，「忘记初始化」在语法上就不存在了，
+// 这个测试也不再需要为它开一个后门。
 func setupChannelSelectTest(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	model.InitCol()
 	originalDB := model.DB
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
 	originalRetryTimes := common.RetryTimes

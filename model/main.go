@@ -19,13 +19,58 @@ import (
 	"gorm.io/gorm"
 )
 
-var commonGroupCol string
-var commonKeyCol string
-var commonTrueVal string
-var commonFalseVal string
+// `group` 与 `key` 是 SQL 保留字，必须加引号，而加哪种引号取决于后端方言。
+//
+// 这里刻意做成**函数**而不是变量 + 一次性的 initCol()：变量版本要求「有人必须
+// 在建连之后主动调用一次初始化」，否则所有用到保留字列名的查询都会拼出错的
+// SQL，而漏调的唯一表现是运行时才炸。这个坑已经吃过一次 —— service 包的
+// channel_select 测试因为自己开的内存库没经过 InitDB，只能反过来调一个
+// 导出的 InitCol() 壳，生产代码里因此多了一个只为测试存在的导出符号。
+//
+// 改成函数后每个调用点读到的是**当前**的方言，忘记初始化这件事在语法上就不
+// 存在了。主库与日志库可以配不同的 DSN（LOG_SQL_DSN），所以两套列名各自
+// 独立求值。
+func commonGroupCol() string {
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		return `"group"`
+	}
+	return "`group`"
+}
 
-var logKeyCol string
-var logGroupCol string
+func commonKeyCol() string {
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		return `"key"`
+	}
+	return "`key`"
+}
+
+func commonTrueVal() string {
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		return "true"
+	}
+	return "1"
+}
+
+func commonFalseVal() string {
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		return "false"
+	}
+	return "0"
+}
+
+func logKeyCol() string {
+	if common.LogDatabaseType() == common.DatabaseTypePostgreSQL {
+		return `"key"`
+	}
+	return "`key`"
+}
+
+func logGroupCol() string {
+	if common.LogDatabaseType() == common.DatabaseTypePostgreSQL {
+		return `"group"`
+	}
+	return "`group`"
+}
 
 // jsonScanBytes 归一化 json 列的驱动返回值:不同驱动/协议模式下同一列可能
 // 以 []byte 或 string 返回,静默丢弃 string 会导致字段被清零而不报错。
@@ -37,33 +82,6 @@ func jsonScanBytes(value any) []byte {
 		return []byte(v)
 	default:
 		return nil
-	}
-}
-
-func InitCol() {
-	initCol()
-}
-
-func initCol() {
-	// init common column names
-	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
-		commonGroupCol = `"group"`
-		commonKeyCol = `"key"`
-		commonTrueVal = "true"
-		commonFalseVal = "false"
-	} else {
-		commonGroupCol = "`group`"
-		commonKeyCol = "`key`"
-		commonTrueVal = "1"
-		commonFalseVal = "0"
-	}
-	switch common.LogDatabaseType() {
-	case common.DatabaseTypePostgreSQL:
-		logGroupCol = `"group"`
-		logKeyCol = `"key"`
-	default:
-		logGroupCol = "`group`"
-		logKeyCol = "`key`"
 	}
 }
 
@@ -194,7 +212,6 @@ func InitDB() (err error) {
 		if os.Getenv("LOG_SQL_DSN") == "" {
 			common.SetLogDatabaseType(dbType)
 		}
-		initCol()
 		if common.DebugEnabled {
 			db = db.Debug()
 		}
@@ -240,7 +257,6 @@ func InitLogDB() (err error) {
 	if os.Getenv("LOG_SQL_DSN") == "" {
 		LOG_DB = DB
 		common.SetLogDatabaseType(common.MainDatabaseType())
-		initCol()
 		if common.IsMasterNode {
 			return MigrateAuditLogs()
 		}
@@ -249,7 +265,6 @@ func InitLogDB() (err error) {
 	db, dbType, err := chooseDB("LOG_SQL_DSN", true)
 	if err == nil {
 		common.SetLogDatabaseType(dbType)
-		initCol()
 		if common.DebugEnabled {
 			db = db.Debug()
 		}
