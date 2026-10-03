@@ -153,6 +153,18 @@ func MarkRequestPolicySuccess(c *gin.Context, stream *relaycommon.StreamStatus) 
 	if c != nil {
 		channelID = c.GetInt("channel_id")
 	}
+	// 成功即证伪：这个 (渠道, 模型) 刚刚真的通了，之前攒的「确定性失效」信号
+	// 不该继续替它说话。不复位的话，一次故障高峰攒到 2/3 之后渠道自行恢复、
+	// 成功跑了几十次，窗口内的下一次失败仍会顶到阈值被摘 —— 佐证就退化成了
+	// 「三次即禁」，而它本来的作用恰恰是区分偶发与持续。
+	//
+	// modelName 为空时不复位：空模型名是所有「拿不到模型名」的失败共用的桶，
+	// 一次成功无权代表整个桶。
+	if state.Successful && channelID != 0 {
+		if modelName := c.GetString(string(constant.ContextKeyOriginalModel)); modelName != "" {
+			loadbalancer.ResetCorroboration(channelID, modelName)
+		}
+	}
 	state.AddEvent(PolicyEvent{ChannelID: channelID, Decision: decision})
 }
 
