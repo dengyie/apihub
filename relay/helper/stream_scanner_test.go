@@ -414,6 +414,28 @@ func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
 	assert.True(t, info.StreamStatus.IsNormalEnd())
 }
 
+func TestStreamScannerHandler_StreamStatus_EOFWithoutDone_RequiresTerminal(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	for i := range 5 {
+		fmt.Fprintf(&b, "data: {\"choices\":[{\"delta\":{\"content\":\"token %d\"}}]}\n\n", i)
+	}
+	c, resp, info := setupStreamTest(t, strings.NewReader(b.String()))
+	info.StreamStatus = relaycommon.NewStreamStatus()
+	info.StreamStatus.RequireTerminal()
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	require.Error(t, err, "当协议要求终止帧而上游无 [DONE] 即 EOF 时，应返回流中断错误")
+	var brokenErr *loadbalancer.StreamBrokenError
+	require.ErrorAs(t, err, &brokenErr)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.IsNormalEnd())
+	assert.True(t, info.StreamStatus.IsUpstreamStreamFault())
+}
+
 func TestStreamScannerHandler_StreamStatus_HandlerStop(t *testing.T) {
 	t.Parallel()
 

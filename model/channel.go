@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -956,6 +957,20 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 }
 
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	// 渠道被重新启用 ⇒ 之前那串「确定性失效」信号不再作数：人工或测活刚确认
+	// 它回来了，旧计数留着会让佐证窗口内的下一次失败**第一次**就顶到阈值被摘，
+	// 佐证退化成「一次即禁」，恰好是它存在的理由的反面。
+	//
+	// 放在这一层而不是各 controller 调用点，是因为「谁把 status 置为启用」
+	// 有三条互不相干的路径：service.EnableChannel（自动恢复）、面板的
+	// UpdateChannelStatus、BatchUpdateChannelStatus —— 后两条直接调本函数，
+	// 绕过 service.EnableChannel，于是那里的复位对人工恢复根本不生效。
+	// 挂在写入口上，任何调用方都自动享有；挂在调用点上则要靠每个人记得加，
+	// 漏一个就复发一次。
+	if status == common.ChannelStatusEnabled {
+		loadbalancer.ResetCorroborationForChannel(channelId)
+	}
+
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
 		defer channelStatusLock.Unlock()
@@ -1136,6 +1151,12 @@ func EnableChannelByTag(tag string) error {
 	ids, err := tagChannelIds(tag)
 	if err != nil {
 		return err
+	}
+	// 与 UpdateChannelStatus 同一条不变量：按标签批量启用也是「恢复」，
+	// 这批渠道各自的旧佐证信号一律作废。放在这里而不是 controller 的
+	// EnableTagChannels，否则每加一条批量入口就要记得再来一次。
+	for _, id := range ids {
+		loadbalancer.ResetCorroborationForChannel(id)
 	}
 	unlock := lockChannelsInIdOrder(ids)
 	defer unlock()

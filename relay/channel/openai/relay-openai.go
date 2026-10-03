@@ -121,6 +121,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
 
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
+
 	// 智能负载：首字节前 TTFT 超时返回可重试错误，触发透明换渠道（客户端无感知）
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {

@@ -194,6 +194,11 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	responseId string, createAt int64, model string, systemFingerprint string,
 	usage *dto.Usage, containStreamUsage bool) {
 
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final [DONE] frame", info.StreamStatus.Summary()))
+		return
+	}
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {

@@ -48,9 +48,9 @@ type corroborationState struct {
 // 「凭据失效」和「这个模型不存在」是两回事，同时各发生一次不构成互相印证。
 const (
 	CorroborationClassModelUnavailable = "model_unavailable"
-	CorroborationClassChannelError      = "channel_error"
-	CorroborationClassStatusCode        = "status_code"
-	CorroborationClassKeyword           = "keyword"
+	CorroborationClassChannelError     = "channel_error"
+	CorroborationClassStatusCode       = "status_code"
+	CorroborationClassKeyword          = "keyword"
 )
 
 // RecordAutoDisableSignal 记录一次「命中了自动禁用判据」的信号，

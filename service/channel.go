@@ -56,9 +56,9 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 func EnableChannel(channelId int, usingKey string, channelName string) bool {
 	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
 	if success {
-		// 恢复了就说明上一次那串「确定性失效」信号已被证伪（渠道又通了），
-		// 留着它们会让下一次真实故障第一次就顶到阈值，佐证因此失去意义。
-		loadbalancer.ResetCorroborationForChannel(channelId)
+		// 佐证计数的复位由 model.UpdateChannelStatus 统一负责（那里才是 status
+		// 真正落库的地方，面板的单条/批量/按标签三条路径都汇到它），这里不再
+		// 重复调用 —— 之前复位只写在 service 这一层，面板人工恢复完全绕过了它。
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
@@ -276,16 +276,27 @@ func ShouldDisableChannelCorroborated(channelId int, modelName string, err *type
 		return false
 	}
 	ready, count := loadbalancer.RecordAutoDisableSignal(channelId, modelName, verdict.Class)
+	threshold := loadbalancer.GetPolicy().Default.Breaker.AutoDisableCorroborationThresholdOrDefault()
 	if !ready && count == 1 {
 		// 只记首次：同一个模型连续失败几百次时，日志里出现一条就够定位，
 		// 几百条会把真正的信号淹掉（与 ModelExhaustion 告警同一个理由）。
-		threshold := loadbalancer.GetPolicy().Default.Breaker.AutoDisableCorroborationThresholdOrDefault()
 		common.SysLog(fmt.Sprintf("channel #%d model %q hit auto-disable rule (%s) 1/%d, holding back disable; breaker still applies",
 			channelId, modelName, verdict.Class, threshold))
+	} else if ready && count == threshold {
+		// 闸门打开的那一刻必须留痕。此前只有 count==1 那一条，而它恰恰是
+		// 「没禁用」；于是从 1/3 涨到 3/3、真正执行不可逆摘除的那一刻，
+		// 日志上什么都没有 —— 唯一的信号是下游那条「已被禁用」，看不出
+		// 证据攒了几次、攒了多久。不可逆动作之前的那一步是排障的关键。
+		//
+		// 用 == 而不是 >=：达标之后每次失败仍然返回 true（渠道在被真正摘掉
+		// 之前会一直重试），>= 会把「42/3、43/3 …」逐次刷出来 —— 一条稳定
+		// 故障的渠道每来一个请求就产出一行，正是上面那条限定 count==1
+		// 要避免的淹没。== 只在跨越阈值的那一次成立。
+		common.SysLog(fmt.Sprintf("channel #%d model %q corroborated auto-disable rule (%s) %d/%d within window, proceeding with disable",
+			channelId, modelName, verdict.Class, count, threshold))
 	}
 	return ready
 }
 
 // ShouldEnableChannel 已并入 controller.decideChannelHealthAction（唯一调用方，
 // 判据整体迁走后这里只留注释防「加回来」）。
-

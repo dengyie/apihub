@@ -112,6 +112,15 @@ func (s *StreamStatus) RequireTerminal() {
 	s.expectsTerminal = true
 }
 
+func (s *StreamStatus) ExpectsTerminal() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.expectsTerminal
+}
+
 // MarkCompleted, MarkIncomplete and MarkCancelled keep the first terminal seen;
 // MarkFailed always wins because an error after completion is still a failure.
 func (s *StreamStatus) MarkCompleted() {
@@ -272,9 +281,24 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	s.mu.Lock()
+	expectsTerminal := s.expectsTerminal
+	response := s.response
+	s.mu.Unlock()
+
+	if s.EndReason == StreamEndReasonDone || s.EndReason == StreamEndReasonHandlerStop {
+		return true
+	}
+	if s.EndReason == StreamEndReasonEOF {
+		if expectsTerminal {
+			// 若协议要求显式终止帧（如 OpenAI 的 [DONE]、Claude 的 message_stop），
+			// 只有明确收到了完成标识（MarkCompleted）时，EOF 才算正常收尾。
+			// 否则中途断开（无 finish_reason/stop）属于异常截断。
+			return response == ResponseOutcomeCompleted
+		}
+		return true
+	}
+	return false
 }
 
 func (s *StreamStatus) Summary() string {

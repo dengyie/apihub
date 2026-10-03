@@ -173,6 +173,13 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var accumulatedUsageMetadata *dto.GeminiUsageMetadata
 	responseText := strings.Builder{}
 
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
+
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var geminiResponse dto.GeminiChatResponse
 		if err := common.UnmarshalJsonStr(data, &geminiResponse); err != nil {
@@ -228,12 +235,11 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			streamErr = errors.New("Gemini stream callback stopped")
 			sr.Stop(streamErr)
 		}
-	})); streamErr != nil {
-		return nil, streamErr
-	}
-	info.StreamStatus.RequireTerminal()
+		})); streamErr != nil {
+			return nil, streamErr
+		}
 
-	if !hasBillableUsageMetadata {
+		if !hasBillableUsageMetadata {
 		if info.ReceivedResponseCount > 0 {
 			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		} else {

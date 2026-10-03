@@ -949,7 +949,21 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 
 	summary.Tested++
 
-firstModel := common.GetContextKeyString(result.context, constant.ContextKeyOriginalModel)
+	// testChannel 在两种情况下返回的 testResult 没有 context（只有 localErr）：
+	// 渠道类型不支持测活，以及用户缓存取不到。下一行和后面的 processChannelError
+	// 都假定它非空，而本函数的 worker（runChannelTestWorkers）没有 recover ——
+	// 一次 nil 解引用会把整个进程带走，代价远大于「这条渠道测不出来」。
+	//
+	// 同函数末尾的复核分支本来就写了 result.context != nil，说明作者知道它可能
+	// 是 nil，只是漏了这一处。按不支持类型的名单走 selectChannelsForAutomaticTest
+	// 时选出来的渠道不会撞上（生产 203 条渠道的类型都不在那个名单里），但
+	// 「用户缓存取不到」与渠道类型无关，真撞上就是整进程崩。
+	if result.context == nil {
+		summary.Failed++
+		return summary
+	}
+
+	firstModel := common.GetContextKeyString(result.context, constant.ContextKeyOriginalModel)
 
 	// 复核：第一个模型失败时，再换一个模型打一次，用来区分「这条渠道死了」
 	// 与「恰好只有这一个模型坏了」。

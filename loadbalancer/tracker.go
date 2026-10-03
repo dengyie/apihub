@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -320,7 +321,17 @@ func (t *Tracker) Begin(channelID int, model string) *RequestHandle {
 			start:     time.Now(),
 		}
 	}
-	s := t.getBreaker(scopeKey(channelID, model))
+	// 键在 Begin 解析一次就存进句柄，End 直接用存下来的这把。
+	//
+	// 需要存的只有**日志要用的这把键**，不是 stats：stats 一直是 Begin 捕获的，
+	// End 记的失败从来落在 Begin 定的那把上，这一点没变过。变的是新加的熔断
+	// 日志要标出「熔的是 (渠道, 模型) 的哪一对」，而句柄并不保留模型名 ——
+	// 若 End 为写日志重调一次 scopeKey，它读到的是**那一刻**的 policy.per_model，
+	// 而这个开关会被热加载改写。于是运行中翻动它，日志会把一次按模型熔断标成
+	// 「[全部模型]」（或反过来）：熔断行为仍是对的，但排障最需要的那件事
+	// —— 这次熔断的影响面是几个模型还是整条渠道 —— 在日志上会说反。
+	key := scopeKey(channelID, model)
+	s := t.getBreaker(key)
 	c := t.getInflight(channelID)
 	s.lastSeen.Store(time.Now().Unix())
 	c.Add(1)
@@ -329,6 +340,7 @@ func (t *Tracker) Begin(channelID int, model string) *RequestHandle {
 		stats:     s,
 		inflight:  c,
 		channelID: channelID,
+		key:       key,
 		start:     time.Now(),
 	}
 }
@@ -367,6 +379,9 @@ type RequestHandle struct {
 	// inflight 该渠道的并发计数器（渠道级，与 stats 的模型级键不同）
 	inflight  *atomic.Int32
 	channelID int
+	// key 本次请求实际落在哪把熔断键上，由 Begin 解析一次后固定下来；
+	// 熔断日志用它标出 (渠道, 模型) 的哪一对，与 stats 同源。
+	key       breakerKey
 	start     time.Time
 	firstByte time.Time
 	done      atomic.Bool
@@ -419,6 +434,14 @@ func (h *RequestHandle) End(slow, failed bool) {
 		if !policy.BreakerExempt &&
 			(currentState == breakerHalfOpen || (policy.Breaker.FailureThreshold > 0 && int(n) >= policy.Breaker.FailureThreshold)) {
 			h.stats.tripBreaker()
+			// 阈值驱动的熔断此前**完全没有日志**：tripBreaker 里没有、这里也没有。
+			// 被自动摘掉的那 5 分钟里，运维在日志上唯一能看到的线索是渠道没流量了
+			// —— 而「熔断了」和「上游就是没人用」在日志里长得一模一样。
+			// controller 里那 11 处显式 Trip* 调用都有 WARN 日志，唯独这条由
+			// 计数器自动走的路是哑的，正好是生产里最常走的一条。
+			log.Printf("loadbalancer: channel #%d [%s] breaker tripped after %d consecutive failures (half_open_probe_failed=%t), cooling down for %ds (escalation #%d)",
+				h.key.channelID, breakerKeyLabel(h.key), n, currentState == breakerHalfOpen,
+				cooldownSecondsFor(h.stats, policy.Breaker), h.stats.tripCount.Load())
 		}
 		// 失败也重置慢计数（失败已硬处理，不再叠加软降级）
 		h.stats.consecutiveSlowCount.Store(0)
@@ -500,6 +523,29 @@ func (s *ChannelStats) escalationMultiplier(breaker BreakerPolicy) int64 {
 		mult = 1
 	}
 	return mult
+}
+
+// cooldownSecondsFor 是一次熔断的实际冷却长度：基础冷却 × 递增退避倍数。
+//
+// 抽出来的理由是「同一份算式只许有一份实现」：checkBreaker 的到期判定和
+// 刚加的熔断日志都需要它，两处各写一遍的话，日志报出来的冷却时间会与
+// 实际拒绝选择的时长对不上 —— 而那正是排障时最需要对得上的两个数。
+func cooldownSecondsFor(s *ChannelStats, breaker BreakerPolicy) int64 {
+	cooldown := breaker.CooldownSeconds
+	if cooldown <= 0 {
+		cooldown = 60
+	}
+	return cooldown * s.escalationMultiplier(breaker)
+}
+
+// breakerKeyLabel 给熔断日志一个和 controller 侧一致的标签：模型名为空
+// 表示熔断落在整条渠道上，日志里必须写出来 —— 否则「熔了 #228 的
+// claude-opus-4-8」和「熔了整条 #228」两件事在日志上长得一样。
+func breakerKeyLabel(k breakerKey) string {
+	if k.model == "" {
+		return "[全部模型]"
+	}
+	return k.model
 }
 
 // scopeKey 决定一次记录/熔断实际落在哪把键上。
@@ -591,12 +637,8 @@ func (t *Tracker) checkBreaker(k breakerKey, policy ChannelPolicy) (reason strin
 				s.halfOpenSince.Store(time.Now().UnixNano())
 			}
 		} else {
-			cooldown := policy.Breaker.CooldownSeconds
-			if cooldown <= 0 {
-				cooldown = 60
-			}
 			// 递增退避：连续第 n 次熔断的冷却 = 基础冷却 × min(n, escalation_cap)
-			cooldown *= s.escalationMultiplier(policy.Breaker)
+			cooldown := cooldownSecondsFor(s, policy.Breaker)
 			if time.Now().Unix()-s.openedAt.Load() >= cooldown {
 				// 进入半开状态
 				if s.state.CompareAndSwap(int32(breakerOpen), int32(breakerHalfOpen)) {

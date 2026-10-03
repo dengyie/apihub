@@ -196,6 +196,32 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 	}
 }
 
+func TestStreamStatus_IsNormalEnd_RequiresTerminal(t *testing.T) {
+	t.Parallel()
+
+	// 协议需要显式终止帧时：未收到终止标识的 EOF 属于异常截断
+	s1 := NewStreamStatus()
+	s1.RequireTerminal()
+	s1.SetEndReason(StreamEndReasonEOF, nil)
+	assert.False(t, s1.IsNormalEnd(), "expectsTerminal 时无 completed 的 EOF 属于非正常结束")
+	assert.True(t, s1.IsUpstreamStreamFault(), "expectsTerminal 时中途 EOF 属于上游流故障")
+
+	// 协议需要显式终止帧时：已收到完成标识（如 finish_reason: stop）但最后 EOF
+	s2 := NewStreamStatus()
+	s2.RequireTerminal()
+	s2.MarkCompleted()
+	s2.SetEndReason(StreamEndReasonEOF, nil)
+	assert.True(t, s2.IsNormalEnd(), "已完成标记的 EOF 属于正常结束")
+	assert.False(t, s2.IsUpstreamStreamFault(), "已完成标记的 EOF 不是上游流故障")
+
+	// 协议需要显式终止帧时：收到明确的 [DONE] 帧
+	s3 := NewStreamStatus()
+	s3.RequireTerminal()
+	s3.SetEndReason(StreamEndReasonDone, nil)
+	assert.True(t, s3.IsNormalEnd(), "Done 帧属于正常结束")
+	assert.False(t, s3.IsUpstreamStreamFault(), "Done 帧不是上游流故障")
+}
+
 func TestStreamStatus_IsNormalEnd_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus

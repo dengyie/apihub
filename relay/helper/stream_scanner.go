@@ -90,8 +90,18 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		return nil
 	}
 
-	// 无条件新建 StreamStatus
-	info.StreamStatus = relaycommon.NewStreamStatus()
+	// 初始化本次扫描的 StreamStatus；保留上层 adapter 已声明的协议期望（如 RequireTerminal）
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		} else {
+			expectsTerminal := info.StreamStatus.ExpectsTerminal()
+			info.StreamStatus = relaycommon.NewStreamStatus()
+			if expectsTerminal {
+				info.StreamStatus.RequireTerminal()
+			}
+		}
+	}
 
 	// 智能负载：跟踪本次请求的渠道状态。句柄由 controller 在每轮尝试开始时
 	// 创建并存入 context，这里复用同一个，使 inflight 计数对流式与非流式

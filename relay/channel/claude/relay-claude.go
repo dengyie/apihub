@@ -239,6 +239,10 @@ func countClaudeStreamBillableTools(c *gin.Context, info *relaycommon.RelayInfo,
 }
 
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
+		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final response frames", info.StreamStatus.Summary()))
+		return
+	}
 	if claudeInfo.Usage.PromptTokens == 0 {
 		//上游出错
 	}
@@ -299,19 +303,24 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
+	if info != nil {
+		if info.StreamStatus == nil {
+			info.StreamStatus = relaycommon.NewStreamStatus()
+		}
+		info.StreamStatus.RequireTerminal()
+	}
 	var err *types.NewAPIError
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
 		}
-	})); streamErr != nil {
-		return nil, streamErr
-	}
-	info.StreamStatus.RequireTerminal()
-	if err != nil {
-		return nil, err
-	}
+		})); streamErr != nil {
+			return nil, streamErr
+		}
+		if err != nil {
+			return nil, err
+		}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
 	return claudeInfo.Usage, nil
