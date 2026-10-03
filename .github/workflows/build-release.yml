@@ -1,0 +1,98 @@
+name: Build Release
+
+# 上游 release.yml 只在打 tag 时跑，且默认用 runner 的隐式架构（amd64）——本仓库的
+# 生产机 tebi 是 x86_64，而本地 Mac 是 arm64，两者一混就会把 aarch64 的二进制推上
+# x86_64，内核直接 Exec format error。这里把架构变成矩阵里的显式声明，并在上传
+# 产物之前校验 ELF e_machine，让「编错架构」在 CI 就红，而不是在生产炸。
+
+on:
+  push:
+    branches: [main, loadbalancer-v29.1]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 生产机 tebi：x86_64。这是唯一必须正确的产物。
+          - goarch: amd64
+            elf_machine: 62   # EM_X86_64
+          - goarch: arm64
+            elf_machine: 183  # EM_AARCH64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+
+      - name: Create frontend embed placeholder
+        run: |
+          mkdir -p web/dist
+          touch web/dist/index.html
+
+      - name: Build
+        id: build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          # 纯 Go 静态二进制：无需交叉 C 工具链，也就不会因为本地缺 toolchain 而
+          # 悄悄回退到宿主架构。
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          base="$(cat VERSION)"
+          sha="$(git rev-parse --short=9 HEAD)"
+          version="${base}+${sha}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          go build \
+            -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=${version}'" \
+            -o "new-api-${version}-linux-${GOARCH}"
+          ls -la "new-api-${version}-linux-${GOARCH}"
+
+      - name: Verify target architecture
+        # 上传产物之前必须证明 ELF 头里的 e_machine 就是矩阵声明的那个。
+        # 读取字节偏移 18..19（小端 u16）并与期望值比对，不依赖 file(1) 的措辞。
+        run: |
+          set -euo pipefail
+          bin="new-api-${{ steps.build.outputs.version }}-linux-${{ matrix.goarch }}"
+          # xargs 负责把 od 的多空格与换行规整成单个空格分隔的 "62 0"。
+          machine="$(od -An -tu1 -j 18 -N 2 "$bin" | xargs)"
+          echo "e_machine bytes: ${machine} (期望 ${{ matrix.elf_machine }} 0)"
+          if [ "$machine" != "${{ matrix.elf_machine }} 0" ]; then
+            echo "::error::架构不匹配：$bin 不是 ${{ matrix.goarch }}，拒绝上传"
+            exit 1
+          fi
+          file "$bin" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: new-api-linux-${{ matrix.goarch }}
+          path: new-api-${{ steps.build.outputs.version }}-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          files: new-api-${{ steps.build.outputs.version }}-linux-${{ matrix.goarch }}
