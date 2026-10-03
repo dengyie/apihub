@@ -644,10 +644,31 @@ func TestResponsesWebSocketReusesConnectionAndSettlesEachRequest(t *testing.T) {
 
 // Both transports must reach the same upstream target with the same
 // credential placement and settle identically for every supported channel type.
-func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
-	type upstreamTarget struct {
-		Path, Authorization, QueryKey string
+// upstreamTarget 记录上游**真的被连上**时看到的那一次请求：路径、两种鉴权
+// 载体。断言它就是在断言「请求确实到了上游」，而不是只断言客户端拿到了什么。
+type upstreamTarget struct {
+	Path, Authorization, QueryKey string
+}
+
+// awaitUpstreamTarget 带超时地取一次上游观测记录。
+//
+// 不能直接 `<-targets`：那个 channel 只在**上游真的被连上**时才有值。一旦
+// 前面的断言失败、请求根本没走到上游，裸接收就永久阻塞，测试从「2 秒内失败」
+// 变成「挂到 go test 的全局超时」—— 整包 418 个用例被一个 2 秒的问题拖成
+// 40 分钟，且日志里只剩一个 goroutine 栈，看不出是哪个断言先失败的。
+// 2026-10-03 追查 controller 包挂死时踩的就是这个。
+func awaitUpstreamTarget(t *testing.T, targets <-chan upstreamTarget) upstreamTarget {
+	t.Helper()
+	select {
+	case got := <-targets:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream was never contacted: no request arrived within 5s")
+		return upstreamTarget{}
 	}
+}
+
+func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
 	queryAuthRoute := dto.ChannelOtherSettings{AdvancedCustom: &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{
 		IncomingPath: "/v1/responses", UpstreamPath: "/upstream/responses",
 		Auth: &dto.AdvancedCustomRouteAuth{Type: dto.AdvancedCustomAuthTypeQuery, Name: "api_key", Value: "{api_key}"},
@@ -693,7 +714,7 @@ func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
 
 			require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"hi"}`)))
 			assert.Equal(t, "response.completed", readResponsesWSTestEvent(t, fixture.client)["type"])
-			assert.Equal(t, tc.want("upstream-first"), <-targets)
+			assert.Equal(t, tc.want("upstream-first"), awaitUpstreamTarget(t, targets))
 
 			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hi","stream":true}`))
 			require.NoError(t, err)
@@ -712,7 +733,7 @@ func TestResponsesWebSocketDialsNativeResponsesChannelTypes(t *testing.T) {
 				t.Fatal("HTTP request did not finish")
 			}
 			// The polling multi-key channel rotates to its second key for the HTTP request.
-			assert.Equal(t, tc.want("upstream-second"), <-targets)
+			assert.Equal(t, tc.want("upstream-second"), awaitUpstreamTarget(t, targets))
 			fixture.closeAndWait(t)
 			assertResponsesWSAccounting(t, fixture, []int{1000, 1000})
 		})

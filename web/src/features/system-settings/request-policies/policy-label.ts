@@ -64,6 +64,8 @@ export function policyLabel(t: TFunction, value: string): string {
       return t('Unchanged')
     case 'channel_disable_requested':
       return t('Channel disable requested')
+    case 'channel_disable_pending_corroboration':
+      return t('Channel disable awaiting corroboration')
     case 'key_disable_requested':
       return t('Current key disable requested')
     case 'off':

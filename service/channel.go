@@ -56,6 +56,9 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 func EnableChannel(channelId int, usingKey string, channelName string) bool {
 	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
 	if success {
+		// 恢复了就说明上一次那串「确定性失效」信号已被证伪（渠道又通了），
+		// 留着它们会让下一次真实故障第一次就顶到阈值，佐证因此失去意义。
+		loadbalancer.ResetCorroborationForChannel(channelId)
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
@@ -158,9 +161,20 @@ func DisableChannelForModel(channelError types.ChannelError, modelName string, r
 	NotifyRootUser(fmt.Sprintf("%s_model_%s", formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), modelName), subject, content)
 }
 
-func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
+// autoDisableVerdict 是一次「是否该把这条渠道永久摘出去」的判定结果。
+type autoDisableVerdict struct {
+	// Disable 为 true 时 Class 必有值，指明是哪条判据命中的。
+	Disable bool
+	Class   string
+	// ModelName 是这次实际打给上游的模型名，仅在 Class 为模型级判据时有意义。
+	ModelName string
+}
+
+// classifyAutoDisable 是 ShouldDisableChannel 的本体，**纯函数**：不碰任何
+// 全局状态、不计数、不写库。判定与计数必须分开，原因见 ShouldDisableChannel。
+func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdict {
 	if !common.AutomaticDisableChannelEnabled {
-		return false
+		return autoDisableVerdict{}
 	}
 	// 策略文件首次加载失败时，breaker_exempt 无从解析（IsBreakerExempt 会因
 	// !Enabled() 一律返回 false），兜底渠道会被静默摘出豁免名单。这里选择
@@ -168,23 +182,23 @@ func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
 	// 回来，两者的代价不对称。故障期间少一次自动禁用，换兜底链路不会被
 	// 一个 yaml 路径问题悄悄拆掉。
 	if !loadbalancer.PolicyReliable() {
-		return false
+		return autoDisableVerdict{}
 	}
 	// 兜底渠道豁免：本机 CPA 一旦被自动禁用就彻底失去退路，与熔断豁免
 	// 复用同一份判定（loadbalancer 的 breaker_exempt），避免两条路径口径漂移。
 	if loadbalancer.IsBreakerExempt(channelId) {
-		return false
+		return autoDisableVerdict{}
 	}
 	if err == nil {
-		return false
+		return autoDisableVerdict{}
 	}
 	// 客户端断开与空流墙钟耗尽不是渠道故障：即使以后有人去掉 skipRetry，
 	// 也不得据此自动禁用。空流本身靠连续计数熔断，不走自动禁用。
 	if types.IsClientAbortedError(err) {
-		return false
+		return autoDisableVerdict{}
 	}
 	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) {
-		return false
+		return autoDisableVerdict{}
 	}
 	// 「选不出渠道」是路由池状态，不是「这条凭据没有这个模型」。显式排除，
 	// 不依赖下面 IsUpstreamModelUnavailableError 的白名单恰好漏掉它 —— 那一层
@@ -192,27 +206,71 @@ func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
 	// 摘掉，且线上不会有任何报错。生产实测 #144 40 分钟成功 39 次、失败 7 次，
 	// 失败全是这一类。
 	if loadbalancer.IsRoutingExhaustedError(err) {
-		return false
+		return autoDisableVerdict{}
 	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。
 	if loadbalancer.IsUpstreamModelUnavailableError(err) {
-		return true
+		return autoDisableVerdict{Disable: true, Class: loadbalancer.CorroborationClassModelUnavailable}
 	}
 	if types.IsChannelError(err) {
-		return true
+		return autoDisableVerdict{Disable: true, Class: loadbalancer.CorroborationClassChannelError}
 	}
 	if types.IsSkipRetryError(err) {
-		return false
+		return autoDisableVerdict{}
 	}
 	if operation_setting.ShouldDisableByStatusCode(err.StatusCode) {
-		return true
+		return autoDisableVerdict{Disable: true, Class: loadbalancer.CorroborationClassStatusCode}
 	}
 
 	lowerMessage := strings.ToLower(err.Error())
 	search, _ := AcSearch(lowerMessage, operation_setting.AutomaticDisableKeywords, true)
-	return search
+	if search {
+		return autoDisableVerdict{Disable: true, Class: loadbalancer.CorroborationClassKeyword}
+	}
+	return autoDisableVerdict{}
+}
+
+// ShouldDisableChannel 只回答「这类错误该不该自动禁用渠道」，**不做计数**。
+//
+// 刻意保持纯函数：同一次上游失败在一条请求里会被评估两次 ——
+// controller/relay.go 先 RecordPolicyFailure（内含一次判定，用来写
+// RequestPolicy 的事件流），随后 processChannelError 又判定一次（真正执行
+// 禁用）。把佐证计数塞进这里，一次失败会被记成两次，阈值形同虚设。
+//
+// 真正的计数与阈值闸门在 ShouldDisableChannelCorroborated，且只允许从
+// service.ProcessChannelError 这一个咽喉点调用 —— 四条禁用路径
+// （relay.go 同步/任务提交、channel-test.go 测活、responses_websocket.go）
+// 全部汇流于此，在上游各判一次必然重复计数。
+func ShouldDisableChannel(channelId int, err *types.NewAPIError) bool {
+	return classifyAutoDisable(channelId, err).Disable
+}
+
+// ShouldDisableChannelCorroborated 在 ShouldDisableChannel 判「该禁」之后，
+// 再要求同一 (渠道, 模型, 判据类别) 在窗口内重复到阈值，才承认这是
+// 确定性失效。理由与阈值见 loadbalancer/corroboration.go。
+//
+// 未达阈值时返回 false —— 调用方**不得**因此把渠道摘出去。熔断器仍在按
+// FailureThreshold 熔这条渠道，所以没到阈值的窗口不是「完全不管」，
+// 只是把不可逆动作换成可自愈的那个。
+//
+// 只允许从 ProcessChannelError 调用：该函数是四条禁用路径的唯一汇流点，
+// 在别处计数都会与它重复（原因见 ShouldDisableChannel 的注释）。
+func ShouldDisableChannelCorroborated(channelId int, modelName string, err *types.NewAPIError) bool {
+	verdict := classifyAutoDisable(channelId, err)
+	if !verdict.Disable {
+		return false
+	}
+	ready, count := loadbalancer.RecordAutoDisableSignal(channelId, modelName, verdict.Class)
+	if !ready && count == 1 {
+		// 只记首次：同一个模型连续失败几百次时，日志里出现一条就够定位，
+		// 几百条会把真正的信号淹掉（与 ModelExhaustion 告警同一个理由）。
+		threshold := loadbalancer.GetPolicy().Default.Breaker.AutoDisableCorroborationThresholdOrDefault()
+		common.SysLog(fmt.Sprintf("channel #%d model %q hit auto-disable rule (%s) 1/%d, holding back disable; breaker still applies",
+			channelId, modelName, verdict.Class, threshold))
+	}
+	return ready
 }
 
 // ShouldEnableChannel 已并入 controller.decideChannelHealthAction（唯一调用方，

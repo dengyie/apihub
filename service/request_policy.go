@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -117,10 +118,21 @@ func RecordPolicyFailure(c *gin.Context, channelID int, err *types.NewAPIError, 
 	}
 	state.AddEvent(event)
 	event.Decision, event.Health = decision, "unchanged"
-	if source != "local" && c.GetBool("auto_ban") && ShouldDisableChannel(channelID, err) {
-		event.Health = "channel_disable_requested"
-		if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
-			event.Health = "key_disable_requested"
+	// 本函数跑在 ProcessChannelError **之前**，而禁用是否真的执行由后者的佐证
+	// 闸门决定（四条路径都是先 RecordPolicyFailure 再 processChannelError）。
+	// 这里用只读的 Peek 提前知道结论，否则标签会说「已请求禁用」而渠道根本没被
+	// 禁用 —— 那正是这个特性当初要消灭的那类「日志与事实不符」。
+	if source != "local" && c.GetBool("auto_ban") {
+		if verdict := classifyAutoDisable(channelID, err); verdict.Disable {
+			modelName := c.GetString(string(constant.ContextKeyOriginalModel))
+			if loadbalancer.PeekAutoDisableCorroboration(channelID, modelName, verdict.Class) {
+				event.Health = "channel_disable_requested"
+				if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
+					event.Health = "key_disable_requested"
+				}
+			} else {
+				event.Health = "channel_disable_pending_corroboration"
+			}
 		}
 	}
 	state.AddEvent(event)

@@ -173,6 +173,34 @@ type BreakerPolicy struct {
 	// 默认 1800。必须有：客户端重试风暴会在几秒内打出上百次同类 503，
 	// 不节流的日志只会把真正的信号淹掉。
 	ModelExhaustionAlertCooldownSeconds int64 `yaml:"model_exhaustion_alert_cooldown_seconds"`
+	// AutoDisableCorroborationThreshold 自动禁用所需的佐证次数，默认 3。
+	//
+	// 自动禁用**不可逆**（要靠测活或人工才回来），而判据是启发式的：四条
+	// 判据里两条靠对上游自由文本做子串匹配。同一套系统里可逆的熔断要求
+	// 连续 failure_threshold 次失败，不可逆的禁用却只要命中一次 —— 这个
+	// 不对称是反的。阈值把「一次措辞巧合」挡在不可逆动作之外，代价只是
+	// 多浪费几轮换渠道重试。
+	//
+	// 设为 1 即完全退回 v29.19 及更早的行为，用于出问题时即时止血。
+	AutoDisableCorroborationThreshold int `yaml:"auto_disable_corroboration_threshold"`
+	// AutoDisableCorroborationWindowSeconds 上述计数窗口（秒），默认 600。
+	AutoDisableCorroborationWindowSeconds int64 `yaml:"auto_disable_corroboration_window_seconds"`
+}
+
+// AutoDisableCorroborationThresholdOrDefault 返回自动禁用的佐证阈值，默认 3。
+func (b BreakerPolicy) AutoDisableCorroborationThresholdOrDefault() int {
+	if b.AutoDisableCorroborationThreshold <= 0 {
+		return 3
+	}
+	return b.AutoDisableCorroborationThreshold
+}
+
+// AutoDisableCorroborationWindowSecondsOrDefault 返回佐证计数窗口（秒），默认 600。
+func (b BreakerPolicy) AutoDisableCorroborationWindowSecondsOrDefault() int64 {
+	if b.AutoDisableCorroborationWindowSeconds <= 0 {
+		return 600
+	}
+	return b.AutoDisableCorroborationWindowSeconds
 }
 
 // ModelExhaustionThresholdOrDefault 返回告警阈值，未配置时为 5。

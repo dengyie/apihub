@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/loadbalancer"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -910,6 +911,32 @@ type channelTestSummary struct {
 	Enabled   int `json:"enabled"`
 }
 
+// healthCheckFollowupModel 返回失败后的复核模型名，第二个返回值为 false 表示
+// 不复核。
+//
+// 只在**失败之后**才复核，而不是每条渠道都多测一个模型：健康渠道占绝大多数
+// （生产 206 条、status=3 只有 3 条），无差别多测会把一轮 scheduled_all 的
+// 上游调用量翻倍，而收益只在失败时才可能兑现。失败后再测，代价只落在本来
+// 就已经坏掉的渠道上。
+//
+// 刻意跳过第一次测的那个模型：同一模型再测一次不构成新证据（同一条渠道、
+// 同一模型、几乎同一时刻），只会把探针成本翻倍。
+func healthCheckFollowupModel(channel *model.Channel, firstModel string) (string, bool) {
+	models := channel.GetModels()
+	if len(models) < 2 {
+		return "", false
+	}
+	// 从 models[1] 起找：models[0] 正是 testChannel 优先测的那个
+	for _, m := range models[1:] {
+		trimmed := strings.TrimSpace(m)
+		if trimmed == "" || trimmed == firstModel {
+			continue
+		}
+		return trimmed, true
+	}
+	return "", false
+}
+
 func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, testUserID int, allowDisable bool, disableThreshold int64) channelTestSummary {
 	summary := channelTestSummary{}
 	isChannelEnabled := channel.Status == common.ChannelStatusEnabled
@@ -922,10 +949,44 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 
 	summary.Tested++
 
-	shouldBanChannel := false
+firstModel := common.GetContextKeyString(result.context, constant.ContextKeyOriginalModel)
+
+	// 复核：第一个模型失败时，再换一个模型打一次，用来区分「这条渠道死了」
+	// 与「恰好只有这一个模型坏了」。
+	//
+	// 这个区分是自动禁用范围的分水岭。只测一个模型时，「这个模型 404」与
+	// 「这条渠道的凭据失效」在证据上完全一样 —— 生产实测 #145 就是这样：
+	// 10 个模型只测过 models[0]，那一次返回
+	// "The model service rejected this request"，整条渠道被摘，另外 9 个
+	// 从未被测过的模型陪葬。复核一次就足以把这个歧义消掉。
+	var followup *testResult
+	if result.newAPIError != nil {
+		if m, ok := healthCheckFollowupModel(channel, firstModel); ok {
+			extra := testChannel(ctx, channel, testUserID, m, "", shouldUseStreamForAutomaticChannelTest(channel))
+			summary.Tested++
+			if ctx.Err() == nil {
+				followup = &extra
+			}
+		}
+	}
+	// 复核通过 ⇒ 这条渠道整体是活的，无论第一个模型报了什么。
+	// 此时只按模型降级处置，绝不摘整条渠道。
+	followupPassed := followup != nil && followup.newAPIError == nil && followup.localErr == nil
+
+	// firstError 是「第一个模型的原始失败」。复核通过时它仍然是本轮唯一有
+	// 价值的失败观测（另一个模型通了，恰恰说明不是渠道级），按模型处置必须
+	// 用它 —— 用被清空后的 newAPIError 会把这次失败整个丢掉。
+	firstError := result.newAPIError
+
 	newAPIError := result.newAPIError
+	if followupPassed {
+		// 渠道整体可用 ⇒ 本轮判定为成功，不给任何禁用留口子
+		newAPIError = nil
+	}
+
+	shouldBanChannel := false
 	if newAPIError != nil {
-		shouldBanChannel = service.ShouldDisableChannel(channel.Id, result.newAPIError)
+		shouldBanChannel = service.ShouldDisableChannel(channel.Id, newAPIError)
 	}
 
 	// 响应时长阈值只在「允许禁用」的测试模式下生效（scheduled_all / auto_ban_only）。
@@ -935,7 +996,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	// 5~20 秒，阈值标在 60s（见 common.ChannelDisableThreshold）之后，这一豁免
 	// 仍然必要：一轮恢复不该因为「生成得慢」把探针判成失败。慢渠道的真实保护
 	// 在熔断器（TTFT 超时 → 按模型熔断）与请求预算，不在这里。
-	if allowDisable && common.AutomaticDisableChannelEnabled && !shouldBanChannel {
+	if allowDisable && common.AutomaticDisableChannelEnabled && !shouldBanChannel && newAPIError != nil {
 		if milliseconds > disableThreshold {
 			err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
 			newAPIError = types.NewOpenAIError(err, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)
@@ -943,8 +1004,16 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 		}
 	}
 
+	// LocalErr 也要跟着复核结论走：复核通过说明渠道整体可用，若仍把第一个
+	// 模型的 localErr 传下去，act.Enable 的三条件之一（LocalErr == nil）不成立，
+	// 一条本可被自动复活的渠道会永远卡在 status=3。
+	healthLocalErr := result.localErr
+	if followupPassed {
+		healthLocalErr = nil
+	}
+
 	act := decideChannelHealthAction(decideChannelHealthInput{
-		LocalErr:         result.localErr,
+		LocalErr:         healthLocalErr,
 		NewAPIError:      newAPIError,
 		ShouldBan:        shouldBanChannel,
 		AllowDisable:     allowDisable,
@@ -956,13 +1025,35 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 
 	if act.Succeeded {
 		summary.Succeeded++
+		// 测通了，这些模型上攒的「确定性失效」信号已被证伪。
+		// 不清的话，同一条渠道隔一阵子再坏时会在第一次失败就顶到阈值被摘掉，
+		// 佐证就退化成「一次即禁」—— 恰好是它要防的失败模式。
+		if firstModel != "" {
+			loadbalancer.ResetCorroboration(channel.Id, firstModel)
+		}
+		if followup != nil {
+			if m := common.GetContextKeyString(followup.context, constant.ContextKeyOriginalModel); m != "" {
+				loadbalancer.ResetCorroboration(channel.Id, m)
+			}
+		}
 	} else {
 		summary.Failed++
 	}
 
 	if act.Ban {
+		// 只有「两个模型都失败」或「失败被判为渠道级」才会走到这里 ——
+		// 复核通过时 newAPIError 已被清空，act.Ban 必为 false。摘整条渠道
+		// 到这一步才有证据支撑。
 		processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, nil)
 		summary.Disabled++
+	} else if followupPassed && firstError != nil && result.context != nil {
+		// 单模型失败、渠道整体可用：只处置那个模型，绝不连坐整条渠道。
+		//
+		// 仍要交给 processChannelError 而不是直接写 abilities：它内部按
+		// isModelScopedAutoDisable 决定范围，判为模型级才摘模型，仍是渠道级
+		// 时也会被佐证闸门（loadbalancer.RecordAutoDisableSignal）挡下 N 次。
+		// 这里绕过它就等于把 v29.15 与 v29.20 的两道保护一起跳过了。
+		processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), firstError, nil)
 	}
 
 	if act.Enable {

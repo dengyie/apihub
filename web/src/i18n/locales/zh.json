@@ -991,6 +991,7 @@
     "Channel created successfully": "渠道创建成功",
     "Channel deleted successfully": "渠道删除成功",
     "Channel disable requested": "已请求停用渠道",
+    "Channel disable awaiting corroboration": "停用渠道等待佐证",
     "Channel disabled successfully": "渠道禁用成功",
     "Channel enabled successfully": "渠道启用成功",
     "Channel error": "渠道错误",

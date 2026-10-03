@@ -19,6 +19,15 @@ import (
 
 func TestStreamBrokenRetryDecisionAndBreakerTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// SetPolicy 与 GlobalTracker 都是包级全局状态，不还原就留给后续所有用例。
+	//
+	// 这个测试打开的 Enabled 会让 selectResponsesWSChannel 走进「选不出渠道」
+	// 的错误分支，那条分支调 i18n.T；在没 Init 过 i18n 的测试环境里那会空指针
+	// panic，panic 被 recover 成 error 事件，于是后面几个 WebSocket 用例连环
+	// 失败，最后卡在一个无超时的 `<-targets` 上 —— 整包测试挂死 40 分钟。
+	// 2026-10-03 追查这个 hang 时定位到的根因就是这里缺失的还原。
+	previousPolicy := loadbalancer.GetPolicy()
+	t.Cleanup(func() { loadbalancer.SetPolicy(previousPolicy) })
 	policy := loadbalancer.DefaultPolicy()
 	policy.Enabled = true
 	loadbalancer.SetPolicy(policy)
@@ -28,6 +37,9 @@ func TestStreamBrokenRetryDecisionAndBreakerTrip(t *testing.T) {
 	// Start from a healthy channel: a successful attempt resets the counters
 	// and closes a half-open breaker.
 	tracker.Begin(channelID, testModel).End(false, false)
+	// 同理，下面 TripBreaker 留下的开路状态也必须抹掉，否则后续用例会
+	// 继承一个「熔断中」的渠道。
+	t.Cleanup(func() { tracker.Begin(channelID, testModel).End(false, false) })
 
 	brokenErr := &loadbalancer.StreamBrokenError{
 		ChannelID: channelID,

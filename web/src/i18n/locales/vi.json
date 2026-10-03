@@ -991,6 +991,7 @@
     "Channel created successfully": "Tạo kênh thành công",
     "Channel deleted successfully": "Xóa kênh thành công",
     "Channel disable requested": "Đã yêu cầu vô hiệu hóa kênh",
+    "Channel disable awaiting corroboration": "Vô hiệu hóa kênh đang chờ xác nhận",
     "Channel disabled successfully": "Kênh đã bị vô hiệu hóa thành công",
     "Channel enabled successfully": "Kênh đã được bật thành công",
     "Channel error": "Lỗi kênh",

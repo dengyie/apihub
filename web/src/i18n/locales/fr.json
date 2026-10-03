@@ -991,6 +991,7 @@
     "Channel created successfully": "Canal créé avec succès",
     "Channel deleted successfully": "Canal supprimé avec succès",
     "Channel disable requested": "Désactivation du canal demandée",
+    "Channel disable awaiting corroboration": "Désactivation du canal en attente de corroboration",
     "Channel disabled successfully": "Canal désactivé avec succès",
     "Channel enabled successfully": "Canal activé avec succès",
     "Channel error": "Erreur de canal",

@@ -991,6 +991,7 @@
     "Channel created successfully": "Канал успешно создан",
     "Channel deleted successfully": "Канал успешно удалён",
     "Channel disable requested": "Запрошено отключение канала",
+    "Channel disable awaiting corroboration": "Отключение канала ожидает подтверждения",
     "Channel disabled successfully": "Канал успешно отключён",
     "Channel enabled successfully": "Канал успешно включён",
     "Channel error": "Ошибка канала",

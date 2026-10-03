@@ -62,6 +62,24 @@ func Init() error {
 
 // GetLocalizer returns a localizer for the specified language
 func GetLocalizer(lang string) *i18n.Localizer {
+	// bundle 为 nil 说明 Init 失败或尚未调用。此时**必须**返回 nil，而不是
+	// 造一个 Localizer{bundle: nil}：
+	//
+	// go-i18n 的 Localizer.Localize 会无判空地解引用 l.bundle.matcher，
+	// 于是一次「翻译文件加载失败」会变成之后每一次翻译调用上的空指针 panic，
+	// 而且 Translate 里那个 `err != nil` 的降级分支根本走不到 —— panic
+	// 发生在返回 err 之前。
+	//
+	// 这不是假设：main.go 对 Init 失败的处理是记一条日志后继续启动，
+	// 注释写着「i18n is not critical」。那句话要成立，调用方就必须能优雅
+	// 降级，而 relay.selectResponsesWSChannel 等处是直接调 i18n.T 的。
+	mu.RLock()
+	b := bundle
+	mu.RUnlock()
+	if b == nil {
+		return nil
+	}
+
 	lang = normalizeLang(lang)
 
 	mu.RLock()
@@ -81,7 +99,7 @@ func GetLocalizer(lang string) *i18n.Localizer {
 		return loc
 	}
 
-	loc = i18n.NewLocalizer(bundle, lang, DefaultLang)
+	loc = i18n.NewLocalizer(b, lang, DefaultLang)
 	localizers[lang] = loc
 	return loc
 }
@@ -95,6 +113,11 @@ func T(c *gin.Context, key string, args ...map[string]any) string {
 // Translate translates a message key for the specified language
 func Translate(lang, key string, args ...map[string]any) string {
 	loc := GetLocalizer(lang)
+	if loc == nil {
+		// bundle 未初始化：降级到原始 key，和下面「翻译不存在」的降级一致。
+		// 一条英文 key 远好过一次空指针 panic —— 后者会把整条错误路径变成 500。
+		return key
+	}
 
 	config := &i18n.LocalizeConfig{
 		MessageID: key,

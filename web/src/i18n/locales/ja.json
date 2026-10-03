@@ -991,6 +991,7 @@
     "Channel created successfully": "チャネルが正常に作成されました",
     "Channel deleted successfully": "チャネルが正常に削除されました",
     "Channel disable requested": "チャネル無効化を要求",
+    "Channel disable awaiting corroboration": "チャネル無効化は裏付け待ち",
     "Channel disabled successfully": "チャネルが正常に無効化されました",
     "Channel enabled successfully": "チャネルが正常に有効化されました",
     "Channel error": "チャネルエラー",
