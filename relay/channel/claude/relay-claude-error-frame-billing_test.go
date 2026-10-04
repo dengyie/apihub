@@ -45,11 +45,11 @@ func TestClaudeErrorFrameOnlyIsNotBilled(t *testing.T) {
 	body := "event: error\n" +
 		`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}` + "\n\n"
 
-	_, newAPIError := ClaudeStreamHandler(c, &http.Response{
+	usage, newAPIError := ClaudeStreamHandler(c, &http.Response{
 		Body: io.NopCloser(bytes.NewReader([]byte(body))),
 	}, info)
 
 	require.NotNil(t, newAPIError)
-	assert.Nil(t, info.InterruptedStreamUsage,
+	assert.Nil(t, usage,
 		"只收到一个上游错误帧、没有任何产出内容，不得按整段 prompt 计费")
 }

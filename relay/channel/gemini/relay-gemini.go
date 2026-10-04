@@ -253,11 +253,10 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}))
 
 	if !hasBillableUsageMetadata {
-		if info.ReceivedResponseCount > 0 {
-			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		} else {
-			usage = &dto.Usage{}
-		}
+		// 无上游 usage 帧时 prompt 只能靠本地估算。原来用 ReceivedResponseCount > 0
+		// 当判据，但那是「收到了一个帧」而不是「客户端拿到了内容」—— 上游错误同样
+		// 以数据帧送达。改用与其它 handler 相同的判据。
+		usage = service.DeliveredTextUsage(c, info, responseText.String())
 		if imageCount != 0 && usage.CompletionTokens == 0 {
 			usage.CompletionTokens = imageCount * 1400
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

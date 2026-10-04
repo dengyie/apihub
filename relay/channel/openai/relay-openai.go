@@ -205,7 +205,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if !containStreamUsage {
-		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		usage = service.DeliveredTextUsage(c, info, responseTextBuilder.String())
 		usage.CompletionTokens += toolCount * 7
 	}
 

@@ -2,6 +2,7 @@ package xai
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,4 +70,42 @@ func TestXaiErrorFrameOnlyIsNotBilled(t *testing.T) {
 	require.NotNil(t, newAPIError)
 	assert.Nil(t, usage,
 		"只收到一个错误帧 = 客户端什么都没拿到，不该按 8000 token 的 prompt 计费")
+}
+
+// 客户端在首字到达前放弃，上游一个帧都没发。xAI 这条路径的计费防线是 handler 自带
+// 的 `!IsNormalEnd()` 后置检查（断流直接返回错误），本用例锁住这个结果不被回归成
+// 「按本地估算收整段 prompt」。
+//
+// 生产上同形状的记录确实存在：grok-4.7 在 10-04 05:20 / 05:26 两条，每条按 11 万
+// token 收 prompt、输出为 0、带 frt=-1000（首字从未到达），合计 22 万额度。
+func TestXaiClientAbortBeforeFirstTokenIsNotBilled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cancel() // 客户端已经走了
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "grok-4.7",
+		RelayFormat:     types.RelayFormatOpenAI,
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "grok-4.7"},
+	}
+	info.SetEstimatePromptTokens(110873)
+
+	usage, newAPIError := xAIStreamHandler(c, info, &http.Response{
+		Body: io.NopCloser(bytes.NewReader(nil)),
+	})
+
+	// xAI handler 自带 `!IsNormalEnd()` 的后置检查，client abort 会走错误出口返回
+	// 502 StreamBrokenError —— 由 controller/relay.go 的 IsClientAbort 分支改写成
+	// 499（客户端断开不计渠道故障、不熔断、不自动禁用）。所以这条路径本来就不会
+	// 计费，本用例锁的是「usage 必须为空」这个结果，而不是 502 本身。
+	require.NotNil(t, newAPIError)
+	assert.Nil(t, usage, "首字前放弃 = 上游没生成也没计费，不能按本地估算收用户 110873 token 的钱")
 }

@@ -42,11 +42,11 @@ func TestOaiErrorFrameOnlyIsNotBilled(t *testing.T) {
 
 	body := "data: {\"error\":{\"message\":\"upstream overloaded\",\"type\":\"server_error\"}}\n\n"
 
-	_, newAPIError := OaiStreamHandler(c, info, &http.Response{
+	usage, newAPIError := OaiStreamHandler(c, info, &http.Response{
 		Body: io.NopCloser(bytes.NewReader([]byte(body))),
 	})
 
 	require.NotNil(t, newAPIError)
-	assert.Nil(t, info.InterruptedStreamUsage,
+	assert.Nil(t, usage,
 		"只收到一个上游错误帧、没有任何产出内容，不得按整段 prompt 计费")
 }

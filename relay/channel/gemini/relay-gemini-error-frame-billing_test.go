@@ -28,11 +28,11 @@ func TestGeminiNoContentFrameIsNotBilled(t *testing.T) {
 	body.WriteString("data: " + string(frame) + "\n")
 	resp.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
 
-	_, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
 		return true
 	})
 
 	require.NotNil(t, newAPIError, "没有终止标记的零内容流应当判为断流")
-	assert.Nil(t, info.InterruptedStreamUsage,
+	assert.Nil(t, usage,
 		"只收到一个零内容帧、没有任何产出，不得按整段 prompt 计费")
 }
