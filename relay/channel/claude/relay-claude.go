@@ -322,17 +322,17 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 			sr.Stop(err)
 		}
 	})); streamErr != nil {
-		// 断流：客户端已经收到了中断前的正文。usage 必须交给 controller 在整轮
-		// 重试失败后结算，否则这一次请求白送 —— claude_handler 看到 err != nil
-		// 就直接 return，走不到 PostTextConsumeQuota。
+		// 断流：客户端已经收到了中断前的正文，这一段用量必须结算，否则白送。
+		// usage 连同错误一起返回，由调用方统一转交 controller；早退丢掉它，
+		// claude_handler 看到 err != nil 就直接 return，走不到
+		// PostTextConsumeQuota。断流时末帧的 usage 往往没到，先按已累积的正文补齐。
 		//
-		// 但「收到一个帧」不等于「收到内容」：上游错误也是以数据帧送达的，而
-		// ResponseText2Usage 会按 GetEstimatePromptTokens() 把空产出估成整段
-		// prompt —— 那样一次失败的请求反而收用户一遍全款。判据必须是真正累积到的
-		// 正文（ResponseText 含 text 与 thinking 增量）。
+		// 判据是真正累积到的正文而非「收到了帧」：上游错误也是以数据帧送达的，
+		// 而空产出会被估成整段 prompt —— 那等于给一次失败的请求收一遍全款。
+		// ResponseText 同时含 text 与 thinking 增量。
 		if claudeInfo.ResponseText.Len() > 0 {
 			fillMissingClaudeStreamUsage(c, info, claudeInfo)
-			info.RecordInterruptedUsage(claudeInfo.Usage)
+			return claudeInfo.Usage, streamErr
 		}
 		return nil, streamErr
 	}
@@ -342,7 +342,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		// `ReceivedResponseCount == 0 && HasErrors()` 条件），错误只在这里兜住。
 		if claudeInfo.ResponseText.Len() > 0 {
 			fillMissingClaudeStreamUsage(c, info, claudeInfo)
-			info.RecordInterruptedUsage(claudeInfo.Usage)
+			return claudeInfo.Usage, err
 		}
 		return nil, err
 	}

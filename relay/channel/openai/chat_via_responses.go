@@ -119,6 +119,8 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			break
 		}
 	}
+	// 这个 handler 是「攒完再发」：出错时整个响应体还没写出去，客户端一个字节都
+	// 没拿到，所以返回 nil 不计费是对的 —— 与流式 handler 的断流语义不同。
 	if streamErr != nil {
 		return nil, streamErr
 	}
@@ -308,16 +310,16 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 		}
 	})); streamErr != nil {
-		return nil, streamErr
+		return interruptedStreamUsage(c, info, state), streamErr
 	}
 
 	if streamErr != nil {
-		return nil, streamErr
+		return interruptedStreamUsage(c, info, state), streamErr
 	}
 
 	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final response frames", info.StreamStatus.Summary()))
-		return nil, types.NewErrorWithStatusCode(
+		return interruptedStreamUsage(c, info, state), types.NewErrorWithStatusCode(
 			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
 			types.ErrorCodeBadResponseBody,
 			http.StatusBadGateway,

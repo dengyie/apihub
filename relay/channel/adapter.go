@@ -26,6 +26,20 @@ type Adaptor interface {
 	ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error)
 	ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error)
 	DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error)
+
+	// DoResponse 出错时必须连同已交付部分的 usage 一起返回，不能返回 nil。
+	//
+	// 流式请求在断流前已经把内容写给了客户端，上游也按它计费了；调用方看到
+	// err != nil 就直接 return，把 usage 丢掉就等于这一次请求白送。调用方拿到
+	// 的 usage 会转交 controller，在整轮重试失败后统一结算。
+	//
+	// 反过来，「收到了帧」不等于「收到了内容」：上游错误同样以数据帧送达，而按
+	// 空产出估算会把这次失败按整段 prompt 收一遍全款。所以：**只有在确实产出过
+	// 内容时才返回非 nil usage，否则返回 nil**（不计费，与非流式路径的失败请求
+	// 保持一致）。
+	//
+	// 缓冲型 handler 例外：它攒完整个响应才写给客户端，出错时客户端什么都没拿到，
+	// 返回 nil 才是对的。
 	DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError)
 	GetModelList() []string
 	GetChannelName() string

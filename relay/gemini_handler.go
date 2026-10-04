@@ -148,6 +148,10 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
+		// 断流时 handler 会连同错误一起返回已累积的用量；早退会把它丢掉，
+		// 于是客户端已经拿到的输出白送。统一在这里转交，controller 在整轮重试
+		// 失败后结算。handler 返回 nil 表示没有产出，不计费。
+		ForwardInterruptedUsage(info, usage)
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}
@@ -251,6 +255,10 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 
 	usage, openaiErr := adaptor.DoResponse(c, resp.(*http.Response), info)
 	if openaiErr != nil {
+		// 断流时 handler 会连同错误一起返回已累积的用量；早退会把它丢掉，
+		// 于是客户端已经拿到的输出白送。统一在这里转交，controller 在整轮重试
+		// 失败后结算。handler 返回 nil 表示没有产出，不计费。
+		ForwardInterruptedUsage(info, usage)
 		service.ResetStatusCode(openaiErr, statusCodeMappingStr)
 		return openaiErr
 	}

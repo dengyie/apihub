@@ -73,6 +73,10 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		// 断流时 handler 会连同错误一起返回已累积的用量；早退会把它丢掉，
+		// 于是客户端已经拿到的输出白送。统一在这里转交，controller 在整轮重试
+		// 失败后结算。handler 返回 nil 表示没有产出，不计费。
+		ForwardInterruptedUsage(info, usage)
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError

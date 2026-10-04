@@ -168,7 +168,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			sr.Stop(err)
 		}
 	})); streamErr != nil {
-		return nil, streamErr
+		return interruptedImageUsage(usage, completedImages), streamErr
 	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the

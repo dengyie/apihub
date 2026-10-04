@@ -149,24 +149,21 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})); streamErr != nil {
-		// 断流：客户端已经收到了中断前的正文。usage 必须交给 controller 在整轮
-		// 重试失败后结算，否则这一次请求白送 —— compatible_handler 看到
-		// err != nil 就直接 return，走不到 PostTextConsumeQuota。
+		// 断流：客户端已经收到了中断前的正文，这一段用量必须结算，否则白送。
+		// usage 连同错误一起返回，由调用方统一转交 controller；早退丢掉它，
+		// compatible_handler 看到 err != nil 就直接 return，走不到
+		// PostTextConsumeQuota。末帧的 usage 帧在断流时通常也没到，所以跟成功
+		// 路径的兜底一样，从已累积的正文估算。
 		//
-		// 末帧的 usage 帧在断流时通常也没到，所以这里跟成功路径的兜底一样，从
-		// 已累积的正文估算。
-		//
-		// 但「收到一个帧」不等于「收到内容」：上游错误也是以数据帧送达的，而
-		// ResponseText2Usage 会按 GetEstimatePromptTokens() 把空产出估成整段
-		// prompt —— 那样一次失败的请求反而收用户一遍全款。判据用真正累积到的
-		// 产出：responseTextBuilder 同时收了正文、reasoning 与工具名/参数，
-		// 所以它非空即代表客户端确实拿到了可计费内容。
-		if responseTextBuilder.Len() > 0 {
-			interrupted := service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		// 判据是真正累积到的产出而非「收到了帧」：上游错误同样以数据帧送达，
+		// 而空产出会被估成整段 prompt —— 那等于给一次失败的请求收一遍全款。
+		// responseTextBuilder 同时收了正文、reasoning 与工具名/参数，非空即代表
+		// 客户端确实拿到了可计费内容。
+		interrupted := service.InterruptedTextUsage(c, info, responseTextBuilder.String())
+		if interrupted != nil {
 			interrupted.CompletionTokens += toolCount * 7
-			info.RecordInterruptedUsage(interrupted)
 		}
-		return nil, streamErr
+		return interrupted, streamErr
 	}
 
 	info.StreamStatus.RequireTerminal()

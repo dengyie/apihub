@@ -269,25 +269,23 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	if scanErr != nil {
-		// 断流：客户端已经收到了中断前的输出，上游也已按它计费。usage 必须交给
-		// controller 在整轮重试失败后结算，否则这一次请求白送 —— 调用方
-		// （compatible_handler / gemini_handler）看到 err != nil 就直接 return，
-		// 根本走不到 PostTextConsumeQuota。
+		// 断流：客户端已经收到了中断前的输出，上游也已按它计费，必须结算，否则
+		// 这一次请求白送。usage 连同错误一起返回，由调用方统一转交 controller。
 		//
 		// 判据是真正累积到的产出而非「收到了帧」：上游错误同样以数据帧送达，而
-		// 空产出会被 ResponseText2Usage 按 GetEstimatePromptTokens() 估成整段
-		// prompt，等于给一次失败的请求收一遍全款。图片也算产出，所以带上 imageCount。
+		// 空产出会被估成整段 prompt，等于给一次失败的请求收一遍全款。图片也算
+		// 产出，所以带上 imageCount。
 		if responseText.Len() > 0 || imageCount != 0 {
-			info.RecordInterruptedUsage(usage)
+			return usage, scanErr
 		}
 		return nil, scanErr
 	}
 
 	if streamErr != nil {
 		if responseText.Len() > 0 || imageCount != 0 {
-			info.RecordInterruptedUsage(usage)
+			return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
-		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("Gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))

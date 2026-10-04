@@ -19,8 +19,9 @@ import (
 // chat/completions 流的收尾标记是 choices[].finish_reason（或 data: [DONE]）。
 // 两者都没有就 EOF，在本函数声明的 RequireTerminal 下就是断流 → StreamBrokenError。
 //
-// 断流时最后一帧的 usage 常常也没到，OaiStreamHandler 于是 `return nil, streamErr`
-// 把累积的正文丢掉；compatible_handler 看到 err != nil 直接 return，走不到
+// 断流时最后一帧的 usage 常常也没到，OaiStreamHandler 于是按已累积的正文估算
+// 一个 usage，**连同错误一起返回**；调用方拿到后转交 controller 结算。若这里
+// 返回 nil，compatible_handler 看到 err != nil 直接 return，走不到
 // PostTextConsumeQuota —— 客户端拿到了整段输出却不用付钱。
 func oaiTruncatedStream(t *testing.T) (*gin.Context, *relaycommon.RelayInfo, *http.Response) {
 	t.Helper()
@@ -52,19 +53,19 @@ func oaiTruncatedStream(t *testing.T) (*gin.Context, *relaycommon.RelayInfo, *ht
 func TestOaiTruncatedStreamKeepsInterruptedUsage(t *testing.T) {
 	c, info, resp := oaiTruncatedStream(t)
 
-	_, newAPIError := OaiStreamHandler(c, info, resp)
+	usage, newAPIError := OaiStreamHandler(c, info, resp)
 
 	require.NotNil(t, newAPIError, "本用例的前提就是流确实断了")
-	require.NotNil(t, info.InterruptedStreamUsage,
-		"断流时必须把已累积的用量交给 controller 结算，否则客户端白拿一次输出")
-	assert.Greater(t, info.InterruptedStreamUsage.CompletionTokens, 0,
+	require.NotNil(t, usage,
+		"断流时必须把已累积的用量连同错误一起返回，由调用方转交 controller 结算，否则客户端白拿一次输出")
+	assert.Greater(t, usage.CompletionTokens, 0,
 		"已经送达客户端的文本量必须体现在结算里")
-	assert.Greater(t, info.InterruptedStreamUsage.TotalTokens, 0)
+	assert.Greater(t, usage.TotalTokens, 0)
 }
 
 // TestOaiEmptyFailedStreamIsNotBilled 一无所获的失败不该产生账单。
 //
-// 反向守卫：InterruptedStreamUsage 只在客户端确实收到过东西时才挂。纯失败按 0
+// 反向守卫：返回的 usage 只在客户端确实收到过东西时才非 nil。纯失败按 0
 // 计费才对 —— 否则上游反复 5xx 拖到重试耗尽，反而凭空收用户钱。
 func TestOaiEmptyFailedStreamIsNotBilled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -82,10 +83,10 @@ func TestOaiEmptyFailedStreamIsNotBilled(t *testing.T) {
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-5.1"},
 	}
 
-	_, newAPIError := OaiStreamHandler(c, info, &http.Response{
+	usage, newAPIError := OaiStreamHandler(c, info, &http.Response{
 		Body: io.NopCloser(bytes.NewReader(nil)),
 	})
 
 	require.NotNil(t, newAPIError)
-	assert.Nil(t, info.InterruptedStreamUsage, "客户端什么都没收到，不该产生待结算用量")
+	assert.Nil(t, usage, "客户端什么都没收到，不该产生待结算用量")
 }

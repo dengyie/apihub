@@ -38,6 +38,21 @@ func streamResponseXAI2OpenAI(xAIResp *dto.ChatCompletionsStreamResponse, usage 
 	return openAIResp
 }
 
+// xaiInterruptedUsage 给断流的那一次尝试估出已交付部分的用量，返回值交给
+// 调用方转交 controller 结算。
+//
+// 判据是真正累积到的产出而非「收到了帧」：上游错误同样以数据帧送达，空产出会
+// 被估成整段 prompt，等于给一次失败的请求收一遍全款 —— 所以正文为空时返回
+// nil，不计费。responseTextBuilder 由 ProcessStreamResponse 填充，同时收了正文、
+// reasoning 与工具名/参数。
+func xaiInterruptedUsage(c *gin.Context, info *relaycommon.RelayInfo, text string, toolCount int) *dto.Usage {
+	interrupted := service.InterruptedTextUsage(c, info, text)
+	if interrupted != nil {
+		interrupted.CompletionTokens += toolCount * 7
+	}
+	return interrupted
+}
+
 func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	usage := &dto.Usage{}
 	var responseTextBuilder strings.Builder
@@ -82,12 +97,12 @@ func xAIStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			sr.Error(err)
 		}
 	})); streamErr != nil {
-		return nil, streamErr
+		return xaiInterruptedUsage(c, info, responseTextBuilder.String(), toolCount), streamErr
 	}
 
 	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final [DONE] frame", info.StreamStatus.Summary()))
-		return nil, types.NewErrorWithStatusCode(
+		return xaiInterruptedUsage(c, info, responseTextBuilder.String(), toolCount), types.NewErrorWithStatusCode(
 			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
 			types.ErrorCodeBadResponseBody,
 			http.StatusBadGateway,

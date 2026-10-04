@@ -179,16 +179,16 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			}
 		}
 	})); streamErr != nil {
-		return nil, streamErr
+		return interruptedStreamUsage(c, info, state), streamErr
 	}
 
 	if streamErr != nil {
-		return nil, streamErr
+		return interruptedStreamUsage(c, info, state), streamErr
 	}
 
 	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final response frames", info.StreamStatus.Summary()))
-		return nil, types.NewErrorWithStatusCode(
+		return interruptedStreamUsage(c, info, state), types.NewErrorWithStatusCode(
 			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
 			types.ErrorCodeBadResponseBody,
 			http.StatusBadGateway,

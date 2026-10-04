@@ -266,12 +266,12 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			sr.Error(err)
 		}
 	})); streamErr != nil {
-		return nil, streamErr
+		return difyInterruptedUsage(c, info, responseText, nodeToken), streamErr
 	}
 
 	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final [DONE] frame", info.StreamStatus.Summary()))
-		return nil, types.NewErrorWithStatusCode(
+		return difyInterruptedUsage(c, info, responseText, nodeToken), types.NewErrorWithStatusCode(
 			&loadbalancer.StreamBrokenError{ChannelID: info.GetChannelID(), Reason: info.StreamStatus.Summary()},
 			types.ErrorCodeBadResponseBody,
 			http.StatusBadGateway,
@@ -284,6 +284,20 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	}
 	usage.CompletionTokens += nodeToken
 	return usage, nil
+}
+
+// difyInterruptedUsage 给断流的那一次尝试估出已交付部分的用量，返回值交给
+// 调用方转交 controller 结算。
+//
+// 判据是真正累积到的正文而非「收到了帧」：上游错误同样以数据帧送达，空产出会
+// 被估成整段 prompt，等于给一次失败的请求收一遍全款 —— 所以正文为空时返回
+// nil，不计费。
+func difyInterruptedUsage(c *gin.Context, info *relaycommon.RelayInfo, text string, nodeToken int) *dto.Usage {
+	interrupted := service.InterruptedTextUsage(c, info, text)
+	if interrupted != nil {
+		interrupted.CompletionTokens += nodeToken
+	}
+	return interrupted
 }
 
 func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

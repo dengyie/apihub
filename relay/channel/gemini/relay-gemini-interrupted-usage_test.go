@@ -39,31 +39,30 @@ func TestGeminiTruncatedStreamKeepsInterruptedUsage(t *testing.T) {
 		},
 	})
 
-	_, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
 		return true
 	})
 
 	require.NotNil(t, newAPIError, "本用例的前提就是流确实断了")
-	require.NotNil(t, info.InterruptedStreamUsage,
-		"断流时必须把已累积的用量交给 controller 结算，否则客户端白拿一次输出")
-	assert.Greater(t, info.InterruptedStreamUsage.CompletionTokens, 0,
+	require.NotNil(t, usage,
+		"断流时必须把已累积的用量连同错误一起返回，由调用方转交 controller 结算，否则客户端白拿一次输出")
+	assert.Greater(t, usage.CompletionTokens, 0,
 		"已经送达客户端的文本量必须体现在结算里")
-	assert.Greater(t, info.InterruptedStreamUsage.TotalTokens, 0)
+	assert.Greater(t, usage.TotalTokens, 0)
 }
 
 // TestGeminiEmptyFailedStreamIsNotBilled 一无所获的失败不该产生账单。
 //
-// 这是上面那条的反向守卫：InterruptedStreamUsage 只在**客户端确实收到过东西**
-// 时才挂。纯失败（一个字节都没吐）按 0 计费才是对的 —— 否则一次上游 5xx 反复
+// 这是上面那条的反向守卫：返回的 usage 只在**客户端确实收到过东西**时才非 nil。
+// 纯失败（一个字节都没吐）按 0 计费才是对的 —— 否则一次上游 5xx 反复
 // 重试失败，反而会凭空收用户钱。
 func TestGeminiEmptyFailedStreamIsNotBilled(t *testing.T) {
 	c, info, resp := geminiEOFCase(t, nil) // 一个数据块都没有
 
-	_, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+	usage, newAPIError := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
 		return true
 	})
 
 	require.NotNil(t, newAPIError)
-	assert.Nil(t, info.InterruptedStreamUsage,
-		"客户端什么都没收到，不该产生任何待结算用量")
+	assert.Nil(t, usage, "客户端什么都没收到，不该产生任何待结算用量")
 }
