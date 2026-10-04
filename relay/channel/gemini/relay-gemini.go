@@ -180,7 +180,10 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		info.StreamStatus.RequireTerminal()
 	}
 
-	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	// scanErr 与下面那个 streamErr 是两回事：streamErr 是回调自己发现的错误
+	//（解析失败、下游要求停止），scanErr 是扫描器判定出的上游中断。用量汇总放在
+	// 两者的返回之前，原因见 RecordInterruptedUsage 的调用处。
+	scanErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var geminiResponse dto.GeminiChatResponse
 		if err := common.UnmarshalJsonStr(data, &geminiResponse); err != nil {
 			streamErr = fmt.Errorf("unmarshal Gemini stream response: %w", err)
@@ -191,10 +194,22 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
+			// 这是**完整**响应，不是断流：内容为空是因为用户被安全策略拦下了，
+			// 而不是上游中途断了。必须标记为已正常收尾，否则本函数声明的
+			// RequireTerminal 会让 EOF 判定失败 → StreamBrokenError → 502 →
+			// 调用方立即 tripModelScope 熔断一条完全健康的渠道。
+			//
+			// 下面那个 for 循环救不了这个形状：Candidates 正是空的。
+			info.StreamStatus.MarkCompleted()
 		}
 		info.ObserveResponseModel(gjson.Get(data, "modelVersion").Str)
 		for _, candidate := range geminiResponse.Candidates {
-			if candidate.FinishReason == nil || *candidate.FinishReason == "" || *candidate.FinishReason == "FINISH_REASON_UNSPECIFIED" {
+			// 只要上游**显式填了** finishReason，这一块就是收尾块。中间块根本不
+			// 带这个字段（解出来是 nil），所以「显式给出」本身就是收尾信号 ——
+			// FINISH_REASON_UNSPECIFIED 是 proto 的零值，含义是「这个字段被填了
+			// 但值未指定」，不是「流还没结束」。把它排除在终止标记之外，会让这类
+			// 正常响应在 EOF 时同样被当成断流。
+			if candidate.FinishReason == nil || *candidate.FinishReason == "" {
 				continue
 			}
 			switch *candidate.FinishReason {
@@ -235,11 +250,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			streamErr = errors.New("Gemini stream callback stopped")
 			sr.Stop(streamErr)
 		}
-		})); streamErr != nil {
-			return nil, streamErr
-		}
+	}))
 
-		if !hasBillableUsageMetadata {
+	if !hasBillableUsageMetadata {
 		if info.ReceivedResponseCount > 0 {
 			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		} else {
@@ -255,7 +268,17 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		patchGeminiZeroCompletionUsage(c, info, usage, responseText.String(), imageCount)
 	}
 
+	if scanErr != nil {
+		// 断流：客户端已经收到了中断前的输出，上游也已按它计费。usage 必须交给
+		// controller 在整轮重试失败后结算，否则这一次请求白送 —— 调用方
+		// （compatible_handler / gemini_handler）看到 err != nil 就直接 return，
+		// 根本走不到 PostTextConsumeQuota。
+		info.RecordInterruptedUsage(usage)
+		return nil, scanErr
+	}
+
 	if streamErr != nil {
+		info.RecordInterruptedUsage(usage)
 		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {

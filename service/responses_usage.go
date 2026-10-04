@@ -139,7 +139,11 @@ func ObserveResponsesOutcome(info *relaycommon.RelayInfo, event *dto.ResponsesSt
 			reason = event.Response.IncompleteDetails.Reason
 		}
 		info.StreamStatus.MarkIncomplete(reason)
-	case event.Type == "response.cancelled" || event.Type == "response.canceled" || responseStatus == "cancelled":
+	case event.Type == "response.cancelled" || event.Type == "response.canceled" ||
+		responseStatus == "cancelled" || responseStatus == "canceled":
+		// 两种拼写都要认。IsResponsesTerminalStatus 把 cancelled 和 canceled 都算
+		// 终止帧，上游两种拼写都在用；只认一种的话，另一种拼写的终止帧不会被标成
+		// 终止，EOF 就成了「断流」→ 502 → 熔断一条其实只是被取消的健康渠道。
 		info.StreamStatus.MarkCancelled()
 	case event.Type == "response.completed" || event.Type == "response.done" || responseStatus == "completed":
 		info.StreamStatus.MarkCompleted()

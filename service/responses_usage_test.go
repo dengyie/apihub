@@ -123,6 +123,14 @@ func TestObserveResponsesOutcomeRecordsProtocolFacts(t *testing.T) {
 		{"done with failed status", `{"type":"response.done","response":{"status":"failed","error":{"code":"invalid_api_key","type":"invalid_request_error","message":"bad key"}}}`, relaycommon.ResponseOutcomeFailed, "invalid_api_key", "invalid_request_error", ""},
 		{"incomplete keeps reason", `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, relaycommon.ResponseOutcomeIncomplete, "", "", "max_output_tokens"},
 		{"in progress is not terminal", `{"type":"response.created","response":{"status":"in_progress"}}`, relaycommon.ResponseOutcomeUnknown, "", "", ""},
+		// IsResponsesTerminalStatus 把 cancelled / canceled 两种拼写都算终止帧，
+		// 分类器也必须两种都认。只认一种时，另一种拼写的终止帧不会标成终止，
+		// RequireTerminal 在 EOF 处判成断流 → 502 → 熔断一条只是被取消的健康渠道。
+		{"cancelled british spelling", `{"response":{"status":"cancelled"}}`, relaycommon.ResponseOutcomeCancelled, "", "", ""},
+		{"canceled american spelling", `{"response":{"status":"canceled"}}`, relaycommon.ResponseOutcomeCancelled, "", "", ""},
+		// 终止 ≠ 正常完成。上游撞 max_output_tokens 时 status 是 incomplete，
+		// 先到先得的 MarkCompleted 会把它永久盖成 completed，日志与面板全错。
+		{"incomplete status without event type", `{"response":{"status":"incomplete"}}`, relaycommon.ResponseOutcomeIncomplete, "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var event dto.ResponsesStreamResponse

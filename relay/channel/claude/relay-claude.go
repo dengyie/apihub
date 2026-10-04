@@ -238,29 +238,35 @@ func countClaudeStreamBillableTools(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 }
 
+// fillMissingClaudeStreamUsage 用已累积的正文补齐上游没给全的用量字段。
+//
+// 正常收尾时 message_delta 会给出 output_tokens；但断流时它通常没到，输出侧是
+// 空的。不补的话结算出来 completion=0，客户端已经拿到的正文就白拿了。
+// 只补缺失字段、不整份覆盖 —— message_start 早已拿到的 cache 字段必须保住。
+func fillMissingClaudeStreamUsage(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	if claudeInfo.Usage.CompletionTokens != 0 && claudeInfo.Done {
+		return
+	}
+	if common.DebugEnabled {
+		common.SysLog("claude response usage is not complete, maybe upstream error")
+	}
+	fallback := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if claudeInfo.Usage.CompletionTokens == 0 ||
+		(!claudeInfo.Done && fallback.CompletionTokens > claudeInfo.Usage.CompletionTokens) {
+		claudeInfo.Usage.CompletionTokens = fallback.CompletionTokens
+	}
+	if claudeInfo.Usage.PromptTokens == 0 {
+		claudeInfo.Usage.PromptTokens = fallback.PromptTokens
+	}
+	claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
+}
+
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
 	if info != nil && info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("stream ended abnormally (%s), skipping final response frames", info.StreamStatus.Summary()))
 		return
 	}
-	if claudeInfo.Usage.PromptTokens == 0 {
-		//上游出错
-	}
-	if claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done {
-		if common.DebugEnabled {
-			common.SysLog("claude response usage is not complete, maybe upstream error")
-		}
-		// 只补缺失字段，不整份覆盖——保留 message_start 已拿到的 cache 字段
-		fallback := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		if claudeInfo.Usage.CompletionTokens == 0 ||
-			(!claudeInfo.Done && fallback.CompletionTokens > claudeInfo.Usage.CompletionTokens) {
-			claudeInfo.Usage.CompletionTokens = fallback.CompletionTokens
-		}
-		if claudeInfo.Usage.PromptTokens == 0 {
-			claudeInfo.Usage.PromptTokens = fallback.PromptTokens
-		}
-		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
-	}
+	fillMissingClaudeStreamUsage(c, info, claudeInfo)
 	if claudeInfo.Usage != nil {
 		claudeInfo.Usage.UsageSemantic = "anthropic"
 	}
@@ -315,12 +321,19 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		if err != nil {
 			sr.Stop(err)
 		}
-		})); streamErr != nil {
-			return nil, streamErr
-		}
-		if err != nil {
-			return nil, err
-		}
+	})); streamErr != nil {
+		// 断流：客户端已经收到了中断前的正文。usage 必须交给 controller 在整轮
+		// 重试失败后结算，否则这一次请求白送 —— claude_handler 看到 err != nil
+		// 就直接 return，走不到 PostTextConsumeQuota。
+		fillMissingClaudeStreamUsage(c, info, claudeInfo)
+		info.RecordInterruptedUsage(claudeInfo.Usage)
+		return nil, streamErr
+	}
+	if err != nil {
+		fillMissingClaudeStreamUsage(c, info, claudeInfo)
+		info.RecordInterruptedUsage(claudeInfo.Usage)
+		return nil, err
+	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
 	return claudeInfo.Usage, nil

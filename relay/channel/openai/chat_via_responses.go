@@ -274,7 +274,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 		if streamResp.Type == "response.completed" || streamResp.Type == "response.done" ||
 			(streamResp.Response != nil && relaycommon.IsResponsesTerminalStatus(streamResp.Response.Status)) {
-			info.StreamStatus.MarkCompleted()
+			// 同 relay_responses.go：终止帧不等于正常完成，outcome 必须按协议分类，
+			// 否则 incomplete 会被先到先得的 MarkCompleted 永久盖成 completed。
+			service.ObserveResponsesOutcome(info, &streamResp)
 		}
 
 		if streamResp.Response != nil {

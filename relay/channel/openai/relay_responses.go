@@ -97,7 +97,11 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		if streamResponse.Type == "response.completed" || streamResponse.Type == "response.done" ||
 			(streamResponse.Response != nil && relaycommon.IsResponsesTerminalStatus(streamResponse.Response.Status)) {
-			info.StreamStatus.MarkCompleted()
+			// 收到终止帧 ≠ 正常完成：incomplete（撞 max_output_tokens / 内容过滤）、
+			// failed、cancelled 同样是终止。markTerminal 是先到先得，这里一律
+			// MarkCompleted 会把 incomplete 永久记成 completed —— 面板归因、
+			// 成功率统计、熔断判读全部跟着错，而且不会有任何报错。
+			service.ObserveResponsesOutcome(info, &streamResponse)
 		}
 		if streamResponse.Response != nil {
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))

@@ -229,6 +229,22 @@ type RelayInfo struct {
 	*TaskRelayInfo
 }
 
+// RecordInterruptedUsage hands an interrupted attempt's accumulated usage to the
+// controller, which settles it once the whole retry loop has failed.
+//
+// Only meaningful when a stream breaks *after* output reached the client. An
+// attempt that delivered nothing must not produce a bill: an upstream failing
+// repeatedly until retries are exhausted would otherwise charge for zero work.
+func (info *RelayInfo) RecordInterruptedUsage(usage *dto.Usage) {
+	if info == nil || usage == nil {
+		return
+	}
+	if info.ReceivedResponseCount == 0 {
+		return
+	}
+	info.InterruptedStreamUsage = usage
+}
+
 // UpdateImageCount replaces the billable quantity without changing the frozen
 // request parameters or multiplying the legacy and expression prices together.
 func (info *RelayInfo) UpdateImageCount(count int64) {

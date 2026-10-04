@@ -149,6 +149,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})); streamErr != nil {
+		// 断流：客户端已经收到了中断前的正文。usage 必须交给 controller 在整轮
+		// 重试失败后结算，否则这一次请求白送 —— compatible_handler 看到
+		// err != nil 就直接 return，走不到 PostTextConsumeQuota。
+		//
+		// 末帧的 usage 帧在断流时通常也没到，所以这里跟成功路径的兜底一样，从
+		// 已累积的正文估算。RecordInterruptedUsage 内部会挡掉「一个字节都没送到
+		// 客户端」的情况，避免纯失败反而产生账单。
+		interrupted := service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		interrupted.CompletionTokens += toolCount * 7
+		info.RecordInterruptedUsage(interrupted)
 		return nil, streamErr
 	}
 
