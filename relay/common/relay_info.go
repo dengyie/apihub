@@ -232,14 +232,14 @@ type RelayInfo struct {
 // RecordInterruptedUsage hands an interrupted attempt's accumulated usage to the
 // controller, which settles it once the whole retry loop has failed.
 //
-// Only meaningful when a stream breaks *after* output reached the client. An
-// attempt that delivered nothing must not produce a bill: an upstream failing
-// repeatedly until retries are exhausted would otherwise charge for zero work.
+// The caller must confirm the client actually received generated content before
+// calling. "A frame arrived" is not that signal: an upstream error is delivered
+// as a data frame too, and ResponseText2Usage would price an empty attempt at the
+// full prompt estimate — billing the user in full for a request that produced
+// nothing. This mirrors the non-streaming path, where an errored request is not
+// billed at all.
 func (info *RelayInfo) RecordInterruptedUsage(usage *dto.Usage) {
 	if info == nil || usage == nil {
-		return
-	}
-	if info.ReceivedResponseCount == 0 {
 		return
 	}
 	info.InterruptedStreamUsage = usage

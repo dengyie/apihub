@@ -273,12 +273,20 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		// controller 在整轮重试失败后结算，否则这一次请求白送 —— 调用方
 		// （compatible_handler / gemini_handler）看到 err != nil 就直接 return，
 		// 根本走不到 PostTextConsumeQuota。
-		info.RecordInterruptedUsage(usage)
+		//
+		// 判据是真正累积到的产出而非「收到了帧」：上游错误同样以数据帧送达，而
+		// 空产出会被 ResponseText2Usage 按 GetEstimatePromptTokens() 估成整段
+		// prompt，等于给一次失败的请求收一遍全款。图片也算产出，所以带上 imageCount。
+		if responseText.Len() > 0 || imageCount != 0 {
+			info.RecordInterruptedUsage(usage)
+		}
 		return nil, scanErr
 	}
 
 	if streamErr != nil {
-		info.RecordInterruptedUsage(usage)
+		if responseText.Len() > 0 || imageCount != 0 {
+			info.RecordInterruptedUsage(usage)
+		}
 		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {

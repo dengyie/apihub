@@ -154,11 +154,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		// err != nil 就直接 return，走不到 PostTextConsumeQuota。
 		//
 		// 末帧的 usage 帧在断流时通常也没到，所以这里跟成功路径的兜底一样，从
-		// 已累积的正文估算。RecordInterruptedUsage 内部会挡掉「一个字节都没送到
-		// 客户端」的情况，避免纯失败反而产生账单。
-		interrupted := service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		interrupted.CompletionTokens += toolCount * 7
-		info.RecordInterruptedUsage(interrupted)
+		// 已累积的正文估算。
+		//
+		// 但「收到一个帧」不等于「收到内容」：上游错误也是以数据帧送达的，而
+		// ResponseText2Usage 会按 GetEstimatePromptTokens() 把空产出估成整段
+		// prompt —— 那样一次失败的请求反而收用户一遍全款。判据用真正累积到的
+		// 产出：responseTextBuilder 同时收了正文、reasoning 与工具名/参数，
+		// 所以它非空即代表客户端确实拿到了可计费内容。
+		if responseTextBuilder.Len() > 0 {
+			interrupted := service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+			interrupted.CompletionTokens += toolCount * 7
+			info.RecordInterruptedUsage(interrupted)
+		}
 		return nil, streamErr
 	}
 
