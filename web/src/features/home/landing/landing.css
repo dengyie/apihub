@@ -1,0 +1,719 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+/*
+ * Marketing landing page.
+ *
+ * Owns a self-contained design system instead of borrowing the app theme: warm
+ * paper neutrals, hairline rules, a wide section rhythm and tight negative
+ * tracking. The accent stays on `var(--primary)` so the page follows whichever
+ * theme the operator picked. Everything below is scoped under
+ * `.landing-root` so it cannot leak into the console.
+ */
+
+.landing-root {
+  /* Warm paper palette. Neutrals are slightly warm so the page reads as stock
+     rather than as another dark-mode dashboard. */
+  --landing-bg: #faf9f5;
+  --landing-ink: #111110;
+  --landing-muted: #6f6d68;
+  --landing-rule: #e5e2d8;
+  --landing-surface: #f6f5ee;
+  --landing-accent: var(--primary);
+
+  /* Spacing scale, widened at each breakpoint rather than hard-coded per rule. */
+  --landing-top: 16px;
+  --landing-left: 16px;
+  --landing-right: 16px;
+  --landing-rail: 0px;
+  --landing-gap: 112px;
+
+  --landing-shell: 1440px;
+
+  min-height: 100dvh;
+  color: var(--landing-ink);
+  background: var(--landing-bg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+
+.dark .landing-root {
+  --landing-bg: #131311;
+  --landing-ink: #f5f4ef;
+  --landing-muted: #aaa79e;
+  --landing-rule: #37362f;
+  --landing-surface: #1e1e1a;
+}
+
+.landing-root a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.landing-root :is(a, button, [tabindex]):focus-visible {
+  outline: 2px solid var(--landing-accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+/* Single column until the left rail appears. The gap stays 0 while the rail is
+   0 so mobile content is not inset by a gutter it has no rail to clear. */
+.landing-shell {
+  max-width: var(--landing-shell);
+  margin: 0 auto;
+  padding: var(--landing-top) var(--landing-right) 40px var(--landing-left);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
+}
+
+.landing-skip {
+  position: fixed;
+  top: 8px;
+  left: 16px;
+  z-index: 100;
+  padding: 8px 12px;
+  color: var(--landing-ink);
+  background: var(--landing-bg);
+  border: 1px solid var(--landing-rule);
+  transform: translateY(-200%);
+}
+
+.landing-skip:focus {
+  transform: none;
+}
+
+.landing-main {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- header -- */
+
+.landing-header {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-height: 48px;
+  font-size: 15px;
+  line-height: 18px;
+}
+
+.landing-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  color: var(--landing-ink);
+  font-weight: 500;
+}
+
+.landing-brand-mark {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--landing-bg);
+  background: var(--landing-accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.landing-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 8px;
+  color: var(--landing-ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.landing-nav {
+  display: none;
+}
+
+.landing-nav[data-open='true'] {
+  position: absolute;
+  inset: 48px -16px auto;
+  z-index: 20;
+  padding: 24px 32px 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 20px;
+  background: var(--landing-bg);
+  border-bottom: 1px solid var(--landing-rule);
+}
+
+.landing-nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  color: var(--landing-muted);
+}
+
+.landing-nav-links a:hover {
+  color: var(--landing-ink);
+}
+
+/* ------------------------------------------------------------------ hero -- */
+
+.landing-hero {
+  padding-top: 24px;
+}
+
+.landing-hero h1 {
+  max-width: 28em;
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.035em;
+  text-wrap: pretty;
+}
+
+/* Inline pill set into the headline. Always light-on-accent: the accent follows
+   the operator's theme, so pairing it with `--landing-bg` would sink the label
+   into the background in dark mode. */
+.landing-chip {
+  display: inline-flex;
+  vertical-align: 0.1em;
+  overflow: hidden;
+  align-items: stretch;
+  padding: 0 6px;
+  border: 1px solid color-mix(in oklch, var(--landing-accent) 25%, transparent);
+  border-radius: 5px;
+  color: #fff;
+  background: var(--landing-accent);
+  font-size: 12px;
+  line-height: 26px;
+  letter-spacing: 0;
+}
+
+.landing-hero-sub {
+  max-width: 46em;
+  margin-top: 16px;
+  color: var(--landing-muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.landing-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.landing-button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid var(--landing-rule);
+  color: var(--landing-ink);
+  background: transparent;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background 150ms,
+    color 150ms,
+    border-color 150ms;
+}
+
+.landing-button:hover {
+  border-color: var(--landing-muted);
+}
+
+.landing-button-primary {
+  color: #fff;
+  background: var(--landing-accent);
+  border-color: var(--landing-accent);
+  font-weight: 500;
+}
+
+.landing-button-primary:hover {
+  color: #fff;
+  filter: brightness(1.08);
+}
+
+.landing-button svg {
+  flex-shrink: 0;
+}
+
+/* -------------------------------------------------------------- showcase -- */
+
+/* The showcase is the page's visual anchor: a tall lit panel with film grain
+   and a terminal window floating on it. */
+.landing-showcase {
+  position: relative;
+  isolation: isolate;
+  margin-top: 32px;
+  padding: 18px;
+  background: linear-gradient(180deg, #edede5, #d5d4ca, #f3f1e9);
+}
+
+.dark .landing-showcase {
+  background: linear-gradient(180deg, #252420, #48433f, #1e1d1a);
+}
+
+/* Film grain. Rendered from a static SVG turbulence tile rather than a canvas
+   so the effect costs nothing per frame; the blend mode does the rest. */
+.landing-grain {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: 120px 120px;
+}
+
+.dark .landing-grain {
+  opacity: 0.28;
+  mix-blend-mode: screen;
+}
+
+.landing-window {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-width: 760px;
+  margin-inline: auto;
+  border: 1px solid rgb(0 0 0 / 0.1);
+  border-radius: 10px;
+  background: var(--landing-bg);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.14);
+}
+
+.dark .landing-window {
+  border-color: rgb(255 255 255 / 0.1);
+}
+
+.landing-window-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--landing-rule);
+  color: var(--landing-muted);
+  font-size: 11px;
+}
+
+.landing-window-dots {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.landing-window-dots i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d5d4ca;
+}
+
+.dark .landing-window-dots i {
+  background: #4a4841;
+}
+
+.landing-window-dots i:nth-child(2) {
+  background: #e8c98a;
+}
+
+.landing-window-dots i:nth-child(3) {
+  background: #d79a86;
+}
+
+.landing-window-body {
+  flex: 1;
+  min-height: 0;
+  padding: 18px;
+  font-size: 13px;
+}
+
+/* -------------------------------------------------------------- sections -- */
+
+.landing-section {
+  margin-top: var(--landing-gap);
+}
+
+.landing-section > h2 {
+  max-width: 30em;
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: -0.03em;
+  text-wrap: pretty;
+}
+
+.landing-section > h2 span {
+  color: var(--landing-muted);
+}
+
+.landing-grid {
+  display: grid;
+  gap: 0;
+  margin-top: 32px;
+  border-top: 1px solid var(--landing-rule);
+}
+
+.landing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--landing-rule);
+}
+
+.landing-card h3 {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+}
+
+.landing-card p {
+  max-width: 42em;
+  color: var(--landing-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.landing-card-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 4px;
+  place-items: center;
+  border: 1px solid var(--landing-rule);
+  border-radius: 8px;
+  color: var(--landing-accent);
+  background: var(--landing-surface);
+}
+
+/* The first card spans two columns and carries the artwork, which is what
+   gives the section its asymmetric rhythm. */
+.landing-card-featured {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+
+.landing-artwork {
+  position: relative;
+  display: grid;
+  min-height: 200px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 10px;
+  background:
+    radial-gradient(
+      120% 90% at 20% 0%,
+      rgb(255 255 255 / 0.5),
+      transparent 60%
+    ),
+    linear-gradient(
+      135deg,
+      var(--landing-accent),
+      color-mix(in oklch, var(--landing-accent) 55%, #111)
+    );
+}
+
+.dark .landing-artwork {
+  background:
+    radial-gradient(
+      120% 90% at 20% 0%,
+      rgb(255 255 255 / 0.12),
+      transparent 60%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(in oklch, var(--landing-accent) 70%, #000),
+      #0d0d0c
+    );
+}
+
+.landing-artwork-glyph {
+  color: rgb(255 255 255 / 0.92);
+  filter: drop-shadow(0 6px 18px rgb(0 0 0 / 0.28));
+}
+
+/* ------------------------------------------------------------------- cta -- */
+
+.landing-cta {
+  margin-top: var(--landing-gap);
+  padding: 40px 0;
+  border-top: 1px solid var(--landing-rule);
+  text-align: center;
+}
+
+.landing-cta h2 {
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+}
+
+.landing-cta p {
+  margin: 12px auto 0;
+  max-width: 40em;
+  color: var(--landing-muted);
+}
+
+.landing-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+/* ---------------------------------------------------------------- footer -- */
+
+/* An explicit track keeps the wordmark's SVG from collapsing: inside an
+   implicit auto track its intrinsic width never resolves. */
+.landing-footer {
+  grid-column: 1;
+  grid-row: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  margin-top: var(--landing-gap);
+  padding-top: 32px;
+  border-top: 1px solid var(--landing-rule);
+}
+
+.landing-footer-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--landing-muted);
+  font-size: 13px;
+}
+
+.landing-footer-nav a:hover {
+  color: var(--landing-ink);
+}
+
+.landing-preferences {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Giant wordmark. The stripes are per-row rects filled by a slow sweep, so the
+   mark reads as one image until it scrolls into view. */
+.landing-wordmark {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.landing-wordmark svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.landing-wordmark text {
+  font-family: var(--font-sans);
+  font-size: 260px;
+  font-weight: 600;
+  letter-spacing: -18px;
+}
+
+.landing-wordmark rect {
+  fill: #d7d5cb;
+  animation: landing-stripe 10s linear infinite;
+  animation-delay: calc(var(--stripe-row) * -70ms);
+  animation-play-state: paused;
+}
+
+.dark .landing-wordmark rect {
+  fill: #514f49;
+}
+
+.landing-wordmark[data-playing='true'] rect {
+  animation-play-state: running;
+}
+
+@keyframes landing-stripe {
+  0%,
+  15% {
+    transform: translateX(0%);
+  }
+  85%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes landing-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------ breakpoints -- */
+
+@media (min-width: 768px) {
+  .landing-root {
+    --landing-top: 24px;
+    --landing-left: 40px;
+    --landing-right: 24px;
+    --landing-rail: 160px;
+    --landing-gap: 152px;
+  }
+
+  .landing-shell {
+    grid-template-columns: var(--landing-rail) minmax(0, 1fr);
+    column-gap: 32px;
+  }
+
+  .landing-header {
+    position: sticky;
+    top: var(--landing-top);
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 24px;
+  }
+
+  .landing-main {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .landing-footer {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: var(--landing-rail) minmax(0, 1fr);
+    column-gap: 32px;
+    align-items: start;
+    gap: 32px;
+  }
+
+  .landing-nav {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+    color: var(--landing-muted);
+    font-size: 13px;
+  }
+
+  .landing-nav-links {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .landing-menu-toggle {
+    display: none;
+  }
+
+  .landing-hero {
+    padding-top: 48px;
+  }
+
+  .landing-hero h1 {
+    font-size: 32px;
+  }
+
+  .landing-section > h2 {
+    font-size: 24px;
+  }
+
+  .landing-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 32px;
+  }
+
+  .landing-card {
+    padding: 24px 0;
+  }
+
+  .landing-card-featured {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+    align-items: center;
+    gap: 40px;
+  }
+
+  .landing-footer-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .landing-root {
+    --landing-right: 80px;
+    --landing-gap: 196px;
+  }
+}
+
+@media (max-width: 767px) {
+  .landing-showcase {
+    padding: 12px;
+  }
+
+  .landing-window-body {
+    padding: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-root *,
+  .landing-root *::before,
+  .landing-root *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
