@@ -110,13 +110,17 @@ func (c *ChatCompletionsStreamResponseChoiceDelta) GetContentString() string {
 }
 
 func (c *ChatCompletionsStreamResponseChoiceDelta) GetReasoningContent() string {
-	if c.ReasoningContent == nil && c.Reasoning == nil {
-		return ""
-	}
-	if c.ReasoningContent != nil {
+	// An upstream may carry reasoning in both fields while leaving the
+	// placeholder empty ({"reasoning_content":"", "reasoning":"a"}).
+	// Presence alone must not decide the winner, or the empty placeholder
+	// swallows the real payload and the whole reasoning trace is lost.
+	if c.ReasoningContent != nil && *c.ReasoningContent != "" {
 		return *c.ReasoningContent
 	}
-	return *c.Reasoning
+	if c.Reasoning != nil {
+		return *c.Reasoning
+	}
+	return ""
 }
 
 func (c *ChatCompletionsStreamResponseChoiceDelta) SetReasoningContent(s string) {

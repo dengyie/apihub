@@ -341,7 +341,13 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 		} else {
 			reasoning := chosenChoice.Delta.GetReasoningContent()
 			textContent := chosenChoice.Delta.GetContentString()
-			if reasoning != "" || textContent != "" {
+			if reasoning == "" && textContent == "" {
+				isEmpty = true
+			} else {
+				// A single upstream chunk can carry reasoning and content at once.
+				// Anthropic's stream keeps one open block per index, so both
+				// payloads become two consecutive blocks here; branching on
+				// reasoning alone silently dropped the text.
 				if reasoning != "" {
 					if state.LastMessagesType != convmeta.LastMessageTypeThinking {
 						stopOpenBlocksAndAdvance()
@@ -356,11 +362,17 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 						})
 					}
 					state.LastMessagesType = convmeta.LastMessageTypeThinking
-					claudeResponse.Delta = &dto.ClaudeMediaMessage{
-						Type:     "thinking_delta",
-						Thinking: &reasoning,
-					}
-				} else {
+					idx := state.Index
+					claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
+						Index: &idx,
+						Type:  "content_block_delta",
+						Delta: &dto.ClaudeMediaMessage{
+							Type:     "thinking_delta",
+							Thinking: &reasoning,
+						},
+					})
+				}
+				if textContent != "" {
 					if state.LastMessagesType != convmeta.LastMessageTypeText {
 						stopOpenBlocksAndAdvance()
 						idx := state.Index
@@ -374,13 +386,16 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 						})
 					}
 					state.LastMessagesType = convmeta.LastMessageTypeText
-					claudeResponse.Delta = &dto.ClaudeMediaMessage{
-						Type: "text_delta",
-						Text: kitutil.GetPointer[string](textContent),
-					}
+					idx := state.Index
+					claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
+						Index: &idx,
+						Type:  "content_block_delta",
+						Delta: &dto.ClaudeMediaMessage{
+							Type: "text_delta",
+							Text: kitutil.GetPointer[string](textContent),
+						},
+					})
 				}
-			} else {
-				isEmpty = true
 			}
 		}
 

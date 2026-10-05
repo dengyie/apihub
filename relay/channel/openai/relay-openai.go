@@ -25,7 +25,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !forceFormat && !thinkToContent {
-		return helper.StringData(c, data)
+		return helper.StringData(c, stripEmptyContentOnReasoningFrame(data))
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
