@@ -25,10 +25,29 @@ import (
 // 对标 CPA 的 payload.filter，但粒度是按渠道而非按模型。
 
 var (
-	paramStripMu      sync.RWMutex
-	paramStripConfig  = make(map[int]map[string]struct{})
-	paramStripLearned = make(map[int]map[string]struct{})
+	paramStripMu     sync.RWMutex
+	paramStripConfig = make(map[int]map[string]struct{})
+	// paramStripLearned 按 **(渠道, 模型)** 存，不按渠道存。
+	//
+	// 「上游不支持某参数」是关于**那个模型**的观察，不是关于这条渠道的：
+	// 渠道 #238 同时挂 gemini-3.8-flash / kimi-k3 / claude-opus-4-8 /
+	// glm-5.3-flash / deepseek-v4.1-flash / deepseek-v4-flash 六个模型，
+	// 按渠道存会让任一模型的一次误判外溢到另外五个，把它们本该支持的参数
+	// 一起裁掉。此前它是这一串错误处理里**唯一**停在渠道级的环节——熔断自
+	// v29.14 起是 ScopeModel、isModelScopedAutoDisable 存在的理由也正是
+	// 「这个模型坏了 ≠ 这条渠道坏了」。
+	//
+	// 运维在 yaml 里显式写的 paramStripConfig 仍按渠道：那是人的决定，不是观测。
+	paramStripLearned = make(map[paramStripKey]map[string]struct{})
 )
+
+// paramStripKey 是学习集合的键。两端必须传**同一个**模型名，否则学到的裁剪
+// 永远不会生效（且不会有任何报错）——学习侧传 relayInfo.OriginModelName，
+// 出站裁剪侧传 info.OriginModelName，与熔断键同源。
+type paramStripKey struct {
+	channelID int
+	model     string
+}
 
 // maxTokensLimitLearned 记录「渠道 × 上游模型」真实的 max_completion_tokens 上限。
 //
@@ -154,15 +173,19 @@ func SetThinkingStripChannels(ids []int) {
 	}
 }
 
-// GetStripParams 返回某渠道需要裁剪的参数名列表（已去重）
-func GetStripParams(channelID int) []string {
+// GetStripParams 返回某渠道某模型需要裁剪的参数名列表（已去重）。
+//
+// 运维预置按渠道生效，人写的规则不该被自动学习的作用域收窄；
+// 自动学习到的按 (渠道, 模型) 生效，见 paramStripLearned 的注释。
+func GetStripParams(channelID int, modelName string) []string {
 	if !Enabled() || channelID <= 0 {
 		return nil
 	}
 	paramStripMu.RLock()
 	defer paramStripMu.RUnlock()
+	key := paramStripKey{channelID: channelID, model: modelName}
 	var out []string
-	for _, set := range []map[string]struct{}{paramStripConfig[channelID], paramStripLearned[channelID]} {
+	for _, set := range []map[string]struct{}{paramStripConfig[channelID], paramStripLearned[key]} {
 		for p := range set {
 			if !slices.Contains(out, p) {
 				out = append(out, p)
@@ -172,18 +195,19 @@ func GetStripParams(channelID int) []string {
 	return out
 }
 
-// MarkParamUnsupported 标记某渠道不支持某参数（自动学习）
-func MarkParamUnsupported(channelID int, param string) {
+// MarkParamUnsupported 标记该渠道**该模型**不支持某参数（自动学习）。
+func MarkParamUnsupported(channelID int, modelName string, param string) {
 	param = normalizeParamName(param)
 	if param == "" || !Enabled() || channelID <= 0 {
 		return
 	}
 	paramStripMu.Lock()
 	defer paramStripMu.Unlock()
-	set := paramStripLearned[channelID]
+	key := paramStripKey{channelID: channelID, model: modelName}
+	set := paramStripLearned[key]
 	if set == nil {
 		set = make(map[string]struct{})
-		paramStripLearned[channelID] = set
+		paramStripLearned[key] = set
 	}
 	set[param] = struct{}{}
 }
@@ -250,27 +274,62 @@ var unsupportedParamPatterns = []*regexp.Regexp{
 	// parameter xxx is not supported
 	regexp.MustCompile(`(?i)parameter\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?\s+is not supported`),
 	// extra fields not permitted ... loc: ['body', 'xxx']
-	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
+	// pydantic v2 的 loc 是**路径数组**：首元素是定位前缀（body/query/...），
+	// 末元素才是真正被拒的字段。旧正则的惰性 .*? 抓的是 loc 之后第一个带引号的
+	// token，于是学到 "body" —— 而 stripOpenAIParam 是封闭白名单、没有 body 分支，
+	// 裁剪成了空操作：该渠道会带着同一个参数反复重发、每次同样失败，且日志照样
+	// 打出「已标记自动裁剪」这种误导性的成功信号。
+	// 两条按顺序匹配，顺序不可调换：多元素先走逗号那条（抓末位），单元素
+	// loc: ['xxx'] 没有逗号，落到括号那条。括号那条若先跑，多元素会退回抓首元素。
+	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?,\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
+	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?\[\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
 }
 
-// IsParamNotSupportedError 判断是否为"参数不支持"的 400 错误，
-// 是则返回参数名。支持 thinking/reasoning_effort/stream_options 等。
-func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
-	if err == nil || err.StatusCode != 400 {
-		return "", false
-	}
-	msg := err.Error()
-	msgLower := strings.ToLower(msg)
+// unsupportedParamPatternsStrict 是「报文里明确点名了某个参数」的措辞子集。
+//
+// 存在的唯一理由是要在 **400 之外**（422 / 5xx）也认参数错误，而放宽到这些
+// 状态码的前提是「不会把无关故障误判成参数问题」——5xx 报文的内容不受我们
+// 控制，什么都可能出现在里面。于是按「是否强制出现 parameter / field /
+// argument 这类词，或强制要求带引号的参数名 + 校验框架」来划线，每一条都
+// 只可能来自请求校验，不可能是通用故障文案。
+//
+// 反面教材是 `does not support X`：它是散文式措辞，`SMTP server does not
+// support STARTTLS`、`does not support ClickHouse` 都会命中，且会提取出
+// "STARTTLS"/"ClickHouse" 这种根本不是请求参数的名字。因此它留在 400-only
+// 的 unsupportedParamPatterns 里，不进本集合。
+var unsupportedParamPatternsStrict = []*regexp.Regexp{
+	// "thinking" is not supported on /v1/chat/completions
+	regexp.MustCompile(`["']([a-zA-Z_][a-zA-Z0-9_]*)["']\s+is not supported`),
+	// Unsupported parameter: 'reasoning_effort'
+	// Unsupported parameter(s): `enable_thinking`
+	regexp.MustCompile(`[Uu]nsupported parameters?(?:\(s\))?:\s*[^a-zA-Z0-9_]{0,2}([a-zA-Z_][a-zA-Z0-9_]*)`),
+	// Unrecognized request argument supplied: stream_options
+	regexp.MustCompile(`[Uu]nrecognized request argument supplied:\s*["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?`),
+	// Additional properties are not allowed ('foo' was unexpected)
+	regexp.MustCompile(`\(\s*["']([a-zA-Z_][a-zA-Z0-9_]*)["']\s+was unexpected\s*\)`),
+	// unknown parameter / unknown field
+	regexp.MustCompile(`(?i)unknown\s+(?:parameter|field):\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`),
+	// invalid parameter: xxx
+	regexp.MustCompile(`(?i)invalid\s+parameter:\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`),
+	// parameter 'xxx' is not supported
+	regexp.MustCompile(`(?i)parameter\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?\s+is not supported`),
+	// parameter 'xxx' is invalid / 'xxx' is invalid（要求带引号的参数名）
+	regexp.MustCompile(`(?i)(?:parameter\s+)?['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]\s+is invalid`),
+	// extra fields not permitted ... loc: ['body', 'xxx']
+	// pydantic v2 的 loc 是**路径数组**：首元素是定位前缀（body/query/...），
+	// 末元素才是真正被拒的字段。旧正则的惰性 .*? 抓的是 loc 之后第一个带引号的
+	// token，于是学到 "body" —— 而 stripOpenAIParam 是封闭白名单、没有 body 分支，
+	// 裁剪成了空操作：该渠道会带着同一个参数反复重发、每次同样失败，且日志照样
+	// 打出「已标记自动裁剪」这种误导性的成功信号。
+	// 两条按顺序匹配，顺序不可调换：多元素先走逗号那条（抓末位），单元素
+	// loc: ['xxx'] 没有逗号，落到括号那条。括号那条若先跑，多元素会退回抓首元素。
+	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?,\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
+	regexp.MustCompile(`(?i)extra fields not permitted.*loc.*?\[\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]`),
+}
 
-	// 特殊识别 reasoning_effort 等级/参数不支持错误：
-	// 例如：level "max" not supported, valid levels: low, medium, high
-	if strings.Contains(msgLower, "valid levels:") ||
-		(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
-		regexp.MustCompile(`(?i)level\s+["']?[a-zA-Z0-9_]+["']?\s+(?:is\s+)?not supported`).MatchString(msg) {
-		return "reasoning_effort", true
-	}
-
-	for _, re := range unsupportedParamPatterns {
+// matchParamPatterns 依次跑一组模式，返回第一个命中的规范化参数名。
+func matchParamPatterns(msg string, patterns []*regexp.Regexp) (string, bool) {
+	for _, re := range patterns {
 		if m := re.FindStringSubmatch(msg); m != nil {
 			return normalizeParamName(m[1]), true
 		}
@@ -278,10 +337,60 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 	return "", false
 }
 
-// IsThinkingNotSupportedError 兼容旧接口
-func IsThinkingNotSupportedError(err *types.NewAPIError) bool {
-	p, ok := IsParamNotSupportedError(err)
-	return ok && p == "thinking"
+// isParamValidationStatusCode 判断该状态码是否可能承载「参数校验失败」。
+//
+// 为什么不能只认 400：参数校验错误的状态码在各家上游极不统一 ——
+// OpenAI 风格 400、FastAPI/pydantic 原生 422、以及**中转层把上游 400
+// 包成自己的 5xx**。生产实测渠道 #238（ilovecat520-cc）就是最后一种：
+// 同一句 `Validation: Unsupported parameter(s): enable_thinking`（原报文用
+// 反引号把参数名包起来），直连上游回 500，网关侧于是完全没认出它是参数问题。
+//
+// 而 5xx 是网关侧故障的状态码，语义上「一定是上游挂了」。把它纳入进来
+// 正是本函数存在的意义：这条错误其实是**请求形状问题**，换个渠道/裁掉
+// 参数就能过，不该按渠道故障熔断，更不该每个请求白烧一轮。
+//
+// 仍刻意排除 401/403/404/429：这些码下若出现「不支持某参数」的措辞，
+// 真实原因几乎必然是凭据/权限/路由，与裁剪参数无关，放进来只会误伤。
+func isParamValidationStatusCode(code int) bool {
+	return code == http.StatusBadRequest ||
+		code == http.StatusUnprocessableEntity ||
+		(code >= 500 && code <= 599)
+}
+
+// IsParamNotSupportedError 判断是否为「参数不支持」错误，是则返回参数名。
+// 支持 thinking/reasoning_effort/enable_thinking/stream_options 等。
+//
+// 判据是**报文措辞**而非状态码：同一个校验错误，OpenAI 风格回 400、
+// pydantic 原生回 422、中转层包成 5xx 都见过（见 isParamValidationStatusCode）。
+// 早先这里第一行写死 `StatusCode != 400` 就返回，把「上游用什么码包装」
+// 当成了「上游在说什么」，于是非 400 的上游整条自动学习链路静默失效：
+// 不标记、不裁剪，每个请求稳定白烧一轮报错，且永不自愈。
+func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	msgLower := strings.ToLower(msg)
+
+	// 400 走完整判据（含散文式措辞与 reasoning_effort 等级启发式），
+	// 行为与既往逐位一致 —— 那 71 条生产 400 正是靠它自愈的，不能动。
+	if err.StatusCode == http.StatusBadRequest {
+		// 特殊识别 reasoning_effort 等级/参数不支持错误：
+		// 例如：level "max" not supported, valid levels: low, medium, high
+		if strings.Contains(msgLower, "valid levels:") ||
+			(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
+			regexp.MustCompile(`(?i)level\s+["']?[a-zA-Z0-9_]+["']?\s+(?:is\s+)?not supported`).MatchString(msg) {
+			return "reasoning_effort", true
+		}
+		return matchParamPatterns(msg, unsupportedParamPatterns)
+	}
+
+	// 400 之外只认「明确点名参数」的严格子集：5xx 报文不受我们控制，
+	// 散文式措辞会把无关故障误判成参数问题。
+	if !isParamValidationStatusCode(err.StatusCode) {
+		return "", false
+	}
+	return matchParamPatterns(msg, unsupportedParamPatternsStrict)
 }
 
 // IsCurfewError 判断是否为"宵禁"类 403 错误（00:00-8:00 服务不可用）。

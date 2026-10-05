@@ -327,7 +327,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
 	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
-	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {
+	for _, param := range loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName) {
 		stripOpenAIParam(request, param)
 	}
 	if info.ChannelType != constant.ChannelTypeOpenAI && info.ChannelType != constant.ChannelTypeAzure {
@@ -575,10 +575,10 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	// 智能负载参数裁剪：确保在所有推理意图/前缀推导完成后，
 	// 若该渠道需要裁剪参数（如 reasoning_effort、thinking 等），最终出站请求必定已裁剪。
-	for _, param := range loadbalancer.GetStripParams(info.ChannelId) {
+	for _, param := range loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName) {
 		stripOpenAIParam(request, param)
 	}
-	if slices.Contains(loadbalancer.GetStripParams(info.ChannelId), "reasoning_effort") {
+	if slices.Contains(loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName), "reasoning_effort") {
 		info.SetReasoningEffort("")
 	}
 

@@ -229,6 +229,18 @@ func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdi
 	if loadbalancer.IsUpstreamGatewayModelDisabled(err) {
 		return autoDisableVerdict{}
 	}
+	// 参数不支持**在任何状态码下**都不得触发自动禁用，理由与它不进
+	// IsUpstreamRelayError 熔断是同一条：这是请求形状问题，裁掉参数重发即可，
+	// 渠道本身完全健康。摘掉它不但治不好，反而让一条好渠道永久退出轮转
+	// （自动禁用不像熔断那样会自愈），且每个请求都还在持续带着那个参数打过来。
+	//
+	// 这道闸门原先不必存在：自动禁用状态码默认只有 401，而参数错误过去只可能是
+	// 400，天然不相交。2026-10-06 把参数识别的状态码门槛放宽到 5xx（上游把
+	// 校验报文包成 500，生产实测渠道 #238）之后，两者就此相交 —— 必须显式排除，
+	// 不能指望「默认状态码列表里碰巧没有 500」，那正是把安全建立在配置巧合上。
+	if _, isParamErr := loadbalancer.IsParamNotSupportedError(err); isParamErr {
+		return autoDisableVerdict{}
+	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。

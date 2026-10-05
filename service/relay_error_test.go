@@ -148,8 +148,8 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "upstream permission denied 403 retries", err: types.NewOpenAIError(errors.New("无权访问 按量分组 分组"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}},
 		{name: "upstream tokenplan model unsupported 404 retries", err: types.NewOpenAIError(errors.New("deepseek-v4-flash is not supported by TokenPlan"), types.ErrorCodeBadResponseStatusCode, http.StatusNotFound), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_permission_denied", Source: "loadbalancer"}},
 		{name: "upstream relay bad response status code 400 retries", err: types.NewOpenAIError(errors.New("来自上游渠道的报错: bad response status code 400 (request id: 202609281247566269176407PebRmdX)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
-			{name: "upstream thinking mode history reasoning_content 400 retries", err: types.NewOpenAIError(errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}},
-			{name: "upstream concurrency limit 400 retries", err: types.NewOpenAIError(errors.New("您已达到并发请求数限制：最多同时处理1个请求"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}},
+		{name: "upstream thinking mode history reasoning_content 400 retries", err: types.NewOpenAIError(errors.New("The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 3392e26e-fd8c-4a6d-ba03-2982501fdef1)"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}},
+		{name: "upstream concurrency limit 400 retries", err: types.NewOpenAIError(errors.New("您已达到并发请求数限制：最多同时处理1个请求"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}},
 		{name: "attempt budget exhausted", err: upstream(http.StatusTooManyRequests), retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
 		// 504/524 曾在 always-skip 清单里永不重试；现放开为常规可重试（见
 		// status_code_ranges.go 的注释）：慢上游网关超时改为换渠道故障转移。
@@ -172,13 +172,13 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			RequestPolicy(c).SessionModeSource = "global"
 		}, want: PolicyDecision{Action: "stop", Reason: "strict_session", Source: "global"}},
 		{name: "nil error", retries: 1, want: PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}},
-			{name: "client aborted never retries", err: types.NewClientAbortedError(context.Canceled), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}},
-			{name: "response committed never retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
-				_, _ = c.Writer.Write([]byte("data: partial response\n\n"))
-			}, want: PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}},
-			{name: "upstream model disabled on gateway 400 retries", err: types.NewOpenAIError(errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}},
-			{name: "upstream model temporarily unavailable 400 retries", err: types.NewOpenAIError(errors.New("模型 'deepseek-v4-pro-free' 暂不可用，请稍后重试。"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
-			{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},
+		{name: "client aborted never retries", err: types.NewClientAbortedError(context.Canceled), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_aborted", Source: "local"}},
+		{name: "response committed never retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
+			_, _ = c.Writer.Write([]byte("data: partial response\n\n"))
+		}, want: PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}},
+		{name: "upstream model disabled on gateway 400 retries", err: types.NewOpenAIError(errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}},
+		{name: "upstream model temporarily unavailable 400 retries", err: types.NewOpenAIError(errors.New("模型 'deepseek-v4-pro-free' 暂不可用，请稍后重试。"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
+		{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},
 		{name: "empty stream still retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamError{ChannelID: 1}, types.ErrorCodeBadResponseBody, http.StatusBadGateway), retries: 2, want: PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -281,4 +281,99 @@ func TestShouldDisableChannelSkipsClientAbortAndEmptyStream(t *testing.T) {
 		http.StatusBadGateway,
 		types.ErrOptionWithSkipRetry(),
 	)))
+}
+
+// upstreamError 造一条生产原样的错误：上游报文经
+// relay/channel/openai/relay-openai.go:314 的 types.WithOpenAIError 转成
+// NewAPIError，错误码取自上游报文自己的 code 字段。
+//
+// **不要**换成 types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponseBody, ...)
+// 来"简化"这个构造：ErrorCodeBadResponseBody 在 alwaysSkipCodes 的默认名单里，
+// DecideRelayRetry 会在到达参数分支之前就 system_retry_exclusion 停掉，
+// 断言随之变成永远成立、什么也证明不了。生产里这类错误的码来自上游报文，
+// 缺省是 unknown_error。
+func upstreamError(statusCode int, msg string) *types.NewAPIError {
+	return types.WithOpenAIError(types.OpenAIError{Message: msg}, statusCode)
+}
+
+// TestDecideRelayRetryTreatsParamErrorAsRequestShape pins the reason string for
+// a parameter rejection no matter which status code the upstream wrapped it in.
+//
+// 为什么值得钉：controller 的重试循环是
+// 「processChannelError（标记裁剪）→ 继续下一次尝试」，而下一轮
+// ConvertOpenAIRequest 出站前就会用刚学到的参数裁剪，请求当场成功。
+// 所以参数错误必须走「换渠道重试」这条路，reason 也必须是 bad_request_retry
+// —— 原因字符串会进日志明细，排障时要能一眼看出这是裁剪生效而不是上游故障。
+//
+// v29.32 之前 5xx 在参数识别里被硬门槛挡住，于是同一条报文会掉到
+// IsUpstreamRelayError 变成 upstream_relay_error：重试路径倒还对（不至于
+// 直接把 500 回给客户端），但 reason 是错的，而且它同时会喂给熔断判据，
+// 把一条好渠道按「上游中继故障」熔掉。
+func TestDecideRelayRetryTreatsParamErrorAsRequestShape(t *testing.T) {
+	const wrappedParamMsg = "Validation: Unsupported parameter(s): `enable_thinking`"
+
+	for _, test := range []struct {
+		name       string
+		statusCode int
+		msg        string
+		wantReason string
+		wantAction string
+	}{
+		{
+			name:       "400 param error retries for param strip",
+			statusCode: http.StatusBadRequest,
+			msg:        wrappedParamMsg,
+			wantReason: "bad_request_retry",
+			wantAction: "retry",
+		},
+		{
+			name:       "422 param error retries for param strip",
+			statusCode: http.StatusUnprocessableEntity,
+			msg:        wrappedParamMsg,
+			wantReason: "bad_request_retry",
+			wantAction: "retry",
+		},
+		{
+			// 生产实测渠道 #238：中转层把同一条校验报文包在自己的 500 里。
+			name:       "500 wrapped param error retries for param strip",
+			statusCode: http.StatusInternalServerError,
+			msg:        wrappedParamMsg,
+			wantReason: "bad_request_retry",
+			wantAction: "retry",
+		},
+		{
+			name:       "500 without param wording stays an upstream fault",
+			statusCode: http.StatusInternalServerError,
+			msg:        "upstream request failed",
+			wantReason: "upstream_relay_error",
+			wantAction: "retry",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			got := DecideRelayRetry(c, upstreamError(test.statusCode, test.msg), 1)
+			assert.Equal(t, test.wantReason, got.Reason)
+			assert.Equal(t, test.wantAction, got.Action)
+		})
+	}
+}
+
+// TestIsUpstreamRelayErrorExcludesParamErrorAcross5xx 是上面那条的熔断侧断言。
+//
+// IsUpstreamRelayError 是熔断判据：命中就 TripBreaker。参数不支持是请求形状
+// 问题、渠道本身完全健康，裁掉参数重发即可，把它算作中继故障等于用一次
+// 误判把好渠道熔掉。400 上这条豁免早在 v29.19 就存在，放宽识别到 5xx 之后
+// 它必须自动跟着覆盖 5xx —— 判据共用 IsParamNotSupportedError，不该有第二份。
+func TestIsUpstreamRelayErrorExcludesParamErrorAcross5xx(t *testing.T) {
+	const wrappedParamMsg = "Validation: Unsupported parameter(s): `enable_thinking`"
+
+	assert.False(t, loadbalancer.IsUpstreamRelayError(upstreamError(
+		http.StatusBadRequest, wrappedParamMsg)),
+		"400 参数错误不得计入中继失效熔断")
+	assert.False(t, loadbalancer.IsUpstreamRelayError(upstreamError(
+		http.StatusInternalServerError, wrappedParamMsg)),
+		"5xx 包着的参数错误同样不得计入中继失效熔断")
+	assert.True(t, loadbalancer.IsUpstreamRelayError(upstreamError(
+		http.StatusInternalServerError, "upstream request failed")),
+		"普通的 500 仍然是中继故障 —— 豁免只能窄化到参数措辞，不能把 5xx 一刀切")
 }

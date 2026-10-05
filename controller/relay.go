@@ -465,9 +465,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 		}
 		// 智能负载参数裁剪：上游明确说不支持某参数时，
-		// 标记该渠道，后续请求（包括重试）自动裁剪该参数后再发。
+		// 标记该渠道**该模型**，后续该模型的请求（包括重试）自动裁剪该参数后再发。
+		// 必须传 modelName（= relayInfo.OriginModelName，与出站裁剪侧同一个字段）：
+		// 按渠道存会让任一模型的一次误判外溢到这条渠道的其它模型，把它们也一起裁掉。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
-			loadbalancer.MarkParamUnsupported(channel.Id, param)
+			loadbalancer.MarkParamUnsupported(channel.Id, modelName, param)
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 不支持 %s 参数，已标记自动裁剪", channel.Id, scopeLabel(modelName), param))
 		}
 		// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。

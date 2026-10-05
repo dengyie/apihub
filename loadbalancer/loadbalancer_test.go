@@ -339,13 +339,125 @@ func TestIsParamNotSupportedError(t *testing.T) {
 	assert.True(t, okPlainPlural)
 	assert.Equal(t, "top_k", pPlainPlural)
 
-	// 500 不应触发参数裁剪
+	// 500 遇到**散文式**措辞不得触发参数裁剪：`field X invalid` 不在严格子集内。
+	// 它没有引号也没有校验框架，"field name invalid" 这类 5xx 报文会误命中。
 	err4 := &types.NewAPIError{
 		StatusCode: 500,
 		Err:        errors.New("field ReasoningEffort invalid"),
 	}
 	_, ok4 := IsParamNotSupportedError(err4)
 	assert.False(t, ok4)
+}
+
+// TestIsParamNotSupportedErrorNon400 钉住「判据是报文措辞、不是状态码」。
+//
+// 背景：ilovecat520-cc（渠道 #238）把 pydantic 的参数校验报文包在 **500** 里
+// 返回，而老实现第一行就写死 `StatusCode != 400` 直接返回，于是自动学习与
+// 裁剪链路在该渠道上静默失效——每个请求白烧一轮 500 且永不自愈。
+func TestIsParamNotSupportedErrorNon400(t *testing.T) {
+	// 生产实测报文（直连 api.ilovecat520.me，带 enable_thinking 回 500、不带回 200）。
+	err500 := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("status_code=500, Validation: Unsupported parameter(s): `enable_thinking`"),
+	}
+	p500, ok500 := IsParamNotSupportedError(err500)
+	assert.True(t, ok500, "500 的参数校验报文必须被识别，否则裁剪链路永不触发")
+	assert.Equal(t, "enable_thinking", p500)
+
+	// pydantic 原生码是 422，同样必须识别。
+	err422 := &types.NewAPIError{
+		StatusCode: 422,
+		Err:        errors.New("Validation: Unsupported parameter(s): `enable_thinking`"),
+	}
+	p422, ok422 := IsParamNotSupportedError(err422)
+	assert.True(t, ok422, "422 是 pydantic 的原生校验码")
+	assert.Equal(t, "enable_thinking", p422)
+
+	// 其余 5xx 变体：只有「明确点名参数」的措辞才算。
+	for _, tc := range []struct{ msg, want string }{
+		{"Unsupported parameter: 'top_k'", "top_k"},
+		{"Unrecognized request argument supplied: top_k", "top_k"},
+		{"Additional properties are not allowed ('top_k' was unexpected)", "top_k"},
+		{"unknown parameter: top_k", "top_k"},
+		{"invalid parameter: top_k", "top_k"},
+		{"parameter 'top_k' is not supported", "top_k"},
+		{"'top_k' is invalid", "top_k"},
+		// loc 是路径数组，末元素才是真正被拒的字段；抓到首元素 body 会让裁剪
+		// 变成空操作（stripOpenAIParam 无 body 分支），该渠道就永远不自愈。
+		{"extra fields not permitted: loc: ['body', 'top_k']", "top_k"},
+		// 单元素 loc 没有逗号，必须由括号那条兜住，否则这一族会从「学错名字」
+		// 变成「完全不识别」。
+		{"extra fields not permitted: loc: ['top_k']", "top_k"},
+		{"'thinking' is not supported on /v1/chat/completions", "thinking"},
+	} {
+		e := &types.NewAPIError{StatusCode: 502, Err: errors.New(tc.msg)}
+		p, ok := IsParamNotSupportedError(e)
+		assert.True(t, ok, "严格子集必须识别: %s", tc.msg)
+		assert.Equal(t, tc.want, p, "参数名提取错误: %s", tc.msg)
+	}
+
+	// 5xx 但**没有**参数校验语义：绝不能误判成参数问题。
+	// 误判的代价是双向的：既会裁掉一个上游其实支持的参数，
+	// 又会让 IsUpstreamRelayError 提前 return false 而不熔断真正坏掉的渠道。
+	for _, msg := range []string{
+		"internal server error",
+		"no active accounts available: total=2 active=0 cooldown=0 expired=2",
+		"模型 glm-5.3-flash 的上游暂时无法使用，系统会定期自动重新检查",
+		"field name invalid",        // 散文式，不在严格子集
+		"does not support STARTTLS", // 散文式：会提取出 "STARTTLS"
+		"task plugin \"gw-a\" does not support a New API upstream",
+		"value is invalid", // 无引号参数名
+		"connection reset by peer",
+		"<html><body>502 Bad Gateway</body></html>",
+	} {
+		e := &types.NewAPIError{StatusCode: 500, Err: errors.New(msg)}
+		_, ok := IsParamNotSupportedError(e)
+		assert.False(t, ok, "非参数语义的 5xx 不得误判: %s", msg)
+	}
+
+	// 仍被排除的状态码：凭据/权限/路由类，报文里即使出现措辞也不认。
+	// 这些码下「不支持某参数」的真实原因几乎必然是凭据或权限，裁剪有害无益。
+	for _, code := range []int{401, 403, 404, 429} {
+		e := &types.NewAPIError{
+			StatusCode: code,
+			Err:        errors.New("Validation: Unsupported parameter(s): `enable_thinking`"),
+		}
+		_, ok := IsParamNotSupportedError(e)
+		assert.False(t, ok, "%d 不应触发参数裁剪", code)
+	}
+
+	// nil 防御
+	_, okNil := IsParamNotSupportedError(nil)
+	assert.False(t, okNil)
+}
+
+// TestIsParamNotSupportedError400Unchanged 钉住 400 路径未被本次改动收窄。
+// 那 71 条生产 400 正是靠它自愈的，任何收紧都是回归。
+func TestIsParamNotSupportedError400Unchanged(t *testing.T) {
+	for _, tc := range []struct {
+		msg  string
+		want string
+	}{
+		{"Unsupported parameter: 'reasoning_effort'", "reasoning_effort"},
+		{"Unsupported parameters: top_k", "top_k"},
+		{"'thinking' is not supported on /v1/chat/completions", "thinking"},
+		{"Unrecognized request argument supplied: stream_options", "stream_options"},
+		{"Additional properties are not allowed ('top_k' was unexpected)", "top_k"},
+		{"does not support parameter \"bar\"", "bar"},
+		{"field ReasoningEffort invalid, should be one of: low, medium, high", "reasoning_effort"},
+		{"parameter 'top_k' is invalid", "top_k"},
+		{"unknown parameter: top_k", "top_k"},
+		{"invalid parameter: top_k", "top_k"},
+		{"parameter top_k is not supported", "top_k"},
+		{"extra fields not permitted: loc: ['body', 'top_k']", "top_k"},
+		{"extra fields not permitted: loc: ['top_k']", "top_k"},
+		{"level \"max\" not supported, valid levels: low, medium, high", "reasoning_effort"},
+	} {
+		e := &types.NewAPIError{StatusCode: 400, Err: errors.New(tc.msg)}
+		p, ok := IsParamNotSupportedError(e)
+		assert.True(t, ok, "400 路径必须保持识别能力: %s", tc.msg)
+		assert.Equal(t, tc.want, p, "400 路径参数名提取被改动: %s", tc.msg)
+	}
 }
 
 func TestIsEOLError(t *testing.T) {
@@ -493,6 +605,31 @@ func TestIsUpstreamRelayError(t *testing.T) {
 		Err:        errors.New("当前分组无可用渠道服务该模型"),
 	}
 	assert.True(t, IsUpstreamRelayError(errNoAvailableChannel))
+}
+
+// TestIsUpstreamRelayErrorExcludesParamErrorOn5xx 钉住 5xx 参数错误**不**熔断。
+//
+// 这是本次放宽状态码门槛后最需要盯住的一条交互：IsUpstreamRelayError 开头就用
+// IsParamNotSupportedError 提前 return false，把参数类错误排除在「中继代理异常」
+// 熔断之外。语义是对的 —— 裁掉参数就能过，不是渠道坏了，熔断它反而是把一条
+// 健康渠道踢出池子。但放宽到 5xx 之后，这条「不熔断」也一并覆盖到了 5xx，
+// 必须钉住，否则日后有人收紧某个模式就会让 #238 那类错误重新开始熔断。
+func TestIsUpstreamRelayErrorExcludesParamErrorOn5xx(t *testing.T) {
+	paramErr := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("status_code=500, Validation: Unsupported parameter(s): `enable_thinking`"),
+	}
+	assert.False(t, IsUpstreamRelayError(paramErr),
+		"5xx 参数错误是请求形状问题，裁剪即可，不应熔断渠道")
+
+	// 反例：同样是 500，但没有参数语义 → 仍应按中继失效熔断。
+	// 若这条也变成 false，说明判据被放宽过头了。
+	relayErr := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("upstream request failed"),
+	}
+	assert.True(t, IsUpstreamRelayError(relayErr),
+		"普通 5xx 仍必须熔断，否则真故障渠道不再被隔离")
 }
 
 func TestIsThinkingModeHistoryError(t *testing.T) {
@@ -817,15 +954,15 @@ func TestOverloadRefundKeepsProbeCountNonNegative(t *testing.T) {
 // 默认自动禁用状态码只有 401，覆盖不到 404 的「模型不存在」，这些渠道因此永远
 // 留在池子里，每次命中都白烧一轮换渠道重试。
 func TestIsUpstreamModelUnavailableError(t *testing.T) {
-		deterministic := []*types.NewAPIError{
-			{StatusCode: 404, Err: errors.New("模型不存在")},
-			{StatusCode: 404, Err: errors.New("status_code=404, 模型不存在")},
-			{StatusCode: 404, Err: errors.New("The model `grok-4.6` does not exist")},
-			{StatusCode: 400, Err: errors.New("model_not_found: unknown model")},
-			{StatusCode: 404, Err: errors.New("no such model: deepseek-v4-flash")},
-			{StatusCode: 400, Err: errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash")},
-			{StatusCode: 400, Err: errors.New("failed to get access token: oauth2: cannot fetch token: 400 Bad Request")},
-		}
+	deterministic := []*types.NewAPIError{
+		{StatusCode: 404, Err: errors.New("模型不存在")},
+		{StatusCode: 404, Err: errors.New("status_code=404, 模型不存在")},
+		{StatusCode: 404, Err: errors.New("The model `grok-4.6` does not exist")},
+		{StatusCode: 400, Err: errors.New("model_not_found: unknown model")},
+		{StatusCode: 404, Err: errors.New("no such model: deepseek-v4-flash")},
+		{StatusCode: 400, Err: errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash")},
+		{StatusCode: 400, Err: errors.New("failed to get access token: oauth2: cannot fetch token: 400 Bad Request")},
+	}
 	for i, err := range deterministic {
 		assert.True(t, IsUpstreamModelUnavailableError(err), "case %d 应当判为永不恢复的上游失效: %v", i, err)
 	}
