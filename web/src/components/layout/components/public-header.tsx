@@ -37,6 +37,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { defaultTopNavLinks } from '../config/top-nav.config'
 import type { TopNavLink } from '../types'
 import { HeaderLogo } from './header-logo'
+import { NavigationDock, type NavigationDockTarget } from './navigation-dock'
 
 const AUTH_PROMPT_SECONDS = 5
 
@@ -72,6 +73,7 @@ export function PublicHeader(props: PublicHeaderProps) {
     homeUrl = '/',
     showAuthButtons = true,
     showNotifications = true,
+    showNavigation = true,
   } = props
 
   const { t } = useTranslation()
@@ -98,6 +100,15 @@ export function PublicHeader(props: PublicHeaderProps) {
   const isAuthenticated = !!user
   const displaySiteName = customSiteName || systemName
   const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
+
+  let dockActiveTarget: NavigationDockTarget | undefined
+  if (pathname === '/') {
+    dockActiveTarget = 'home'
+  } else if (pathname.startsWith('/models')) {
+    dockActiveTarget = 'models'
+  } else if (pathname.startsWith('/dashboard')) {
+    dockActiveTarget = 'console'
+  }
 
   let logoContent: ReactNode = (
     <HeaderLogo
@@ -349,6 +360,16 @@ export function PublicHeader(props: PublicHeaderProps) {
           </nav>
         </div>
       </header>
+
+      {showNavigation ? (
+        <div className={cn(mobileOpen && 'max-sm:hidden')}>
+          <NavigationDock
+            links={links}
+            activeTarget={dockActiveTarget}
+            onLinkClick={handleNavLinkClick}
+          />
+        </div>
+      ) : null}
 
       {/* Mobile full-screen overlay */}
       <div
