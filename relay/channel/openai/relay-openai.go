@@ -24,7 +24,12 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
+	reasoningAsContent := info != nil && info.ChannelSetting.ReasoningAsContent
+
 	if !forceFormat && !thinkToContent {
+		if reasoningAsContent {
+			data = reasoningAsContentFrame(data)
+		}
 		return helper.StringData(c, stripEmptyContentOnReasoningFrame(data))
 	}
 
@@ -34,6 +39,9 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !thinkToContent {
+		if reasoningAsContent {
+			applyReasoningAsContentToDTO(&lastStreamResponse)
+		}
 		return helper.ObjectData(c, lastStreamResponse)
 	}
 

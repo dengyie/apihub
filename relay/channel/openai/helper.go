@@ -53,6 +53,9 @@ func handleClaudeFormat(c *gin.Context, data string, info *relaycommon.RelayInfo
 	if !ok {
 		return fmt.Errorf("expected Claude stream responses, got %T", result.Value)
 	}
+	if info != nil && info.ChannelSetting.ReasoningAsContent {
+		claudeResponses = reasoningAsContentClaude(claudeResponses)
+	}
 	for _, resp := range claudeResponses {
 		helper.ClaudeData(c, *resp)
 	}

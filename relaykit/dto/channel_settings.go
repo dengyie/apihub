@@ -12,9 +12,20 @@ import (
 )
 
 type ChannelSettings struct {
-	TaskPluginKey             string `json:"task_plugin_key,omitempty"`
-	ForceFormat               bool   `json:"force_format,omitempty"`
-	ThinkingToContent         bool   `json:"thinking_to_content,omitempty"`
+	TaskPluginKey     string `json:"task_plugin_key,omitempty"`
+	ForceFormat       bool   `json:"force_format,omitempty"`
+	ThinkingToContent bool   `json:"thinking_to_content,omitempty"`
+	// ReasoningAsContent renders this channel's reasoning as regular answer
+	// text instead of thinking blocks.
+	//
+	// Some upstreams put the whole answer in reasoning_content and leave
+	// content permanently empty, so the client shows a thinking block per
+	// token and never receives an answer body. The gateway cannot repair that
+	// after the fact: in a stream the reasoning frames are already delivered
+	// by the time content turns out to be absent, and any automatic threshold
+	// would also flatten legitimate long reasoning from real reasoner models.
+	// So it is an explicit per-channel opt-in, default off.
+	ReasoningAsContent        bool   `json:"reasoning_as_content,omitempty"`
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
