@@ -16,25 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 /*
  * Marketing landing page.
  *
- * Owns a self-contained design system instead of borrowing the app theme: warm
- * paper neutrals, hairline rules, a wide section rhythm and tight negative
- * tracking. The accent stays on `var(--primary)` so the page follows whichever
- * theme the operator picked. Everything below is scoped under
- * `.landing-root` so it cannot leak into the console.
+ * This file used to carry its own warm-paper palette, duplicated from
+ * `site-design.css` as six hex literals that could drift away from it. It does
+ * not any more: the page reads the same `--background` / `--foreground` /
+ * `--muted-foreground` / `--border` tokens every other surface reads, which is
+ * the whole point of having a design layer. What stays here is the things a
+ * single page owns — its grid, its type ladder, its terminal.
+ *
+ * Scoped under `.landing-root`, because unlike the console this is one page and
+ * has no business restyling anything else.
  */
 
 .landing-root {
-  /* Warm paper palette. Neutrals are slightly warm so the page reads as stock
-     rather than as another dark-mode dashboard. */
-  --landing-bg: #faf9f5;
-  --landing-ink: #111110;
-  --landing-muted: #6f6d68;
-  --landing-rule: #e5e2d8;
-  --landing-surface: #f6f5ee;
   --landing-accent: var(--primary);
 
   /* Spacing scale, widened at each breakpoint rather than hard-coded per rule. */
@@ -47,20 +43,12 @@ For commercial licensing, please contact support@quantumnous.com
   --landing-shell: 1440px;
 
   min-height: 100dvh;
-  color: var(--landing-ink);
-  background: var(--landing-bg);
+  color: var(--foreground);
+  background: var(--background);
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.5;
   letter-spacing: -0.01em;
-}
-
-.dark .landing-root {
-  --landing-bg: #131311;
-  --landing-ink: #f5f4ef;
-  --landing-muted: #aaa79e;
-  --landing-rule: #37362f;
-  --landing-surface: #1e1e1a;
 }
 
 .landing-root a {
@@ -92,9 +80,9 @@ For commercial licensing, please contact support@quantumnous.com
   left: 16px;
   z-index: 100;
   padding: 8px 12px;
-  color: var(--landing-ink);
-  background: var(--landing-bg);
-  border: 1px solid var(--landing-rule);
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
   transform: translateY(-200%);
 }
 
@@ -128,21 +116,8 @@ For commercial licensing, please contact support@quantumnous.com
   align-items: center;
   gap: 8px;
   padding-top: 8px;
-  color: var(--landing-ink);
+  color: var(--foreground);
   font-weight: 500;
-}
-
-.landing-brand-mark {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--landing-bg);
-  background: var(--landing-accent);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
 }
 
 .landing-menu-toggle {
@@ -150,7 +125,7 @@ For commercial licensing, please contact support@quantumnous.com
   align-items: center;
   gap: 8px;
   padding-block: 8px;
-  color: var(--landing-ink);
+  color: var(--foreground);
   background: none;
   border: 0;
   cursor: pointer;
@@ -172,8 +147,8 @@ For commercial licensing, please contact support@quantumnous.com
     flex-direction: column;
     align-items: flex-start;
     gap: 20px;
-    background: var(--landing-bg);
-    border-bottom: 1px solid var(--landing-rule);
+    background: var(--background);
+    border-bottom: 1px solid var(--border);
   }
 }
 
@@ -181,11 +156,27 @@ For commercial licensing, please contact support@quantumnous.com
   display: flex;
   flex-direction: column;
   gap: 20px;
-  color: var(--landing-muted);
+  color: var(--muted-foreground);
 }
 
-.landing-nav-links a:hover {
-  color: var(--landing-ink);
+.landing-footer-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+/* Hover is guarded on `pointer: fine` everywhere below. On a touch screen
+   `:hover` sticks after the tap, so a link the user has already left reads as
+   still-pressed for as long as the page lives. */
+@media (hover: hover) and (pointer: fine) {
+  .landing-nav-links a:hover,
+  .landing-footer-nav a:hover {
+    color: var(--foreground);
+  }
 }
 
 /* ------------------------------------------------------------------ hero -- */
@@ -204,8 +195,8 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 /* Inline pill set into the headline. Always light-on-accent: the accent follows
-   the operator's theme, so pairing it with `--landing-bg` would sink the label
-   into the background in dark mode. */
+   the operator's theme, so pairing it with the page background would sink the
+   label into the background in dark mode. */
 .landing-chip {
   display: inline-flex;
   vertical-align: 0.1em;
@@ -224,7 +215,7 @@ For commercial licensing, please contact support@quantumnous.com
 .landing-hero-sub {
   max-width: 46em;
   margin-top: 16px;
-  color: var(--landing-muted);
+  color: var(--muted-foreground);
   font-size: 15px;
   line-height: 1.55;
 }
@@ -244,8 +235,9 @@ For commercial licensing, please contact support@quantumnous.com
   gap: 8px;
   min-height: 36px;
   padding: 8px 14px;
-  border: 1px solid var(--landing-rule);
-  color: var(--landing-ink);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
   background: transparent;
   font-size: 13px;
   line-height: 18px;
@@ -257,10 +249,6 @@ For commercial licensing, please contact support@quantumnous.com
     border-color 150ms;
 }
 
-.landing-button:hover {
-  border-color: var(--landing-muted);
-}
-
 .landing-button-primary {
   color: #fff;
   background: var(--landing-accent);
@@ -268,9 +256,19 @@ For commercial licensing, please contact support@quantumnous.com
   font-weight: 500;
 }
 
-.landing-button-primary:hover {
-  color: #fff;
-  filter: brightness(1.08);
+@media (hover: hover) and (pointer: fine) {
+  .landing-button:hover {
+    border-color: var(--muted-foreground);
+  }
+
+  /* Inverts rather than brightening. `filter: brightness()` was the old hover,
+     which pushes a saturated accent toward white and drops the label's
+     contrast with it; ink-on-paper has a fixed 15:1 either way. */
+  .landing-button-primary:hover {
+    color: var(--background);
+    background: var(--foreground);
+    border-color: var(--foreground);
+  }
 }
 
 .landing-button svg {
@@ -279,11 +277,12 @@ For commercial licensing, please contact support@quantumnous.com
 
 /* -------------------------------------------------------------- showcase -- */
 
-/* The showcase is the page's visual anchor: a tall lit panel with film grain
-   and a terminal window floating on it. */
+/* A lit panel with a film-grain texture, holding the terminal window. Fixed
+   height: the hero must not resize as the session plays. */
 .landing-showcase {
   position: relative;
   isolation: isolate;
+  height: 460px;
   margin-top: 32px;
   padding: 18px;
   background: linear-gradient(180deg, #edede5, #d5d4ca, #f3f1e9);
@@ -313,61 +312,226 @@ For commercial licensing, please contact support@quantumnous.com
   mix-blend-mode: screen;
 }
 
-.landing-window {
+/* --------------------------------------------------------------- terminal -- */
+
+/* Asymmetric radii: a device silhouette rather than a rounded card. Every
+   other box on the page uses a small uniform radius; the window is the one
+   object that should read as hardware. */
+.landing-terminal {
   display: flex;
+  height: 100%;
   flex-direction: column;
   overflow: hidden;
-  max-width: 760px;
-  margin-inline: auto;
-  border: 1px solid rgb(0 0 0 / 0.1);
-  border-radius: 10px;
-  background: var(--landing-bg);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 0.14);
+  border: 1px solid var(--border);
+  border-radius: 24px 24px 12px 12px;
+  background: var(--background);
 }
 
-.dark .landing-window {
-  border-color: rgb(255 255 255 / 0.1);
-}
-
-.landing-window-bar {
+.landing-terminal-bar {
   display: flex;
+  height: 40px;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--landing-rule);
-  color: var(--landing-muted);
+  justify-content: center;
+  position: relative;
+  padding: 0 56px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 11px;
+  line-height: 1.3;
 }
 
-.landing-window-dots {
-  display: inline-flex;
-  gap: 6px;
+.landing-terminal-dots {
+  position: absolute;
+  left: 12px;
+  display: flex;
+  gap: 5px;
 }
 
-.landing-window-dots i {
+.landing-terminal-dots i {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #d5d4ca;
+  background: #ff5f57;
 }
 
-.dark .landing-window-dots i {
-  background: #4a4841;
+.landing-terminal-dots i:nth-child(2) {
+  background: #febc2e;
 }
 
-.landing-window-dots i:nth-child(2) {
-  background: #e8c98a;
+.landing-terminal-dots i:nth-child(3) {
+  background: #28c840;
 }
 
-.landing-window-dots i:nth-child(3) {
-  background: #d79a86;
+.landing-terminal-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.landing-window-body {
-  flex: 1;
+.landing-terminal-body {
+  display: flex;
   min-height: 0;
-  padding: 18px;
-  font-size: 13px;
+  flex: 1;
+  flex-direction: column;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  /* Three colours, and only three: ink for structure, green for what was
+     added or verified, red for what was taken away. The previous demo used
+     four accents across six token types, which meant no line stood out. */
+  --landing-terminal-green: #008c51;
+  --landing-terminal-red: #c94332;
+}
+
+.dark .landing-terminal-body {
+  --landing-terminal-green: #64d89a;
+  --landing-terminal-red: #ff8c79;
+}
+
+.landing-terminal-output {
+  min-height: 0;
+  flex: 1;
+  padding: 18px 18px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  overflow-wrap: anywhere;
+}
+
+.landing-terminal-output::-webkit-scrollbar {
+  display: none;
+}
+
+.landing-terminal-output:focus-visible {
+  outline-offset: -3px;
+}
+
+.landing-terminal-request {
+  margin: 12px 0 16px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.landing-terminal-request > span {
+  color: var(--landing-accent);
+}
+
+.landing-terminal-line {
+  min-height: 1.65em;
+  white-space: pre-wrap;
+}
+
+.landing-terminal-line[data-tone='command'] {
+  margin-top: 14px;
+  color: var(--foreground);
+}
+
+.landing-terminal-line[data-tone='note'] {
+  margin-top: 14px;
+}
+
+.landing-terminal-line[data-tone='add'],
+.landing-terminal-line[data-tone='success'] {
+  color: var(--landing-terminal-green);
+}
+
+.landing-terminal-line[data-tone='remove'] {
+  color: var(--landing-terminal-red);
+}
+
+.landing-terminal-working {
+  padding: 6px 0 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.landing-terminal-spinner {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 2px);
+  gap: 2px;
+  margin: 0 6px 0 1px;
+  vertical-align: 1px;
+  animation: landing-terminal-spin 1.6s steps(8) infinite;
+}
+
+.landing-terminal-spinner i {
+  width: 2px;
+  height: 2px;
+  background: var(--landing-accent);
+}
+
+.landing-terminal-spinner i:nth-child(2) {
+  opacity: 0.3;
+}
+
+.landing-terminal-spinner i:nth-child(3) {
+  opacity: 0.6;
+}
+
+.landing-terminal-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 48px;
+  max-height: 105px;
+  padding: 10px 18px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  scrollbar-width: none;
+}
+
+.landing-terminal-input > span:first-child {
+  color: var(--muted-foreground);
+}
+
+.landing-terminal-input > span:last-child {
+  min-width: 0;
+}
+
+.landing-terminal-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--landing-accent);
+  animation: landing-terminal-blink 1.2s step-end infinite;
+}
+
+.landing-terminal-status {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.landing-terminal-status > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes landing-terminal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes landing-terminal-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 /* -------------------------------------------------------------- sections -- */
@@ -386,14 +550,14 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .landing-section > h2 span {
-  color: var(--landing-muted);
+  color: var(--muted-foreground);
 }
 
 .landing-grid {
   display: grid;
   gap: 0;
   margin-top: 32px;
-  border-top: 1px solid var(--landing-rule);
+  border-top: 1px solid var(--border);
 }
 
 .landing-card {
@@ -401,109 +565,23 @@ For commercial licensing, please contact support@quantumnous.com
   flex-direction: column;
   gap: 8px;
   padding: 24px 0;
-  border-bottom: 1px solid var(--landing-rule);
+  border-bottom: 1px solid var(--border);
 }
 
+/* Hierarchy comes from size, not weight. Every heading on the page is 400 or
+   500; a bold one reads as a different design system rather than as emphasis. */
 .landing-card h3 {
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
   letter-spacing: -0.02em;
 }
 
 .landing-card p {
   max-width: 42em;
-  color: var(--landing-muted);
-  font-size: 14px;
+  color: var(--muted-foreground);
+  font-size: 16px;
   line-height: 1.55;
-}
-
-.landing-card-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  margin-bottom: 4px;
-  place-items: center;
-  border: 1px solid var(--landing-rule);
-  border-radius: 8px;
-  color: var(--landing-accent);
-  background: var(--landing-surface);
-}
-
-/* The first card spans two columns and carries the artwork, which is what
-   gives the section its asymmetric rhythm. */
-.landing-card-featured {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 20px;
-}
-
-.landing-artwork {
-  position: relative;
-  display: grid;
-  min-height: 200px;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 10px;
-  background:
-    radial-gradient(
-      120% 90% at 20% 0%,
-      rgb(255 255 255 / 0.5),
-      transparent 60%
-    ),
-    linear-gradient(
-      135deg,
-      var(--landing-accent),
-      color-mix(in oklch, var(--landing-accent) 55%, #111)
-    );
-}
-
-.dark .landing-artwork {
-  background:
-    radial-gradient(
-      120% 90% at 20% 0%,
-      rgb(255 255 255 / 0.12),
-      transparent 60%
-    ),
-    linear-gradient(
-      135deg,
-      color-mix(in oklch, var(--landing-accent) 70%, #000),
-      #0d0d0c
-    );
-}
-
-.landing-artwork-glyph {
-  color: rgb(255 255 255 / 0.92);
-  filter: drop-shadow(0 6px 18px rgb(0 0 0 / 0.28));
-}
-
-/* ------------------------------------------------------------------- cta -- */
-
-.landing-cta {
-  margin-top: var(--landing-gap);
-  padding: 40px 0;
-  border-top: 1px solid var(--landing-rule);
-  text-align: center;
-}
-
-.landing-cta h2 {
-  font-size: 24px;
-  font-weight: 400;
-  letter-spacing: -0.03em;
-}
-
-.landing-cta p {
-  margin: 12px auto 0;
-  max-width: 40em;
-  color: var(--landing-muted);
-}
-
-.landing-cta-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 24px;
 }
 
 /* ---------------------------------------------------------------- footer -- */
@@ -518,21 +596,7 @@ For commercial licensing, please contact support@quantumnous.com
   gap: 32px;
   margin-top: var(--landing-gap);
   padding-top: 32px;
-  border-top: 1px solid var(--landing-rule);
-}
-
-.landing-footer-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 12px;
-  color: var(--landing-muted);
-  font-size: 13px;
-}
-
-.landing-footer-nav a:hover {
-  color: var(--landing-ink);
+  border-top: 1px solid var(--border);
 }
 
 .landing-preferences {
@@ -563,7 +627,7 @@ For commercial licensing, please contact support@quantumnous.com
    `TRACKING_EM` there accounts for it when estimating the width. */
 .landing-wordmark text {
   font-family: var(--font-sans);
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.07em;
 }
 
@@ -595,18 +659,29 @@ For commercial licensing, please contact support@quantumnous.com
 
 /* ------------------------------------------------------------ breakpoints -- */
 
-@media (min-width: 768px) {
+@media (min-width: 640px) {
   .landing-root {
     --landing-top: 24px;
-    --landing-left: 40px;
+    --landing-left: 24px;
     --landing-right: 24px;
+    --landing-gap: 132px;
+  }
+
+  .landing-showcase {
+    height: 500px;
+  }
+}
+
+@media (min-width: 768px) {
+  .landing-root {
     --landing-rail: 160px;
     --landing-gap: 152px;
+    --landing-left: 40px;
+    --landing-right: 24px;
   }
 
   .landing-shell {
     grid-template-columns: var(--landing-rail) minmax(0, 1fr);
-    column-gap: 32px;
   }
 
   .landing-header {
@@ -630,7 +705,6 @@ For commercial licensing, please contact support@quantumnous.com
     grid-column: 1 / -1;
     grid-row: 2;
     grid-template-columns: var(--landing-rail) minmax(0, 1fr);
-    column-gap: 32px;
     align-items: start;
     gap: 32px;
   }
@@ -647,7 +721,7 @@ For commercial licensing, please contact support@quantumnous.com
     flex-direction: column;
     align-items: flex-start;
     gap: 14px;
-    color: var(--landing-muted);
+    color: var(--muted-foreground);
     font-size: 13px;
   }
 
@@ -674,18 +748,22 @@ For commercial licensing, please contact support@quantumnous.com
 
   .landing-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    column-gap: 32px;
   }
 
-  .landing-card {
-    padding: 24px 0;
-  }
-
-  .landing-card-featured {
+  /* The lead card spans the row so its claim lands as the section's opening
+     statement rather than as a fourth item in a three-column grid. */
+  .landing-card-lead {
     grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
-    align-items: center;
-    gap: 40px;
+  }
+
+  .landing-card-lead h3 {
+    max-width: 20em;
+    font-size: 24px;
+    line-height: 1.3;
+  }
+
+  .landing-card-lead p {
+    max-width: 52em;
   }
 
   .landing-footer-nav {
@@ -695,8 +773,14 @@ For commercial licensing, please contact support@quantumnous.com
   }
 }
 
-@media (min-width: 1280px) {
+/* Wide screens get symmetric margins. The previous 1280px step raised only
+   `--landing-right`, which left the content column 40px from the left edge and
+   80px from the right on every desktop viewport — the rail's own 160px hid
+   most of it, but the header and footer were visibly off-centre. */
+@media (min-width: 1024px) {
   .landing-root {
+    --landing-top: 48px;
+    --landing-left: 80px;
     --landing-right: 80px;
     --landing-gap: 196px;
   }
@@ -706,9 +790,22 @@ For commercial licensing, please contact support@quantumnous.com
   .landing-showcase {
     padding: 12px;
   }
+}
 
-  .landing-window-body {
-    padding: 14px;
+/* Narrow phones: the status bar's three fixed-width spans cannot fit inside a
+   358px column, and the middle one is the only one that carries no state. */
+@media (max-width: 420px) {
+  .landing-terminal-status > span:nth-child(2) {
+    display: none;
+  }
+
+  .landing-terminal-output,
+  .landing-terminal-input {
+    padding-inline: 14px;
+  }
+
+  .landing-terminal-status {
+    padding-inline: 14px;
   }
 }
 

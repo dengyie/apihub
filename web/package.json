@@ -24,6 +24,8 @@
     "knip": "knip"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.2.0",
+    "@astryxdesign/theme-neutral": "0.2.0",
     "@base-ui/react": "^1.6.0",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-markdown": "^6.5.0",

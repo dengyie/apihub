@@ -16,24 +16,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { SidebarTrigger } from '@/components/ui/sidebar'
+import { useTranslation } from 'react-i18next'
+
+import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
-type HeaderProps = React.HTMLAttributes<HTMLElement>
+export function ContentLoading(props: { className?: string }) {
+  const { t } = useTranslation()
 
-export function Header({ className, children, ...props }: HeaderProps) {
   return (
-    <header
+    <div
       className={cn(
-        'sticky top-0 z-40 h-[var(--app-header-height,3rem)] w-full shrink-0 bg-transparent',
-        className
+        'flex min-h-52 w-full items-center justify-center',
+        props.className
       )}
-      {...props}
+      role='status'
+      aria-live='polite'
     >
-      <div className='flex h-full items-center gap-1.5 px-2 sm:gap-2 sm:px-3'>
-        <SidebarTrigger variant='ghost' className='size-8' />
-        {children}
+      <div className='animate-spin motion-reduce:animate-none'>
+        <Spinner className='size-6 animate-none' aria-hidden='true' />
       </div>
-    </header>
+      <span className='sr-only'>{t('Loading...')}</span>
+    </div>
+  )
+}
+
+export function ContentReveal(props: {
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div className={cn('snowapi-content-reveal', props.className)}>
+      {props.children}
+    </div>
   )
 }

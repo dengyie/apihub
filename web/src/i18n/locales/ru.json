@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "Лимиты, которые срабатывают рано",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "Задавайте квоты по токену, по модели или по группе. Шлюз отклонит запрос раньше, чем это сделает счёт вышестоящего провайдера.",
     "Health you can act on": "Здоровье, с которым можно работать",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Задержка, доля ошибок и доля успеха по каждому каналу, а также теневой аудит: сначала только запись, потом уже отключение.",
-    "Ready when you are.": "Готовы, когда готовы вы.",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "Запустите на своём домене. С вашего сервера не уходит ничего, кроме вызовов, которые вы сознательно пересылаете."
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Задержка, доля ошибок и доля успеха по каждому каналу, а также теневой аудит: сначала только запись, потом уже отключение."
   }
 }

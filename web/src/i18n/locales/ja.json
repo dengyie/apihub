@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "早い段階で効く上限",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "トークン・モデル・グループごとにクォータを設定。ゲートウェイは上流の請求書より先にリクエストを拒否します。",
     "Health you can act on": "行動できるヘルス",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "チャネルごとのレイテンシ、エラー率、成功率。無効化の前に記録だけを行うシャドウモード監査を備えています。",
-    "Ready when you are.": "いつでも始められます。",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "自分のドメインで動かしてください。あなたが意図的に転送した呼び出し以外、あなたのサーバーから出るものはありません。"
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "チャネルごとのレイテンシ、エラー率、成功率。無効化の前に記録だけを行うシャドウモード監査を備えています。"
   }
 }

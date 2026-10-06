@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "早早就生效的额度",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "按令牌、模型或分组设配额。网关会在上游账单之前先拒绝这个请求。",
     "Health you can act on": "能拿来动手的健康度",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "每个渠道的延迟、错误率与成功率，并带一个影子模式审计——先记录，再禁用。",
-    "Ready when you are.": "随时可以开始。",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "跑在你自己域名下。除了你主动转发的请求，什么都不会离开你的服务器。"
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "每个渠道的延迟、错误率与成功率，并带一个影子模式审计——先记录，再禁用。"
   }
 }

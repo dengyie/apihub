@@ -18,7 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { CSSProperties } from 'react'
 
-import { useLandingInView } from '../hooks'
+import { useVisibleMotion } from '@/hooks/use-visible-motion'
+
 import {
   computeWordmarkMetrics,
   STRIPE_STEP,
@@ -35,7 +36,9 @@ const CLIP_ID = 'landing-wordmark-clip'
  * The site name, clipped into a stack of thin stripes that a slow sweep fills.
  */
 export function LandingWordmark({ brand }: { brand: string }) {
-  const [ref, inView] = useLandingInView<HTMLDivElement>()
+  // The stripe sweep is the one decoration on the page that animates forever,
+  // so it runs only while the mark is on screen and the tab is in front.
+  const { ref, playing } = useVisibleMotion<HTMLDivElement>()
   const { fontSize, width, height, baseline, rows } =
     computeWordmarkMetrics(brand)
 
@@ -43,7 +46,7 @@ export function LandingWordmark({ brand }: { brand: string }) {
     <div
       ref={ref}
       className='landing-wordmark'
-      data-playing={inView}
+      data-playing={playing}
       aria-hidden='true'
     >
       <svg viewBox={`0 0 ${width} ${height}`} focusable='false'>

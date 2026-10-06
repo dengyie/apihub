@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "Spend limits that bite early",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.",
     "Health you can act on": "Health you can act on",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.",
-    "Ready when you are.": "Ready when you are.",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward."
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables."
   }
 }
