@@ -557,12 +557,14 @@ For commercial licensing, please contact support@quantumnous.com
   height: auto;
 }
 
-/* Font size and metrics are computed from the brand name in
-   `landing-wordmark.tsx` so a name of any length keeps its natural glyph
-   proportions; only the weight lives here. */
+/* Font size and box metrics are computed from the brand name in
+   `wordmark-metrics.ts` so a name of any length keeps its natural glyph
+   proportions. Tracking is in em to stay proportional at every size, and
+   `TRACKING_EM` there accounts for it when estimating the width. */
 .landing-wordmark text {
   font-family: var(--font-sans);
   font-weight: 600;
+  letter-spacing: -0.07em;
 }
 
 .landing-wordmark rect {

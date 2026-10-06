@@ -20,6 +20,8 @@ import { Link } from '@tanstack/react-router'
 import { type LucideIcon, Activity, Gauge, Route } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+
 type LandingCard = {
   icon: LucideIcon
   title: string
@@ -50,6 +52,10 @@ export function LandingSections({
   isAuthenticated: boolean
 }) {
   const { t } = useTranslation()
+  // Same source as the header: a module the operator disabled in 导航配置 is
+  // absent from the list, so the CTA is hidden rather than left to bounce off
+  // the `/about` guard back to the landing page.
+  const showAbout = useTopNavLinks().some((link) => link.href === '/about')
 
   return (
     <>
@@ -111,9 +117,11 @@ export function LandingSections({
           >
             {isAuthenticated ? t('Go to Dashboard') : t('Get started')}
           </Link>
-          <Link to='/about' className='landing-button'>
-            {t('About')}
-          </Link>
+          {showAbout ? (
+            <Link to='/about' className='landing-button'>
+              {t('About')}
+            </Link>
+          ) : null}
         </div>
       </section>
     </>

@@ -60,11 +60,21 @@ describe('computeWordmarkMetrics', () => {
     expect(computeWordmarkMetrics('接口').width).toBe(1120)
   })
 
-  test('widens the band instead of clipping a very long name', () => {
-    // Past MIN_FONT_SIZE the natural width no longer fits, and the old
-    // textLength version cut the ends off.
-    expect(computeWordmarkMetrics('x'.repeat(40)).width).toBeGreaterThan(1120)
-  })
+  // The regression this guards: the band used to widen past MIN_FONT_SIZE while
+  // its height shrank with the font size, and since the SVG is `height: auto`
+  // the whole footer collapsed into a sliver for a long site name.
+  test.each(['New API', '一个非常非常长的中文站点名称', 'x'.repeat(40)])(
+    'holds the box at a constant %s size whatever the name length',
+    (brand) => {
+      const reference = computeWordmarkMetrics('New API')
+
+      expect(computeWordmarkMetrics(brand)).toMatchObject({
+        width: reference.width,
+        height: reference.height,
+        rows: reference.rows,
+      })
+    }
+  )
 
   test('keeps the baseline inside the viewBox so the mark is not clipped', () => {
     for (const brand of ['New API', '接', 'x'.repeat(40)]) {

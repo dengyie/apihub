@@ -20,6 +20,8 @@ import { Link } from '@tanstack/react-router'
 import { ArrowUpRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+
 import { HeroTerminalDemo } from './hero-terminal-demo'
 
 export function LandingHero({
@@ -30,6 +32,10 @@ export function LandingHero({
   isAuthenticated: boolean
 }) {
   const { t } = useTranslation()
+  // Same source as the header: a module the operator disabled in 导航配置 is
+  // absent from the list, so the CTA is hidden rather than left to bounce off
+  // the `/pricing` guard back to the landing page.
+  const showPricing = useTopNavLinks().some((link) => link.href === '/pricing')
 
   return (
     <section className='landing-hero'>
@@ -52,9 +58,11 @@ export function LandingHero({
           {isAuthenticated ? t('Go to Dashboard') : t('Get started')}
           <ArrowUpRight size={14} aria-hidden='true' />
         </Link>
-        <Link to='/pricing' className='landing-button'>
-          {t('Model pricing')}
-        </Link>
+        {showPricing ? (
+          <Link to='/pricing' className='landing-button'>
+            {t('Model pricing')}
+          </Link>
+        ) : null}
       </div>
 
       <div className='landing-showcase'>

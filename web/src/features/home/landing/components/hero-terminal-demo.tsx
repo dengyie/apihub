@@ -171,14 +171,15 @@ interface HeroTerminalDemoProps {
 export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [transitioning, setTransitioning] = useState(false)
-  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined)
+  const [autoCycle, setAutoCycle] = useState(true)
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
+    if (!autoCycle) return
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
     if (mq.matches) return
 
-    intervalRef.current = setInterval(() => {
+    const interval = setInterval(() => {
       setTransitioning(true)
       timeoutRef.current = setTimeout(() => {
         setActiveIndex((prev) => (prev + 1) % API_DEMOS.length)
@@ -187,14 +188,16 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
     }, CYCLE_INTERVAL)
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
+      clearInterval(interval)
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
     }
-  }, [])
+  }, [autoCycle])
 
   const handleSelect = (index: number) => {
     if (index === activeIndex) return
-    if (intervalRef.current) clearInterval(intervalRef.current)
+    // Choosing a tab pins it: turning `autoCycle` off tears the interval down
+    // through the effect above, so no timer survives the manual selection.
+    setAutoCycle(false)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
     setTransitioning(true)
     timeoutRef.current = setTimeout(() => {
@@ -228,6 +231,7 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
             return (
               <button
                 key={item.id}
+                type='button'
                 onClick={() => handleSelect(index)}
                 className={cn(
                   'relative -mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-[11px] font-medium tracking-wide transition-colors sm:px-3 sm:text-xs',

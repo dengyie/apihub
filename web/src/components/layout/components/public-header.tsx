@@ -34,7 +34,6 @@ import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { defaultTopNavLinks } from '../config/top-nav.config'
 import type { NavigationDockTarget } from '../lib/navigation-dock-items'
 import type { TopNavLink } from '../types'
 import { AuthPromptDialog } from './auth-prompt'
@@ -42,17 +41,11 @@ import { HeaderLogo } from './header-logo'
 import { NavigationDock } from './navigation-dock'
 
 export interface PublicHeaderProps {
-  navLinks?: TopNavLink[]
-  mobileLinks?: TopNavLink[]
-  navContent?: React.ReactNode
   showThemeSwitch?: boolean
   showLanguageSwitcher?: boolean
   logo?: React.ReactNode
   siteName?: string
   homeUrl?: string
-  leftContent?: React.ReactNode
-  rightContent?: React.ReactNode
-  showNavigation?: boolean
   showAuthButtons?: boolean
   showNotifications?: boolean
   className?: string
@@ -60,7 +53,6 @@ export interface PublicHeaderProps {
 
 export function PublicHeader(props: PublicHeaderProps) {
   const {
-    navLinks = defaultTopNavLinks,
     showThemeSwitch = true,
     showLanguageSwitcher = true,
     logo: customLogo,
@@ -68,7 +60,6 @@ export function PublicHeader(props: PublicHeaderProps) {
     homeUrl = '/',
     showAuthButtons = true,
     showNotifications = true,
-    showNavigation = true,
   } = props
 
   const { t } = useTranslation()
@@ -82,7 +73,7 @@ export function PublicHeader(props: PublicHeaderProps) {
     loading,
     logoLoaded,
   } = useSystemConfig()
-  const dynamicLinks = useTopNavLinks()
+  const links = useTopNavLinks()
   const notifications = useNotifications()
   const routerState = useRouterState()
   const pathname = routerState.location.pathname
@@ -90,7 +81,6 @@ export function PublicHeader(props: PublicHeaderProps) {
   const user = auth.user
   const isAuthenticated = !!user
   const displaySiteName = customSiteName || systemName
-  const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
 
   let dockActiveTarget: NavigationDockTarget | undefined
   if (pathname === '/') {
@@ -305,15 +295,13 @@ export function PublicHeader(props: PublicHeaderProps) {
         </div>
       </header>
 
-      {showNavigation ? (
-        <div className={cn(mobileOpen && 'max-sm:hidden')}>
-          <NavigationDock
-            links={links}
-            activeTarget={dockActiveTarget}
-            onLinkClick={handleNavLinkClick}
-          />
-        </div>
-      ) : null}
+      <div className={cn(mobileOpen && 'max-sm:hidden')}>
+        <NavigationDock
+          links={links}
+          activeTarget={dockActiveTarget}
+          onLinkClick={handleNavLinkClick}
+        />
+      </div>
 
       {/* Mobile full-screen overlay */}
       <div

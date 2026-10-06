@@ -25,8 +25,6 @@ import { SystemUpdateAction } from '@/features/system-update/system-update-actio
 import { useNotifications } from '@/hooks/use-notifications'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
-import { defaultTopNavLinks } from '../config/top-nav.config'
-import type { TopNavLink } from '../types'
 import { Header } from './header'
 import { NavigationDock } from './navigation-dock'
 import { SystemBrand } from './system-brand'
@@ -40,38 +38,15 @@ import { SystemBrand } from './system-brand'
  * <AppHeader />
  *
  * @example
- * // Custom navigation links
- * <AppHeader navLinks={customLinks} />
- *
- * @example
  * // Hide the search box
  * <AppHeader showSearch={false} />
- *
- * @example
- * // Fully customize left and right content
- * <AppHeader
- *   leftContent={<CustomLeft />}
- *   rightContent={<CustomRight />}
- * />
  */
 type AppHeaderProps = {
-  /**
-   * Custom navigation links, uses default global navigation or dynamically generated from backend if not provided
-   */
-  navLinks?: TopNavLink[]
-  /**
-   * Left content
-   */
-  leftContent?: React.ReactNode
   /**
    * Whether to show search box
    * @default true
    */
   showSearch?: boolean
-  /**
-   * Custom right content, overrides default right content if provided
-   */
-  rightContent?: React.ReactNode
   /**
    * Whether to show notification button
    * @default true
@@ -90,17 +65,12 @@ type AppHeaderProps = {
 }
 
 export function AppHeader({
-  navLinks = defaultTopNavLinks,
-  leftContent,
   showSearch = true,
-  rightContent,
   showNotifications = true,
   showConfigDrawer = true,
   showProfileDropdown = true,
 }: AppHeaderProps) {
-  // Prioritize dynamically generated links from backend
-  const dynamicLinks = useTopNavLinks()
-  const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
+  const links = useTopNavLinks()
 
   // Notifications hook
   const notifications = useNotifications()
@@ -113,32 +83,26 @@ export function AppHeader({
           <SystemUpdateAction presentation='version' />
         </div>
 
-        {leftContent ? (
-          <div className='ms-2 flex items-center'>{leftContent}</div>
-        ) : null}
-
-        {rightContent ?? (
-          <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2'>
-            {showSearch && (
-              <Search className='w-8 flex-none [&>span]:hidden sm:[&>span]:inline' />
-            )}
-            {showNotifications && (
-              <NotificationPopover
-                open={notifications.popoverOpen}
-                onOpenChange={notifications.setPopoverOpen}
-                unreadCount={notifications.unreadCount}
-                activeTab={notifications.activeTab}
-                onTabChange={notifications.setActiveTab}
-                notice={notifications.notice}
-                announcements={notifications.announcements}
-                loading={notifications.loading}
-              />
-            )}
-            <LanguageSwitcher />
-            {showConfigDrawer && <ConfigDrawer />}
-            {showProfileDropdown && <ProfileDropdown />}
-          </div>
-        )}
+        <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2'>
+          {showSearch && (
+            <Search className='w-8 flex-none [&>span]:hidden sm:[&>span]:inline' />
+          )}
+          {showNotifications && (
+            <NotificationPopover
+              open={notifications.popoverOpen}
+              onOpenChange={notifications.setPopoverOpen}
+              unreadCount={notifications.unreadCount}
+              activeTab={notifications.activeTab}
+              onTabChange={notifications.setActiveTab}
+              notice={notifications.notice}
+              announcements={notifications.announcements}
+              loading={notifications.loading}
+            />
+          )}
+          <LanguageSwitcher />
+          {showConfigDrawer && <ConfigDrawer />}
+          {showProfileDropdown && <ProfileDropdown />}
+        </div>
       </Header>
       <NavigationDock links={links} activeTarget='console' />
     </>
