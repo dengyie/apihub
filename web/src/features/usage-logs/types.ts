@@ -30,7 +30,7 @@ import type { UsageLog } from './data/schema'
 /**
  * Log category for different log types
  */
-export type LogCategory = 'common' | 'drawing' | 'task'
+export type LogCategory = 'common'
 
 // ============================================================================
 // Filter Types
@@ -58,23 +58,9 @@ export interface CommonLogFilters extends CommonFilters {
 }
 
 /**
- * Drawing logs specific filters
+ * Filter type for usage logs
  */
-export interface DrawingLogFilters extends CommonFilters {
-  mjId?: string
-}
-
-/**
- * Task logs specific filters
- */
-export interface TaskLogFilters extends CommonFilters {
-  taskId?: string
-}
-
-/**
- * Union type for all log filters
- */
-export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
+export type LogFilters = CommonLogFilters
 
 // ============================================================================
 // Common Logs Additional Types
@@ -464,40 +450,14 @@ export interface GetLogStatsResponse {
 }
 
 // ============================================================================
-// Drawing Log Types
-// ============================================================================
-
-export interface GetMidjourneyLogsParams {
-  p?: number
-  page_size?: number
-  channel_id?: string
-  mj_id?: string
-  start_timestamp?: number
-  end_timestamp?: number
-}
-
-// ============================================================================
-// Task Log Types
-// ============================================================================
-
-export interface GetTaskLogsParams {
-  p?: number
-  page_size?: number
-  channel_id?: string
-  task_id?: string
-  start_timestamp?: number
-  end_timestamp?: number
-}
-
-// ============================================================================
 // Fetch Logs Configuration
 // ============================================================================
 
 /**
- * Configuration for fetching logs by category
+ * Configuration for fetching logs
  */
 export interface FetchLogsConfig {
-  logCategory: LogCategory
+  logCategory?: LogCategory
   isAdmin: boolean
   page: number
   pageSize: number

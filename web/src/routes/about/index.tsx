@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute, isRedirect, redirect } from '@tanstack/react-router'
 
 import { About } from '@/features/about'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
@@ -31,7 +31,7 @@ export const Route = createFileRoute('/about/')({
         throw redirect({ to: '/' })
       }
     } catch (error) {
-      if ((error as { to?: string })?.to) throw error
+      if (isRedirect(error)) throw error
       throw redirect({ to: '/' })
     }
   },

@@ -28,9 +28,9 @@ import type { LogCategory } from '../types'
  * Get column definitions based on log category
  */
 export function useColumnsByCategory(
-  _logCategory: LogCategory,
-  isAdmin: boolean,
-  isRoot: boolean,
+  _logCategory?: LogCategory,
+  isAdmin = false,
+  isRoot = false,
   showBillingSource = false
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): ColumnDef<any>[] {

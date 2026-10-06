@@ -72,7 +72,7 @@ function UsageLogsContent() {
         <SectionPageLayout.Content>
           <div className='flex h-full min-h-0 flex-col gap-4'>
             <div className='min-h-0 flex-1'>
-              <UsageLogsTable logCategory='common' />
+              <UsageLogsTable />
             </div>
           </div>
         </SectionPageLayout.Content>

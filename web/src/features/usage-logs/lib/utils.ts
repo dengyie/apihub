@@ -116,36 +116,6 @@ function buildTimeRangeParams(
 }
 
 /**
- * Build base parameters with time range (for drawing and task logs)
- * @param useMilliseconds - Whether to use millisecond timestamps (true for drawing logs, false for task logs)
- */
-export function buildBaseParams(config: {
-  page: number
-  pageSize: number
-  searchParams: Record<string, unknown>
-  useMilliseconds?: boolean
-}): {
-  p: number
-  page_size: number
-  channel_id?: string
-  start_timestamp?: number
-  end_timestamp?: number
-} {
-  const { page, pageSize, searchParams, useMilliseconds = false } = config
-
-  return {
-    p: page,
-    page_size: pageSize,
-    ...(searchParams.channel
-      ? {
-          channel_id: String(searchParams.channel),
-        }
-      : {}),
-    ...buildTimeRangeParams(searchParams, useMilliseconds),
-  }
-}
-
-/**
  * Build API params from search params and column filters (for common logs)
  */
 export function buildApiParams(config: {

@@ -47,30 +47,22 @@ interface UsageLogsMobileListProps<TData> {
   isLoading?: boolean
   emptyTitle?: string
   emptyDescription?: string
-  logCategory: LogCategory
+  logCategory?: LogCategory
 }
 
-function UsageLogsMobileSkeleton(props: { separate: boolean }) {
+function UsageLogsMobileSkeleton() {
   const { t } = useTranslation()
   return (
     <div
       role='status'
       aria-label={t('Loading')}
       aria-busy='true'
-      className={
-        props.separate
-          ? 'min-w-0 space-y-3'
-          : 'border-border/50 bg-card overflow-hidden rounded-lg border'
-      }
+      className='min-w-0 space-y-3'
     >
       {[1, 2, 3].map((i) => (
         <div
           key={i}
-          className={
-            props.separate
-              ? 'border-border/60 bg-card space-y-3 rounded-xl border p-3.5'
-              : 'border-border/40 space-y-2.5 border-b p-3 last:border-b-0'
-          }
+          className='border-border/60 bg-card space-y-3 rounded-xl border p-3.5'
         >
           <div className='flex items-center justify-between gap-3'>
             <Skeleton className='h-5 w-40 rounded-md' />
@@ -95,7 +87,6 @@ export function UsageLogsMobileList<TData>({
   isLoading = false,
   emptyTitle,
   emptyDescription,
-  logCategory: _logCategory = 'common',
 }: UsageLogsMobileListProps<TData>) {
   const { t } = useTranslation()
 
@@ -105,7 +96,7 @@ export function UsageLogsMobileList<TData>({
     t('No usage logs available. Logs will appear here once API calls are made.')
 
   if (isLoading) {
-    return <UsageLogsMobileSkeleton separate />
+    return <UsageLogsMobileSkeleton />
   }
 
   const rows = table.getRowModel().rows

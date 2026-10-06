@@ -80,15 +80,14 @@ function deserializeLogTypeFilter(value: unknown): unknown[] {
 }
 
 interface UsageLogsTableProps {
-  logCategory: LogCategory
+  logCategory?: LogCategory
 }
 
-export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
+export function UsageLogsTable({
+  logCategory = 'common',
+}: UsageLogsTableProps = {}) {
   const { t } = useTranslation()
-  const getColumnClassName = useCallback(
-    () => (logCategory === 'common' ? 'py-2' : 'py-3.5'),
-    [logCategory]
-  )
+  const getColumnClassName = useCallback(() => 'py-2', [])
   const {
     isAdminView: isAdmin,
     isRootView: isRoot,
@@ -99,7 +98,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const userId = useAuthStore((state) => state.auth.user?.id)
   const { data: showBillingSource = false } = useQuery({
     queryKey: ['usage-log-billing-source', isAdmin, userId],
-    enabled: logCategory === 'common' && userId != null,
+    enabled: userId != null,
     queryFn: async () => {
       if (isAdmin) {
         const plansResult = await getAdminPlans()
@@ -224,12 +223,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ensurePageInRange,
   })
 
-  const isCommon = logCategory === 'common'
-
   return (
     <DataTablePage
       table={table}
-      compactPagination={isMobile && isCommon}
+      compactPagination={isMobile}
       columns={columns as ColumnDef<Record<string, unknown>>[]}
       isLoading={isLoadingData}
       isFetching={isFetching}
@@ -246,7 +243,6 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         <UsageLogsMobileList
           table={table}
           isLoading={isLoadingData}
-          logCategory={logCategory}
         />
       }
       toolbar={<CommonLogsFilterBar table={table} />}
@@ -254,9 +250,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         const logType = (row.original as Record<string, unknown>).type as
           | number
           | undefined
-        let tintClass =
-          isCommon && logType != null ? (logTypeRowTint[logType] ?? '') : ''
-        if (isCommon && isAdmin) {
+        let tintClass = logType != null ? (logTypeRowTint[logType] ?? '') : ''
+        if (isAdmin) {
           const other = parseLogOther(
             ((row.original as Record<string, unknown>).other as string) ?? ''
           )
