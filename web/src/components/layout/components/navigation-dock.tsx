@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
-import { Boxes, ChevronRight, House, LayoutDashboard } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import {
   AnimatePresence,
   motion,
@@ -32,21 +32,19 @@ import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/lib/utils'
 
+import {
+  buildDockItems,
+  type DockLink,
+  type NavigationDockTarget,
+} from '../lib/navigation-dock-items'
 import type { TopNavLink } from '../types'
 
 import './navigation-dock.css'
-
-export type NavigationDockTarget = 'home' | 'console' | 'models'
 
 type DockSpring = {
   damping: number
   mass: number
   stiffness: number
-}
-
-type DockLink = TopNavLink & {
-  icon: React.ReactNode
-  target: NavigationDockTarget
 }
 
 type NavigationDockProps = {
@@ -238,44 +236,7 @@ export function NavigationDock({
     scheduleCollapse()
   }, [canAutoCollapse, scheduleCollapse])
 
-  const items = useMemo<DockLink[]>(() => {
-    const targets: Array<{
-      target: NavigationDockTarget
-      title: string
-      href: string
-      icon: React.ReactNode
-    }> = [
-      {
-        target: 'home',
-        title: t('Home'),
-        href: '/',
-        icon: <House />,
-      },
-      {
-        target: 'console',
-        title: t('Console'),
-        href: '/dashboard',
-        icon: <LayoutDashboard />,
-      },
-      {
-        target: 'models',
-        title: t('Model List'),
-        href: '/models',
-        icon: <Boxes />,
-      },
-    ]
-
-    return targets.map((target) => {
-      const configured = links.find((link) => link.href === target.href)
-      return {
-        ...configured,
-        target: target.target,
-        title: configured?.title || target.title,
-        href: target.href,
-        icon: target.icon,
-      }
-    })
-  }, [links, t])
+  const items = useMemo(() => buildDockItems(links, t), [links, t])
 
   const resolvedMagnification = shouldReduceMotion
     ? baseItemSize

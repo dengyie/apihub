@@ -16,21 +16,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useId, type CSSProperties } from 'react'
+import type { CSSProperties } from 'react'
 
 import { useLandingInView } from '../hooks'
+import {
+  computeWordmarkMetrics,
+  STRIPE_STEP,
+  STRIPE_THICKNESS,
+} from '../wordmark-metrics'
 
-const ROWS = Array.from({ length: 36 }, (_, row) => row)
+/**
+ * Single instance per page, so a constant id is enough — and unlike
+ * `useId()` it stays pure ASCII, which keeps it valid inside `url(#…)`.
+ */
+const CLIP_ID = 'landing-wordmark-clip'
 
 /**
  * The site name, clipped into a stack of thin stripes that a slow sweep fills.
- *
- * `textLength` makes the mark fit the viewBox whatever the operator called
- * their deployment, so a two-word name stretches the same way a short one does.
  */
 export function LandingWordmark({ brand }: { brand: string }) {
-  const clipId = useId()
   const [ref, inView] = useLandingInView<HTMLDivElement>()
+  const { fontSize, width, height, baseline, rows } =
+    computeWordmarkMetrics(brand)
 
   return (
     <div
@@ -39,27 +46,27 @@ export function LandingWordmark({ brand }: { brand: string }) {
       data-playing={inView}
       aria-hidden='true'
     >
-      <svg viewBox='0 0 1120 210' focusable='false'>
+      <svg viewBox={`0 0 ${width} ${height}`} focusable='false'>
         <defs>
-          <clipPath id={clipId}>
+          <clipPath id={CLIP_ID}>
             <text
-              x='0'
-              y='205'
-              textLength='1120'
-              lengthAdjust='spacingAndGlyphs'
+              x={width / 2}
+              y={baseline}
+              fontSize={fontSize}
+              textAnchor='middle'
             >
               {brand}
             </text>
           </clipPath>
         </defs>
-        <g clipPath={`url(#${clipId})`}>
-          {ROWS.map((row) => (
+        <g clipPath={`url(#${CLIP_ID})`}>
+          {Array.from({ length: rows }, (_, row) => (
             <rect
               key={row}
               x='0'
-              y={row * 6}
-              width='1120'
-              height='2'
+              y={row * STRIPE_STEP}
+              width={width}
+              height={STRIPE_THICKNESS}
               rx='1'
               style={{ '--stripe-row': row } as CSSProperties}
             />

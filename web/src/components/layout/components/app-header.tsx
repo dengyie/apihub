@@ -44,8 +44,8 @@ import { SystemBrand } from './system-brand'
  * <AppHeader navLinks={customLinks} />
  *
  * @example
- * // Hide navigation bar and search box
- * <AppHeader showTopNav={false} showSearch={false} />
+ * // Hide the search box
+ * <AppHeader showSearch={false} />
  *
  * @example
  * // Fully customize left and right content
@@ -60,12 +60,7 @@ type AppHeaderProps = {
    */
   navLinks?: TopNavLink[]
   /**
-   * Whether to show top navigation bar
-   * @default true
-   */
-  showTopNav?: boolean
-  /**
-   * Left content, overrides TopNav if provided
+   * Left content
    */
   leftContent?: React.ReactNode
   /**
@@ -96,7 +91,6 @@ type AppHeaderProps = {
 
 export function AppHeader({
   navLinks = defaultTopNavLinks,
-  showTopNav = true,
   leftContent,
   showSearch = true,
   rightContent,
@@ -146,7 +140,7 @@ export function AppHeader({
           </div>
         )}
       </Header>
-      {showTopNav && <NavigationDock links={links} activeTarget='console' />}
+      <NavigationDock links={links} activeTarget='console' />
     </>
   )
 }

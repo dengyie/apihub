@@ -17,25 +17,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
-import { useTranslation } from 'react-i18next'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
-import type { TopNavLink } from '@/components/layout/types'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
+import { cn } from '@/lib/utils'
 
 import { LandingWordmark } from './landing-wordmark'
 
-const FALLBACK_LINKS: TopNavLink[] = [
-  { title: 'Pricing', href: '/pricing' },
-  { title: 'Rankings', href: '/rankings' },
-  { title: 'About', href: '/about' },
-]
-
 export function LandingFooter({ brand }: { brand: string }) {
-  const { t } = useTranslation()
-  const dynamicLinks = useTopNavLinks()
-  const links = dynamicLinks.length > 0 ? dynamicLinks : FALLBACK_LINKS
+  // Same source as the header: a module the operator disabled in 导航配置 is
+  // absent from the list rather than replaced by a fabricated entry.
+  const links = useTopNavLinks()
 
   return (
     <footer className='landing-footer'>
@@ -47,12 +40,20 @@ export function LandingFooter({ brand }: { brand: string }) {
               href={link.href}
               target='_blank'
               rel='noopener noreferrer'
+              className={cn(link.disabled && 'opacity-50')}
+              aria-disabled={link.disabled}
             >
-              {t(link.title)}
+              {link.title}
             </a>
           ) : (
-            <Link key={`${link.title}:${link.href}`} to={link.href}>
-              {t(link.title)}
+            <Link
+              key={`${link.title}:${link.href}`}
+              to={link.href}
+              disabled={link.disabled}
+              className={cn(link.disabled && 'opacity-50')}
+              aria-disabled={link.disabled}
+            >
+              {link.title}
             </Link>
           )
         )}

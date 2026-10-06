@@ -160,17 +160,21 @@ For commercial licensing, please contact support@quantumnous.com
   display: none;
 }
 
-.landing-nav[data-open='true'] {
-  position: absolute;
-  inset: 48px -16px auto;
-  z-index: 20;
-  padding: 24px 32px 32px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 20px;
-  background: var(--landing-bg);
-  border-bottom: 1px solid var(--landing-rule);
+/* The dropdown panel only exists below the breakpoint, so scoping it there
+   keeps an open mobile menu from re-styling the desktop rail after a resize. */
+@media (max-width: 767px) {
+  .landing-nav[data-open='true'] {
+    position: absolute;
+    inset: 48px -16px auto;
+    z-index: 20;
+    padding: 24px 32px 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
+    background: var(--landing-bg);
+    border-bottom: 1px solid var(--landing-rule);
+  }
 }
 
 .landing-nav-links {
@@ -553,11 +557,12 @@ For commercial licensing, please contact support@quantumnous.com
   height: auto;
 }
 
+/* Font size and metrics are computed from the brand name in
+   `landing-wordmark.tsx` so a name of any length keeps its natural glyph
+   proportions; only the weight lives here. */
 .landing-wordmark text {
   font-family: var(--font-sans);
-  font-size: 260px;
   font-weight: 600;
-  letter-spacing: -18px;
 }
 
 .landing-wordmark rect {
@@ -583,16 +588,6 @@ For commercial licensing, please contact support@quantumnous.com
   85%,
   100% {
     transform: translateX(100%);
-  }
-}
-
-@keyframes landing-pulse {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
   }
 }
 
@@ -638,7 +633,14 @@ For commercial licensing, please contact support@quantumnous.com
     gap: 32px;
   }
 
-  .landing-nav {
+  /* `data-open` is JS state, not a media query, so a panel opened on mobile
+     would still be absolutely positioned here and cover the rail. Below the
+     breakpoint the nav is always in flow. */
+  .landing-nav,
+  .landing-nav[data-open='true'] {
+    position: static;
+    inset: auto;
+    padding: 0;
     display: flex;
     flex-direction: column;
     align-items: flex-start;

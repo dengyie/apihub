@@ -16,11 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Dialog } from '@/components/dialog'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
@@ -28,6 +27,7 @@ import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SystemUpdateAction } from '@/features/system-update/system-update-action'
+import { useAuthPrompt } from '@/hooks/use-auth-prompt'
 import { useNotifications } from '@/hooks/use-notifications'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
@@ -35,16 +35,11 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { defaultTopNavLinks } from '../config/top-nav.config'
+import type { NavigationDockTarget } from '../lib/navigation-dock-items'
 import type { TopNavLink } from '../types'
+import { AuthPromptDialog } from './auth-prompt'
 import { HeaderLogo } from './header-logo'
-import { NavigationDock, type NavigationDockTarget } from './navigation-dock'
-
-const AUTH_PROMPT_SECONDS = 5
-
-type AuthPromptTarget = {
-  title: string
-  href: string
-}
+import { NavigationDock } from './navigation-dock'
 
 export interface PublicHeaderProps {
   navLinks?: TopNavLink[]
@@ -77,13 +72,9 @@ export function PublicHeader(props: PublicHeaderProps) {
   } = props
 
   const { t } = useTranslation()
-  const navigate = useNavigate()
   const [scrolled, setScrolled] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [authPromptTarget, setAuthPromptTarget] =
-    useState<AuthPromptTarget | null>(null)
-  const [authPromptSecondsLeft, setAuthPromptSecondsLeft] =
-    useState(AUTH_PROMPT_SECONDS)
+  const authPrompt = useAuthPrompt()
   const { auth } = useAuthStore()
   const {
     systemName,
@@ -147,65 +138,18 @@ export function PublicHeader(props: PublicHeaderProps) {
     }
   }, [mobileOpen])
 
-  useEffect(() => {
-    if (!authPromptTarget) return
-
-    const intervalId = window.setInterval(() => {
-      setAuthPromptSecondsLeft((seconds) => Math.max(seconds - 1, 0))
-    }, 1000)
-
-    const timeoutId = window.setTimeout(() => {
-      const redirect = authPromptTarget.href
-      setAuthPromptTarget(null)
-      navigate({ to: '/sign-in', search: { redirect } })
-    }, AUTH_PROMPT_SECONDS * 1000)
-
-    return () => {
-      window.clearInterval(intervalId)
-      window.clearTimeout(timeoutId)
-    }
-  }, [authPromptTarget, navigate])
-
-  const closeAuthPrompt = useCallback(() => {
-    setAuthPromptTarget(null)
-    setAuthPromptSecondsLeft(AUTH_PROMPT_SECONDS)
-  }, [])
-
-  const navigateToSignIn = useCallback(() => {
-    const redirect = authPromptTarget?.href || '/'
-    setAuthPromptTarget(null)
-    navigate({ to: '/sign-in', search: { redirect } })
-  }, [authPromptTarget?.href, navigate])
-
   const handleNavLinkClick = useCallback(
     (
       event: React.MouseEvent<HTMLAnchorElement>,
       link: TopNavLink,
       closeMobile = false
     ) => {
-      if (link.disabled) {
-        event.preventDefault()
-        return
-      }
-
-      if (link.requiresAuth) {
-        event.preventDefault()
-        if (closeMobile) {
-          setMobileOpen(false)
-        }
-        setAuthPromptSecondsLeft(AUTH_PROMPT_SECONDS)
-        setAuthPromptTarget({
-          title: t(link.title),
-          href: link.href,
-        })
-        return
-      }
-
+      authPrompt.interceptLinkClick(event, link)
       if (closeMobile) {
         setMobileOpen(false)
       }
     },
-    [t]
+    [authPrompt]
   )
 
   return (
@@ -257,7 +201,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                     <a
                       key={`${link.title}:${link.href}`}
                       href={link.href}
-                      title={t(link.title)}
+                      title={link.title}
                       target='_blank'
                       rel='noopener noreferrer'
                       aria-disabled={link.disabled}
@@ -268,7 +212,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                         link.disabled && 'pointer-events-none opacity-50'
                       )}
                     >
-                      {t(link.title)}
+                      {link.title}
                     </a>
                   )
                 }
@@ -276,7 +220,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                   <Link
                     key={`${link.title}:${link.href}`}
                     to={link.href}
-                    title={t(link.title)}
+                    title={link.title}
                     disabled={link.disabled}
                     onClick={(event) => handleNavLinkClick(event, link)}
                     className={cn(
@@ -287,7 +231,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                       link.disabled && 'pointer-events-none opacity-50'
                     )}
                   >
-                    {t(link.title)}
+                    {link.title}
                   </Link>
                 )
               })}
@@ -408,7 +352,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                     className={linkClassName}
                     style={transitionStyle}
                   >
-                    {t(link.title)}
+                    {link.title}
                   </a>
                 )
               }
@@ -421,7 +365,7 @@ export function PublicHeader(props: PublicHeaderProps) {
                   className={linkClassName}
                   style={transitionStyle}
                 >
-                  {t(link.title)}
+                  {link.title}
                 </Link>
               )
             })}
@@ -449,34 +393,7 @@ export function PublicHeader(props: PublicHeaderProps) {
         </div>
       </div>
 
-      <Dialog
-        open={!!authPromptTarget}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeAuthPrompt()
-          }
-        }}
-        title={t('Sign in required')}
-        description={t('Please sign in to view {{module}}.', {
-          module: authPromptTarget?.title || '',
-        })}
-        contentClassName='sm:max-w-md'
-        contentHeight='auto'
-        footer={
-          <>
-            <Button variant='outline' onClick={closeAuthPrompt}>
-              {t('Cancel')}
-            </Button>
-            <Button onClick={navigateToSignIn}>{t('Sign in now')}</Button>
-          </>
-        }
-      >
-        <div className='bg-muted/40 text-muted-foreground rounded-lg px-3 py-2 text-sm'>
-          {t('Redirecting to sign in in {{seconds}} seconds.', {
-            seconds: authPromptSecondsLeft,
-          })}
-        </div>
-      </Dialog>
+      <AuthPromptDialog prompt={authPrompt} />
     </>
   )
 }

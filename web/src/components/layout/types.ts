@@ -91,10 +91,12 @@ export type SidebarData = {
  * Top navigation link type
  */
 export type TopNavLink = {
+  /** Visible label — already localized, never a raw translation key */
   title: string
   href: string
   isActive?: boolean
   disabled?: boolean
+  /** Gate the link behind sign-in; `useAuthPrompt` owns the shared prompt */
   requiresAuth?: boolean
   external?: boolean
 }
