@@ -1,0 +1,407 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+:root {
+  --color-background-surface: var(--card);
+  --color-background-body: var(--background);
+  --color-background-card: var(--card);
+  --color-background-popover: var(--popover);
+  --color-background-muted: var(--muted);
+  --color-accent: var(--primary);
+  --color-accent-muted: var(--accent);
+  --color-neutral: color-mix(in oklab, var(--foreground) 7%, transparent);
+  --color-overlay: color-mix(in oklab, var(--foreground) 48%, transparent);
+  --color-overlay-hover: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --color-overlay-pressed: color-mix(
+    in oklab,
+    var(--foreground) 10%,
+    transparent
+  );
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-text-disabled: color-mix(
+    in oklab,
+    var(--muted-foreground) 65%,
+    transparent
+  );
+  --color-text-accent: var(--primary);
+  --color-on-accent: var(--primary-foreground);
+  --color-icon-accent: var(--primary);
+  --color-icon-primary: var(--foreground);
+  --color-icon-secondary: var(--muted-foreground);
+  --color-icon-disabled: color-mix(
+    in oklab,
+    var(--muted-foreground) 65%,
+    transparent
+  );
+  --color-border: var(--border);
+  --color-border-emphasized: var(--input);
+  --color-skeleton: var(--muted);
+  --color-shadow: color-mix(in oklab, var(--foreground) 12%, transparent);
+  --font-family-body: var(--font-body);
+  --font-family-heading: var(--font-body);
+  --font-family-code: var(--font-mono);
+  --radius-inner: 6px;
+  --radius-element: 8px;
+  --radius-container: 10px;
+  --radius-page: 10px;
+  --duration-fast-min: 140ms;
+  --duration-fast: 180ms;
+  --duration-fast-max: 220ms;
+  --duration-medium-min: 200ms;
+  --duration-medium: 240ms;
+  --duration-medium-max: 280ms;
+  --duration-slow-min: 260ms;
+  --duration-slow: 320ms;
+  --duration-slow-max: 360ms;
+}
+
+.snowapi-astryx-shell {
+  width: 100%;
+  min-width: 0;
+  height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
+}
+
+.snowapi-astryx-side-nav {
+  width: var(--snowapi-side-nav-width, 15rem) !important;
+  min-width: var(--snowapi-side-nav-width, 15rem);
+  border-inline-end: 0;
+  background: color-mix(in oklab, var(--foreground) 0.6%, var(--background));
+  transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.snowapi-astryx-shell .astryx-app-shell-sidenav {
+  border-inline-end: 1px solid var(--border) !important;
+}
+
+.snowapi-astryx-brand-row {
+  display: flex;
+  height: 3.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 1.125rem 0.75rem;
+}
+
+.snowapi-astryx-logo-link {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+}
+
+.snowapi-astryx-logo-link:hover {
+  background: var(--accent);
+}
+
+.snowapi-astryx-logo-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.snowapi-astryx-logo-link img {
+  display: block;
+  width: 1.5rem;
+  height: 1.5rem;
+  object-fit: contain;
+  filter: brightness(0);
+}
+
+.dark .snowapi-astryx-logo-link img {
+  filter: brightness(0) invert(1);
+}
+
+.snowapi-astryx-collapse-button {
+  width: 1.75rem !important;
+  height: 1.75rem !important;
+  min-height: 1.75rem !important;
+  border-radius: 0.5rem !important;
+  color: var(--muted-foreground) !important;
+}
+
+.snowapi-astryx-side-nav-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 1.5rem 0.5rem;
+}
+
+.snowapi-astryx-side-nav-content > .astryx-side-nav-section {
+  gap: 0.125rem !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.snowapi-astryx-side-nav-content
+  > .astryx-side-nav-section
+  + .astryx-side-nav-section {
+  margin-top: 0.125rem !important;
+}
+
+.snowapi-astryx-side-nav .astryx-side-nav-item {
+  min-height: 2rem !important;
+  height: 2rem !important;
+  gap: 0.625rem !important;
+  border-radius: 0.5rem !important;
+  padding: 0 0.625rem !important;
+  color: color-mix(in oklab, var(--foreground) 58%, transparent) !important;
+  font-size: 0.75rem !important;
+  line-height: 1rem !important;
+  font-weight: 400 !important;
+}
+
+.snowapi-astryx-side-nav .astryx-side-nav-item:hover {
+  background: color-mix(
+    in oklab,
+    var(--foreground) 3.5%,
+    transparent
+  ) !important;
+  color: var(--foreground) !important;
+}
+
+.snowapi-astryx-side-nav .astryx-side-nav-item[data-selected='selected'],
+.snowapi-astryx-side-nav .astryx-side-nav-item.selected {
+  background: color-mix(
+    in oklab,
+    var(--foreground) 5.5%,
+    transparent
+  ) !important;
+  color: var(--foreground) !important;
+  font-weight: 500 !important;
+}
+
+.snowapi-astryx-side-nav .astryx-side-nav-item svg {
+  width: 1rem !important;
+  height: 1rem !important;
+}
+
+.snowapi-astryx-nav-badge {
+  display: inline-flex;
+  min-width: 1.25rem;
+  height: 1.125rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding-inline: 0.375rem;
+  background: var(--accent);
+  color: var(--muted-foreground);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.snowapi-astryx-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem;
+}
+
+.snowapi-sidebar-sign-out {
+  width: 100%;
+  min-width: 0;
+  height: 2rem;
+  justify-content: flex-start;
+  gap: 0.625rem;
+  border-radius: 0.5rem;
+  padding-inline: 0.625rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true'] .snowapi-astryx-footer {
+  justify-content: center;
+  padding-inline: 0.5rem;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  .snowapi-sidebar-sign-out {
+  width: 2rem;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  .snowapi-sidebar-sign-out
+  span {
+  display: none;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  .snowapi-astryx-brand-row {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  .snowapi-astryx-logo-link {
+  display: none;
+}
+
+.snowapi-astryx-content {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.snowapi-console-content-state {
+  position: relative;
+  display: flex;
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.snowapi-console-loading-indicator {
+  background: color-mix(in oklab, var(--background) 80%, transparent);
+  backdrop-filter: blur(2px);
+  transition: opacity 220ms ease;
+}
+
+.snowapi-console-loaded-content {
+  animation: snowapi-content-fade-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes snowapi-content-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 767px) {
+  .snowapi-astryx-shell .astryx-app-shell-header,
+  .snowapi-astryx-shell
+    [role='navigation']:has(> .snowapi-astryx-side-nav[data-mode='topbar']),
+  .snowapi-astryx-side-nav[data-mode='topbar'] {
+    background: var(--background) !important;
+  }
+
+  .snowapi-astryx-shell
+    [role='navigation']:has(> .snowapi-astryx-side-nav[data-mode='topbar']) {
+    height: 3.5rem;
+    border-bottom: 0 !important;
+    padding-inline: 0.5rem;
+  }
+
+  .snowapi-astryx-side-nav[data-mode='topbar'] {
+    height: 3.5rem;
+  }
+
+  .snowapi-astryx-side-nav[data-mode='topbar'] .snowapi-astryx-brand-row {
+    height: 3.5rem;
+    padding-inline: 0.625rem;
+  }
+
+  .snowapi-astryx-shell button[data-testid='mobile-nav-toggle'] {
+    border-radius: 0.5rem !important;
+    background: transparent !important;
+  }
+
+  .snowapi-astryx-shell button[data-testid='mobile-nav-toggle']:hover {
+    background: color-mix(
+      in oklab,
+      var(--foreground) 3%,
+      transparent
+    ) !important;
+  }
+
+  .snowapi-astryx-shell .astryx-app-shell-sidenav {
+    border-inline-end: 0 !important;
+  }
+
+  .snowapi-astryx-side-nav {
+    width: 100% !important;
+    min-width: 0;
+    border-inline-end: 0;
+  }
+}
+
+.snowapi-mobile-nav-footer {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.snowapi-mobile-sheet {
+  transform: translate3d(0, 0, 0) !important;
+  opacity: 1;
+  backface-visibility: hidden;
+  contain: layout paint;
+  transition-property: transform;
+  will-change: transform;
+}
+
+.snowapi-mobile-sheet[data-starting-style],
+.snowapi-mobile-sheet[data-ending-style] {
+  transform: translate3d(100%, 0, 0) !important;
+  opacity: 1;
+}
+
+.snowapi-mobile-sheet-overlay {
+  opacity: 1;
+  backdrop-filter: none !important;
+  transition: opacity 180ms ease;
+  will-change: opacity;
+}
+
+.snowapi-mobile-sheet-overlay[data-starting-style],
+.snowapi-mobile-sheet-overlay[data-ending-style] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .snowapi-astryx-side-nav {
+    transition: none;
+  }
+
+  .snowapi-mobile-sheet,
+  .snowapi-mobile-sheet-overlay,
+  .snowapi-console-loading-indicator,
+  .snowapi-console-loaded-content {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

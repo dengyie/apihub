@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
@@ -26,9 +28,20 @@ For commercial licensing, please contact support@quantumnous.com
  * that activates it. Loaded globally so font-switching is instantaneous
  * with no FOUT once the variable is fetched. */
 @import '@fontsource-variable/lora';
+@import '@astryxdesign/core/astryx.css';
 
 @import './theme.css';
 @import './theme-presets.css';
+@import './astryx-app-shell.css';
+/* The paper palette + shadcn token bridge, and the shells and page that read
+ * it. All are scoped off attributes on `<html>` / `<body>` or off a slot on the
+ * shell element, not off a class a route has to opt into, so every surface
+ * inherits them. Import order matters: they must come after the theme layers
+ * they override. */
+@import './site-design.css';
+@import './console-skin.css';
+@import './public-shell.css';
+@import './landing.css';
 
 @layer base {
   :root {
@@ -476,84 +489,6 @@ For commercial licensing, please contact support@quantumnous.com
 @media (prefers-reduced-motion: reduce) {
   [data-stream-fade] {
     animation: none;
-  }
-}
-
-/* ── Landing page scroll-triggered animations ── */
-@keyframes landing-fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-@keyframes landing-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-@keyframes landing-scale-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-@keyframes landing-fade-left {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-@keyframes landing-fade-right {
-  from {
-    opacity: 0;
-    transform: translateX(-24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.landing-animate-fade-up {
-  animation: landing-fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.landing-animate-fade-in {
-  animation: landing-fade-in 0.6s ease-out both;
-}
-.landing-animate-scale-in {
-  animation: landing-scale-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.landing-animate-fade-left {
-  animation: landing-fade-left 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.landing-animate-fade-right {
-  animation: landing-fade-right 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .landing-animate-fade-up,
-  .landing-animate-fade-in,
-  .landing-animate-scale-in,
-  .landing-animate-fade-left,
-  .landing-animate-fade-right {
-    animation: none !important;
-    opacity: 1 !important;
-    transform: none !important;
   }
 }
 

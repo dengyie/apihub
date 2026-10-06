@@ -16,26 +16,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { LogOut } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
-import { handleServerError } from '@/lib/handle-server-error'
+import { SignOutDialog } from '@/components/sign-out-dialog'
+import { Button } from '@/components/ui/button'
 
-import { savePolicyConfig } from './api'
-
-export function useSavePolicy() {
-  const client = useQueryClient()
+export function SidebarSignOutButton() {
   const { t } = useTranslation()
-  return useMutation({
-    mutationFn: savePolicyConfig,
-    onSuccess: (data) => {
-      client.setQueryData(['request-policy'], data)
-      void client.invalidateQueries({ queryKey: ['system-options'] })
-      void client.invalidateQueries({ queryKey: ['channel-ops'] })
-      toast.success(t('Saved successfully'))
-    },
-    onError: (error) => handleServerError(error),
-    meta: { errorToast: false },
-  })
+  const [dialogOpen, setDialogOpen] = useState(false)
+
+  return (
+    <>
+      <div className='snowapi-astryx-footer'>
+        <Button
+          type='button'
+          variant='ghost'
+          className='snowapi-sidebar-sign-out'
+          onClick={() => setDialogOpen(true)}
+        >
+          <LogOut className='size-4 shrink-0' aria-hidden='true' />
+          <span>{t('Sign out')}</span>
+        </Button>
+      </div>
+
+      <SignOutDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+    </>
+  )
 }

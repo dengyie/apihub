@@ -1,0 +1,121 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/*
+ * Public shell — the frame every signed-out page renders inside.
+ *
+ * The console has its own layer (`console-skin.css`). This one is deliberately
+ * much lighter: public pages keep the operator's theme colour on `--primary`,
+ * because that is where brand expression belongs. What it does borrow is the
+ * restraint — no backdrop blur, no drop shadows, no transforms on press.
+ *
+ * Unlike the console, this file is not attribute-scoped to a design layer. The
+ * shell is a distinct element (`[data-slot='public-shell']`), so it carries its
+ * own scope.
+ */
+
+/* The mesh that `/pricing` and `/rankings` were each inlining as a 16-line
+ * inline `style`. It lives here now so the two pages cannot drift apart and so
+ * it can read the palette instead of hardcoding oklch values. */
+.public-mesh-backdrop {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 600px;
+  pointer-events: none;
+  opacity: 0.2;
+  background:
+    radial-gradient(
+      ellipse 60% 50% at 20% 20%,
+      color-mix(in oklab, var(--primary) 80%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 50% 40% at 80% 15%,
+      color-mix(in oklab, var(--primary) 60%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 40% 35% at 50% 70%,
+      color-mix(in oklab, var(--primary) 40%, transparent) 0%,
+      transparent 70%
+    );
+  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+
+.dark .public-mesh-backdrop {
+  opacity: 0.1;
+}
+
+/* Route changes were an instant swap. A 240ms fade is enough to read as
+ * navigation without feeling like a transition the user has to wait out. */
+@keyframes public-shell-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-slot='public-shell'] {
+  animation: public-shell-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/*
+ * Header.
+ *
+ * `PublicHeader` ships a floating pill: it shrinks to `max-w-[52rem]` on
+ * scroll and puts a 2xl backdrop blur and a shadow behind itself. Blur over a
+ * scrolling page is expensive on the compositor and the shadow is the only
+ * thing separating the bar from the content, so the header is flattened to a
+ * single hairline instead. `position: fixed` is kept — the reference's
+ * `absolute` would scroll the nav out of reach on a long page.
+ */
+[data-slot='public-header'] > div {
+  max-width: none;
+  padding-inline: clamp(1.25rem, 3vw, 2.5rem);
+}
+
+[data-slot='public-header'] nav {
+  height: 4.5rem;
+  padding-inline: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--ui-divider);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+@media (max-width: 639px) {
+  [data-slot='public-header'] nav {
+    height: 4rem;
+  }
+}
+
+[data-slot='public-shell'] [data-slot='button'],
+[data-slot='public-shell'] [data-slot='button']:active {
+  box-shadow: none;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='public-shell'] {
+    animation: none;
+  }
+}

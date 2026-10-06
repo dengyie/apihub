@@ -26,8 +26,6 @@ import { LandingHeader } from './components/landing-header'
 import { LandingHero } from './components/landing-hero'
 import { LandingSections } from './components/landing-sections'
 
-import './landing.css'
-
 export function LandingPage() {
   const { t } = useTranslation()
   const { systemName } = useSystemConfig()
@@ -46,7 +44,7 @@ export function LandingPage() {
 
         <main id='landing-content' className='landing-main'>
           <LandingHero brand={brand} isAuthenticated={isAuthenticated} />
-          <LandingSections isAuthenticated={isAuthenticated} />
+          <LandingSections />
         </main>
 
         <LandingFooter brand={brand} />

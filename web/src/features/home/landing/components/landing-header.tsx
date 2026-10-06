@@ -65,9 +65,6 @@ export function LandingHeader({
         }}
       >
         <Link to='/' className='landing-brand'>
-          <span className='landing-brand-mark' aria-hidden='true'>
-            {brand.slice(0, 1).toUpperCase()}
-          </span>
           <span>{brand}</span>
         </Link>
 

@@ -1,0 +1,119 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/* The paper palette and the shadcn token bridge.
+ *
+ * Seven palette entries are the whole design system; everything else in the
+ * app derives from them. Bridging them into the shadcn tokens here — rather
+ * than restyling components — is what lets every page change at once: no page
+ * component has to be touched for the paper look to reach it.
+ *
+ * The landing page (features/home/landing) does NOT read these tokens. It owns
+ * an equivalent warm palette scoped to `.landing-root`, because the marketing
+ * surface is allowed a wider gap between surface and rule than the console.
+ * The two palettes are deliberately the same family so they read as one site.
+ */
+
+/* Light: paper reads as warm off-white, ink as near-black. The three surface
+ * tiers sit within four percent of each other, so depth comes from a 1px rule
+ * rather than a shadow. */
+html[data-site-design='paper'] {
+  --site-paper: #fbfaf6;
+  --site-ink: #11110f;
+  --site-surface: #f7f6ef;
+  --site-inset: #efeee7;
+  --site-muted: #6f6d69;
+  --site-rule: #e4e1d7;
+  --site-emphasis: #d4d0c4;
+  background: var(--site-paper);
+}
+
+html.dark[data-site-design='paper'] {
+  --site-paper: #141413;
+  --site-ink: #f5f4ef;
+  --site-surface: #1e1e1a;
+  --site-inset: #292822;
+  --site-muted: #aaa79e;
+  --site-rule: #37362f;
+  --site-emphasis: #4a483e;
+}
+
+/* The bridge. Both `body` and the console are listed because the console
+ * layer (`console-skin.css`) sets its own monochrome values on `body`, and a
+ * body-scoped rule loses to a body-scoped rule regardless of layer order —
+ * so the console needs the bridge applied to its own selector too.
+ *
+ * `--primary` is intentionally left alone here. The console locks it to
+ * near-black; the public pages keep the operator's theme colour so branding
+ * still shows through the marketing surface. */
+html[data-site-design='paper'] body,
+html[data-site-design='paper'] body[data-design-layer='console'] {
+  --background: var(--site-paper);
+  --foreground: var(--site-ink);
+  --card: var(--site-surface);
+  --card-foreground: var(--site-ink);
+  --popover: var(--site-surface);
+  --popover-foreground: var(--site-ink);
+  --secondary: var(--site-inset);
+  --secondary-foreground: var(--site-ink);
+  --muted: var(--site-inset);
+  --muted-foreground: var(--site-muted);
+  --accent: var(--site-inset);
+  --accent-foreground: var(--site-ink);
+  --border: var(--site-rule);
+  --input: var(--site-emphasis);
+  --table-row: var(--site-surface);
+  --table-row-hover: var(--site-inset);
+  --table-header: var(--site-inset);
+  --table-header-hover: var(--site-inset);
+  --table-disabled: var(--site-inset);
+  --table-disabled-hover: var(--site-inset);
+  --table-disabled-border: var(--site-rule);
+  --sidebar: var(--site-paper);
+  --sidebar-foreground: var(--site-ink);
+  --sidebar-accent: var(--site-inset);
+  --sidebar-accent-foreground: var(--site-ink);
+  --sidebar-border: var(--site-rule);
+  --skeleton-base: var(--site-inset);
+  --skeleton-highlight: var(--site-surface);
+
+  /* Console chrome. A four-step ladder rather than the three steps shadcn
+   * ships, because a control and its hover state both need to sit inside one
+   * surface and `--site-emphasis` is the only step left for the second one. */
+  --ui-surface: var(--site-surface);
+  --ui-surface-strong: var(--site-inset);
+  --ui-surface-inset: var(--site-paper);
+  --ui-hover: var(--site-emphasis);
+  --ui-divider: color-mix(in oklab, var(--foreground) 7%, transparent);
+
+  /* Floating surfaces: menus, popovers, dialogs. Portalled elements have no
+   * route ancestor to inherit from, so the console skin re-binds these on the
+   * portal itself — they live here rather than there for that reason. */
+  --ui-floating-surface: var(--site-surface);
+  --ui-floating-border: var(--site-rule);
+  --ui-floating-ink: var(--site-ink);
+  --ui-floating-muted: var(--site-muted);
+  --ui-floating-hover: var(--site-emphasis);
+  --ui-floating-shadow: 0 12px 36px rgb(0 0 0 / 0.1);
+}
+
+html.dark[data-site-design='paper'] body,
+html.dark[data-site-design='paper'] body[data-design-layer='console'] {
+  --ui-divider: color-mix(in oklab, var(--foreground) 9%, transparent);
+  --ui-floating-shadow: 0 18px 52px rgb(0 0 0 / 0.42);
+}

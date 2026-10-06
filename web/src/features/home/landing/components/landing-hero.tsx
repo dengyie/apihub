@@ -67,20 +67,7 @@ export function LandingHero({
 
       <div className='landing-showcase'>
         <div className='landing-grain' aria-hidden='true' />
-        <div className='landing-window'>
-          <div className='landing-window-bar'>
-            <span className='landing-window-dots' aria-hidden='true'>
-              <i />
-              <i />
-              <i />
-            </span>
-            <span>{brand.toLowerCase().replaceAll(' ', '-')}</span>
-            <span>/v1/chat/completions</span>
-          </div>
-          <div className='landing-window-body'>
-            <HeroTerminalDemo />
-          </div>
-        </div>
+        <HeroTerminalDemo />
       </div>
     </section>
   )

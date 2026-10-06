@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "Hạn mức chi tiêu chặn sớm",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "Đặt hạn mức theo khóa, theo mô hình hoặc theo nhóm. Cổng kết nối sẽ từ chối yêu cầu trước khi hóa đơn thượng nguồn kịp tới.",
     "Health you can act on": "Tình trạng dùng được để hành động",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Độ trễ, tỉ lệ lỗi và tỉ lệ thành công theo từng kênh, kèm chế độ kiểm toán chỉ ghi nhận trước khi bao giờ tự vô hiệu hoá.",
-    "Ready when you are.": "Sẵn sàng khi bạn sẵn sàng.",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "Chạy trên tên miền của riêng bạn. Không gì rời khỏi máy chủ ngoài những lệnh gọi bạn cố ý chuyển tiếp."
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Độ trễ, tỉ lệ lỗi và tỉ lệ thành công theo từng kênh, kèm chế độ kiểm toán chỉ ghi nhận trước khi bao giờ tự vô hiệu hoá."
   }
 }

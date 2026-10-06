@@ -6882,8 +6882,6 @@
     "Spend limits that bite early": "Des limites de dépenses qui mordent tôt",
     "Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.": "Fixez des quotas par jeton, par modèle ou par groupe. La passerelle refuse la requête avant votre facture amont.",
     "Health you can act on": "Une santé exploitable",
-    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Latence, taux d'erreur et taux de réussite par canal, avec un audit en mode ombre qui journalise avant de ne jamais désactiver.",
-    "Ready when you are.": "Prêt quand vous l'êtes.",
-    "Run it on your own domain. Nothing leaves your server except the calls you deliberately forward.": "Faites-le tourner sur votre propre domaine. Rien ne quitte votre serveur, hormis les appels que vous transmettez volontairement."
+    "Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.": "Latence, taux d'erreur et taux de réussite par canal, avec un audit en mode ombre qui journalise avant de ne jamais désactiver."
   }
 }

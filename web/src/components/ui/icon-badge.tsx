@@ -73,6 +73,9 @@ interface IconBadgeProps {
 export function IconBadge(props: IconBadgeProps) {
   return (
     <span
+      // The console skin neutralises this badge's tone colours, and it can only
+      // find it through a slot — the tone variant lives in a class name.
+      data-slot='icon-badge'
       className={cn(
         iconBadgeVariants({ tone: props.tone, size: props.size }),
         props.className
