@@ -80,7 +80,7 @@ export function useTopNavLinks(): TopNavLink[] {
   }
 
   // Docs (supports external links)
-  if (modules?.docs !== false) {
+  if (modules?.docs === true) {
     if (docsLink) {
       links.push({ title: t('Docs'), href: docsLink, external: true })
     } else {
@@ -89,7 +89,7 @@ export function useTopNavLinks(): TopNavLink[] {
   }
 
   // About
-  if (modules?.about !== false) {
+  if (modules?.about === true) {
     links.push({ title: t('About'), href: '/about' })
   }
 

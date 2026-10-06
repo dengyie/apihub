@@ -22,10 +22,6 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   getAllLogs,
   getUserLogs,
-  getAllMidjourneyLogs,
-  getUserMidjourneyLogs,
-  getAllTaskLogs,
-  getUserTaskLogs,
 } from '../api'
 import {
   LOG_TYPES,
@@ -36,8 +32,6 @@ import type {
   GetLogsParams,
   GetLogsResponse,
   FetchLogsConfig,
-  GetMidjourneyLogsParams,
-  GetTaskLogsParams,
 } from '../types'
 
 export { buildQueryParams } from './query-params'
@@ -243,46 +237,14 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
-    config
+  const { isAdmin, page, pageSize, searchParams, columnFilters } = config
 
-  if (logCategory === 'common') {
-    const params = buildApiParams({
-      page,
-      pageSize,
-      searchParams,
-      columnFilters,
-      isAdmin,
-    })
-    return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
-  }
-
-  // For drawing and task logs
-  const baseParams = buildBaseParams({
+  const params = buildApiParams({
     page,
     pageSize,
     searchParams,
-    useMilliseconds: logCategory === 'drawing',
+    columnFilters,
+    isAdmin,
   })
-
-  const paramsWithFilter = {
-    ...baseParams,
-    ...(logCategory === 'drawing'
-      ? { mj_id: searchParams.filter as string | undefined }
-      : {}),
-    ...(logCategory === 'task'
-      ? { task_id: searchParams.filter as string | undefined }
-      : {}),
-  }
-
-  if (logCategory === 'drawing') {
-    return isAdmin
-      ? await getAllMidjourneyLogs(paramsWithFilter as GetMidjourneyLogsParams)
-      : await getUserMidjourneyLogs(paramsWithFilter as GetMidjourneyLogsParams)
-  }
-
-  // task logs
-  return isAdmin
-    ? await getAllTaskLogs(paramsWithFilter as GetTaskLogsParams)
-    : await getUserTaskLogs(paramsWithFilter as GetTaskLogsParams)
+  return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
 }

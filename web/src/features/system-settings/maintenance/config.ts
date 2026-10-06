@@ -49,14 +49,13 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
     enabled: true,
     requireAuth: false,
   },
-  docs: true,
-  about: true,
+  docs: false,
+  about: false,
 }
 
 export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
   chat: {
     enabled: true,
-    playground: true,
     chat: true,
   },
   console: {
@@ -65,8 +64,6 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     token: true,
     log: true,
     audit: true,
-    midjourney: true,
-    task: true,
   },
   personal: {
     enabled: true,

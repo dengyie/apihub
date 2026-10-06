@@ -25,13 +25,13 @@ const legacyConsoleRoutes: Record<string, string> = {
   '/console/subscription': '/subscriptions',
   '/console/channel': '/channels',
   '/console/token': '/keys',
-  '/console/playground': '/playground',
+  '/console/playground': '/dashboard',
   '/console/redemption': '/redemption-codes',
   '/console/user': '/users',
   '/console/personal': '/profile',
   '/console/log': '/usage-logs',
-  '/console/midjourney': '/usage-logs/drawing',
-  '/console/task': '/usage-logs/task',
+  '/console/midjourney': '/usage-logs',
+  '/console/task': '/usage-logs',
 }
 
 const legacySettingsTabs: Record<string, string> = {

@@ -50,23 +50,11 @@ const usageLogsSearchSchema = z.object({
 })
 
 export const Route = createFileRoute('/_authenticated/usage-logs/$section')({
-  beforeLoad: ({ params, search }) => {
+  beforeLoad: ({ params }) => {
     if (!isUsageLogsSectionId(params.section)) {
       throw redirect({
         to: '/usage-logs/$section',
         params: { section: USAGE_LOGS_DEFAULT_SECTION },
-      })
-    }
-    // type 仅 common 使用，非 common 时清掉 URL 里的 type
-    const hasTypeSearch = Array.isArray(search?.type)
-      ? search.type.length > 0
-      : search?.type != null && search.type !== ''
-    if (params.section !== 'common' && hasTypeSearch) {
-      throw redirect({
-        to: '/usage-logs/$section',
-        params: { section: params.section },
-        search: { ...search, type: undefined },
-        replace: true,
       })
     }
   },

@@ -67,7 +67,7 @@ export function SidebarModulesSection({
   const sectionMeta: Record<string, { title: string; description: string }> = {
     chat: {
       title: t('Chat area'),
-      description: t('Playground experiments and live conversations.'),
+      description: t('Chat conversations and presets.'),
     },
     console: {
       title: t('Console area'),
@@ -88,10 +88,6 @@ export function SidebarModulesSection({
     Record<string, { title: string; description: string }>
   > = {
     chat: {
-      playground: {
-        title: t('Playground'),
-        description: t('Experiment with prompts and models in real time.'),
-      },
       chat: {
         title: t('Chat'),
         description: t('Access previous conversations and start new ones.'),
@@ -113,14 +109,6 @@ export function SidebarModulesSection({
       audit: {
         title: t('Audit Logs'),
         description: t('Login, security and access records'),
-      },
-      midjourney: {
-        title: t('Drawing logs'),
-        description: t('History of MjProxy-style image tasks.'),
-      },
-      task: {
-        title: t('Task logs'),
-        description: t('Background job tracker for queued work.'),
       },
     },
     personal: {

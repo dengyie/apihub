@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { flexRender, type Cell, type Table } from '@tanstack/react-table'
+import type { Table } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -32,7 +32,6 @@ import { cn } from '@/lib/utils'
 
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
-import { TASK_MOBILE_SUMMARY_FIELDS } from '../lib/task-mobile-layout'
 import type { LogCategory } from '../types'
 import { CommonLogMobileCard } from './common-log-mobile-card'
 
@@ -91,157 +90,12 @@ function UsageLogsMobileSkeleton(props: { separate: boolean }) {
   )
 }
 
-function CompactCell<TData>({
-  cell,
-  fallback = '-',
-  className,
-  primaryOnly = false,
-}: {
-  cell?: Cell<TData, unknown>
-  fallback?: string
-  className?: string
-  primaryOnly?: boolean
-}) {
-  return (
-    <div
-      className={cn(
-        'min-w-0 overflow-hidden leading-tight [&_button]:max-w-full [&_span]:max-w-full',
-        primaryOnly &&
-          '[&_.flex-col]:min-w-0 [&_.flex-col>*:not(:first-child)]:hidden',
-        className
-      )}
-    >
-      {cell ? (
-        flexRender(cell.column.columnDef.cell, cell.getContext())
-      ) : (
-        <span className='text-muted-foreground/50'>{fallback}</span>
-      )}
-    </div>
-  )
-}
-
-function SummaryField<TData>({
-  label,
-  cell,
-  className,
-  valueClassName,
-  primaryOnly = false,
-}: {
-  label?: string
-  cell?: Cell<TData, unknown>
-  className?: string
-  valueClassName?: string
-  primaryOnly?: boolean
-}) {
-  if (!cell) return null
-
-  return (
-    <div
-      className={cn('bg-muted/20 min-w-0 rounded-md px-2 py-1.5', className)}
-    >
-      {label != null && label !== '' && (
-        <div className='text-muted-foreground mb-1 text-[11px] leading-none font-medium select-none'>
-          {label}
-        </div>
-      )}
-      <CompactCell
-        cell={cell}
-        primaryOnly={primaryOnly}
-        className={valueClassName}
-      />
-    </div>
-  )
-}
-
-function TaskLogsCard<TData>({
-  cells,
-}: {
-  cells: Map<string, Cell<TData, unknown>>
-}) {
-  const { t } = useTranslation()
-
-  const taskIdCell = cells.get('task_id')
-  const statusCell = cells.get('status')
-
-  return (
-    <div className='space-y-2.5'>
-      <div className='flex min-w-0 items-start justify-between gap-3'>
-        <CompactCell cell={taskIdCell} className='flex-1' />
-        <CompactCell cell={statusCell} className='shrink-0 text-right' />
-      </div>
-
-      <div className='grid grid-cols-2 gap-1.5'>
-        {TASK_MOBILE_SUMMARY_FIELDS.map((field) => (
-          <SummaryField
-            key={field.id}
-            label={t(field.label)}
-            cell={cells.get(field.id)}
-            primaryOnly={field.primaryOnly}
-          />
-        ))}
-        <SummaryField
-          label={t('Details')}
-          cell={cells.get('fail_reason')}
-          className='col-span-2 bg-transparent px-0 py-0'
-        />
-      </div>
-    </div>
-  )
-}
-
-function DrawingLogsCard<TData>({
-  cells,
-}: {
-  cells: Map<string, Cell<TData, unknown>>
-}) {
-  const { t } = useTranslation()
-
-  const actionCell = cells.get('action')
-  const codeCell = cells.get('code')
-  const submitTimeCell = cells.get('submit_time')
-
-  return (
-    <div className='space-y-2.5'>
-      <div className='flex min-w-0 items-start justify-between gap-3'>
-        <CompactCell cell={actionCell} className='flex-1' />
-        <CompactCell cell={codeCell} className='shrink-0 text-right' />
-      </div>
-
-      <div className='grid grid-cols-2 gap-1.5'>
-        <SummaryField label={t('Submit Time')} cell={submitTimeCell} />
-        <SummaryField
-          label={t('Channel')}
-          cell={cells.get('channel')}
-          primaryOnly
-        />
-        <SummaryField label={t('Task ID')} cell={cells.get('mj_id')} />
-        <SummaryField
-          label={t('Duration')}
-          cell={cells.get('duration')}
-          primaryOnly
-        />
-        <SummaryField label={t('Image')} cell={cells.get('image_url')} />
-        <SummaryField
-          label={t('Prompt')}
-          cell={cells.get('prompt')}
-          primaryOnly
-        />
-        <SummaryField
-          label={t('Fail Reason')}
-          cell={cells.get('fail_reason')}
-          className='col-span-2 bg-transparent px-0 py-0'
-        />
-      </div>
-    </div>
-  )
-}
-
 export function UsageLogsMobileList<TData>({
   table,
   isLoading = false,
   emptyTitle,
   emptyDescription,
-  logCategory,
+  logCategory: _logCategory = 'common',
 }: UsageLogsMobileListProps<TData>) {
   const { t } = useTranslation()
 
@@ -251,7 +105,7 @@ export function UsageLogsMobileList<TData>({
     t('No usage logs available. Logs will appear here once API calls are made.')
 
   if (isLoading) {
-    return <UsageLogsMobileSkeleton separate={logCategory === 'common'} />
+    return <UsageLogsMobileSkeleton separate />
   }
 
   const rows = table.getRowModel().rows
@@ -273,13 +127,7 @@ export function UsageLogsMobileList<TData>({
   }
 
   return (
-    <div
-      className={cn(
-        logCategory === 'common'
-          ? 'min-w-0 space-y-3'
-          : 'border-border/50 bg-card overflow-hidden rounded-lg border'
-      )}
-    >
+    <div className='min-w-0 space-y-3'>
       {rows.map((row) => {
         const cells = new Map(
           row.getVisibleCells().map((cell) => [cell.column.id, cell])
@@ -294,20 +142,14 @@ export function UsageLogsMobileList<TData>({
           <div
             key={row.id}
             className={cn(
-              logCategory === 'common'
-                ? 'border-border/60 bg-card min-w-0 rounded-xl border p-3.5'
-                : 'border-border/40 border-b border-l-2 border-l-transparent p-3 transition-colors last:border-b-0',
+              'border-border/60 bg-card min-w-0 rounded-xl border p-3.5',
               tintClass
             )}
           >
-            {logCategory === 'common' && (
-              <CommonLogMobileCard
-                log={row.original as UsageLog}
-                cells={cells}
-              />
-            )}
-            {logCategory === 'task' && <TaskLogsCard cells={cells} />}
-            {logCategory === 'drawing' && <DrawingLogsCard cells={cells} />}
+            <CommonLogMobileCard
+              log={row.original as UsageLog}
+              cells={cells}
+            />
           </div>
         )
       })}

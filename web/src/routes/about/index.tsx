@@ -16,10 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { About } from '@/features/about'
+import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
+import { statusQueryOptions } from '@/lib/status-query'
 
 export const Route = createFileRoute('/about/')({
+  beforeLoad: async ({ context }) => {
+    try {
+      const status = await context.queryClient.fetchQuery(statusQueryOptions)
+      const modules = parseHeaderNavModulesFromStatus(status)
+      if (modules.about !== true) {
+        throw redirect({ to: '/' })
+      }
+    } catch (error) {
+      if ((error as { to?: string })?.to) throw error
+      throw redirect({ to: '/' })
+    }
+  },
   component: About,
 })

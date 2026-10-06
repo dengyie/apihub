@@ -24,8 +24,6 @@ import type {
   LogCategory,
   LogFilters,
   CommonLogFilters,
-  DrawingLogFilters,
-  TaskLogFilters,
 } from '../types'
 
 // ============================================================================
@@ -37,7 +35,7 @@ import type {
  */
 export function buildSearchParams(
   filters: LogFilters,
-  logCategory: LogCategory
+  _logCategory?: LogCategory
 ): Record<string, unknown> {
   const baseParams: Record<string, unknown> = {
     ...(filters.startTime && { startTime: filters.startTime.getTime() }),
@@ -45,37 +43,17 @@ export function buildSearchParams(
     ...(filters.channel && { channel: filters.channel }),
   }
 
-  switch (logCategory) {
-    case 'common': {
-      const commonFilters = filters as CommonLogFilters
-      return {
-        ...baseParams,
-        ...(commonFilters.model && { model: commonFilters.model }),
-        ...(commonFilters.token && { token: commonFilters.token }),
-        ...(commonFilters.group && { group: commonFilters.group }),
-        ...(commonFilters.username && { username: commonFilters.username }),
-        ...(commonFilters.requestId && { requestId: commonFilters.requestId }),
-        ...(commonFilters.upstreamRequestId && {
-          upstreamRequestId: commonFilters.upstreamRequestId,
-        }),
-      }
-    }
-    case 'drawing': {
-      const drawingFilters = filters as DrawingLogFilters
-      return {
-        ...baseParams,
-        ...(drawingFilters.mjId && { filter: drawingFilters.mjId }),
-      }
-    }
-    case 'task': {
-      const taskFilters = filters as TaskLogFilters
-      return {
-        ...baseParams,
-        ...(taskFilters.taskId && { filter: taskFilters.taskId }),
-      }
-    }
-    default:
-      return baseParams
+  const commonFilters = filters as CommonLogFilters
+  return {
+    ...baseParams,
+    ...(commonFilters.model && { model: commonFilters.model }),
+    ...(commonFilters.token && { token: commonFilters.token }),
+    ...(commonFilters.group && { group: commonFilters.group }),
+    ...(commonFilters.username && { username: commonFilters.username }),
+    ...(commonFilters.requestId && { requestId: commonFilters.requestId }),
+    ...(commonFilters.upstreamRequestId && {
+      upstreamRequestId: commonFilters.upstreamRequestId,
+    }),
   }
 }
 
