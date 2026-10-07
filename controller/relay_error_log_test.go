@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/model"
+	"github.com/dengyie/apihub/relaykit/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"

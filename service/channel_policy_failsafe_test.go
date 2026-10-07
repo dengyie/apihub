@@ -4,11 +4,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/loadbalancer"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/loadbalancer"
+	"github.com/dengyie/apihub/setting/operation_setting"
 
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/stretchr/testify/require"
 )
 

@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/dto"
-	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/model"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/dto"
+	"github.com/dengyie/apihub/logger"
+	"github.com/dengyie/apihub/model"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	relayconstant "github.com/dengyie/apihub/relay/constant"
+	"github.com/dengyie/apihub/setting"
 
 	"github.com/gin-gonic/gin"
 )

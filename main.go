@@ -16,25 +16,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/controller"
-	"github.com/QuantumNous/new-api/i18n"
-	"github.com/QuantumNous/new-api/loadbalancer"
-	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/middleware"
-	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/oauth"
-	"github.com/QuantumNous/new-api/pkg/jsplugin"
-	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
-	"github.com/QuantumNous/new-api/pkg/wsmanager"
-	"github.com/QuantumNous/new-api/relay"
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
-	"github.com/QuantumNous/new-api/router"
-	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/authz"
-	_ "github.com/QuantumNous/new-api/setting/performance_setting"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/controller"
+	"github.com/dengyie/apihub/i18n"
+	"github.com/dengyie/apihub/loadbalancer"
+	"github.com/dengyie/apihub/logger"
+	"github.com/dengyie/apihub/middleware"
+	"github.com/dengyie/apihub/model"
+	"github.com/dengyie/apihub/oauth"
+	"github.com/dengyie/apihub/pkg/jsplugin"
+	perfmetrics "github.com/dengyie/apihub/pkg/perf_metrics"
+	"github.com/dengyie/apihub/pkg/wsmanager"
+	"github.com/dengyie/apihub/relay"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
+	"github.com/dengyie/apihub/router"
+	"github.com/dengyie/apihub/service"
+	"github.com/dengyie/apihub/service/authz"
+	_ "github.com/dengyie/apihub/setting/performance_setting"
+	"github.com/dengyie/apihub/setting/ratio_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
@@ -289,8 +289,29 @@ func main() {
 		Handler: server,
 	}
 
+	// Zero-downtime deployment support.
+	//
+	// The usual restart sequence (stop old process, then start the new one) has a
+	// window where nothing is listening: every client request arriving in that gap
+	// is refused outright. With SO_REUSEPORT both the old and the new process can
+	// hold the same listening port, so the deploy script can start the new binary
+	// FIRST and only retire the old one afterwards. The kernel spreads newly
+	// accepted connections across every reuseport socket in the group, while each
+	// process keeps serving the requests it already accepted.
+	//
+	// Off by default: enabling it is an operational decision, because two
+	// processes sharing one SQLite file and one loadbalancer tracker means
+	// their in-memory views briefly diverge. Only turn it on when a deploy script
+	// that understands the pairing is also in place.
+	reusePort := os.Getenv("APIHUB_REUSEPORT") == "1"
+	listener, err := listenWithOptions(":"+port, reusePort)
+	if err != nil {
+		common.FatalLog("failed to listen on port " + port + ": " + err.Error())
+		return
+	}
+
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			common.FatalLog("failed to start HTTP server: " + err.Error())
 		}
 	}()
@@ -332,7 +353,7 @@ func InjectUmamiAnalytics() {
 		analyticsInjectBuilder.WriteString(umamiSiteID)
 		analyticsInjectBuilder.WriteString("\"></script>")
 	}
-	analyticsInjectBuilder.WriteString("<!--Umami QuantumNous-->\n")
+	analyticsInjectBuilder.WriteString("<!--Umami-->\n")
 	analyticsInject := []byte(analyticsInjectBuilder.String())
 	placeholder := []byte("<!--umami-->\n")
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)
@@ -355,7 +376,7 @@ func InjectGoogleAnalytics() {
 		analyticsInjectBuilder.WriteString("');")
 		analyticsInjectBuilder.WriteString("</script>")
 	}
-	analyticsInjectBuilder.WriteString("<!--Google Analytics QuantumNous-->\n")
+	analyticsInjectBuilder.WriteString("<!--Google Analytics-->\n")
 	analyticsInject := []byte(analyticsInjectBuilder.String())
 	placeholder := []byte("<!--Google Analytics-->\n")
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)

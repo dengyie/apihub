@@ -6,12 +6,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/QuantumNous/new-api/relay/channel"
-	"github.com/QuantumNous/new-api/relay/channel/openai"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relay/channel"
+	"github.com/dengyie/apihub/relay/channel/openai"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	relayconstant "github.com/dengyie/apihub/relay/constant"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"

@@ -11,12 +11,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/pkg/billingexpr"
-	"github.com/QuantumNous/new-api/pkg/jsplugin"
-	"github.com/QuantumNous/new-api/setting/billing_setting"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/pkg/billingexpr"
+	"github.com/dengyie/apihub/pkg/jsplugin"
+	"github.com/dengyie/apihub/setting/billing_setting"
+	"github.com/dengyie/apihub/setting/operation_setting"
+	"github.com/dengyie/apihub/setting/ratio_setting"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

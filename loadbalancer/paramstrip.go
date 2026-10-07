@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relaykit/types"
 )
 
 // 通用参数裁剪：不同上游对可选参数的支持程度不同（如 thinking、

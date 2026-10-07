@@ -3,7 +3,7 @@ package task_pricing_setting
 import (
 	"strings"
 
-	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/dengyie/apihub/setting/config"
 	"github.com/samber/lo"
 )
 

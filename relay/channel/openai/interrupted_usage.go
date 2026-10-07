@@ -3,10 +3,10 @@ package openai
 import (
 	"github.com/gin-gonic/gin"
 
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert"
-	"github.com/QuantumNous/new-api/service"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert"
+	"github.com/dengyie/apihub/service"
 )
 
 // interruptedStreamUsage 给断流的那一次尝试估出已交付部分的用量，返回值交给

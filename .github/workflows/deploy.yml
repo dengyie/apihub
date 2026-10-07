@@ -1,0 +1,147 @@
+name: Deploy
+
+# Builds the release artifacts and installs them on the production host.
+#
+# The deploy itself is zero-downtime: the new process is started while the old
+# one is still serving (SO_REUSEPORT lets both bind the port), and the old one
+# is only retired once the new one is answering. See scripts/deploy.sh.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'First handover only: accept one brief connection gap to adopt SO_REUSEPORT'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one that is already touching
+# production: killing the job mid-handover could leave the draining slot
+# unmanaged.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy to tebi
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+
+      - name: Install and build the frontend
+        # The frontend is embedded via //go:embed, so the binary cannot be
+        # built without a real dist/ first.
+        run: make build-web
+
+      - name: Verify the embedded frontend
+        # Guards the failure that caused a 2h41m production blank screen:
+        # a placeholder index.html builds fine and serves 200 with an empty
+        # body. Keep in sync with main.go and the Makefile.
+        run: make verify-embed
+
+      - name: Build the Linux binary
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/apihub .
+          echo "built $(stat -c %s dist/apihub) bytes"
+
+      - name: Configure SSH through the Cloudflare tunnel
+        # tebi has no inbound port of its own; it is reached through a
+        # Cloudflare Access tunnel. A service token is required because the
+        # hosted runner cannot complete the interactive browser login.
+        env:
+          CF_HOST: ${{ secrets.TEBI_SSH_HOST }}
+          CF_TOKEN_ID: ${{ secrets.CF_ACCESS_SERVICE_TOKEN_ID }}
+          CF_TOKEN_SECRET: ${{ secrets.CF_ACCESS_SERVICE_TOKEN_SECRET }}
+          DEPLOY_KEY: ${{ secrets.TEBI_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          for v in CF_HOST CF_TOKEN_ID CF_TOKEN_SECRET DEPLOY_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::secret $v is not set; cannot deploy to production"
+              exit 1
+            fi
+          done
+
+          curl -fsSL -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+          install -m 600 /dev/null ~/.ssh/apihub_deploy_key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/apihub_deploy_key
+          ssh-keyscan "$CF_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          cat > ~/.ssh/config <<EOF
+          Host tebi
+            HostName $CF_HOST
+            User root
+            IdentityFile ~/.ssh/apihub_deploy_key
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            ProxyCommand ~/.cloudflared/cloudflared access ssh --hostname %h \
+              --service-token-id $CF_TOKEN_ID --service-token-secret $CF_TOKEN_SECRET
+            ServerAliveInterval 30
+            ServerAliveCountMax 3
+          EOF
+          mkdir -p ~/.cloudflared
+          mv cloudflared ~/.cloudflared/cloudflared
+
+      - name: Check that the host is reachable
+        run: ssh tebi 'hostname && supervisorctl version'
+
+      - name: Upload the release
+        run: |
+          set -euo pipefail
+          ssh tebi 'mkdir -p /tmp/apihub-release'
+          scp dist/apihub tebi:/tmp/apihub-release/apihub
+          scp scripts/deploy.sh tebi:/tmp/apihub-release/deploy.sh
+
+      - name: Deploy
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap || false }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The bootstrap flag is only meaningful for the very first handover,
+          # from a build that predates SO_REUSEPORT support.
+          if [ "$BOOTSTRAP" = "true" ]; then
+            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
+              /tmp/apihub-release/deploy.sh --bootstrap \
+                --binary /tmp/apihub-release/apihub --version '$SHA'"
+          else
+            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
+              /tmp/apihub-release/deploy.sh \
+                --binary /tmp/apihub-release/apihub --version '$SHA'"
+          fi
+
+      - name: Clean up the upload
+        if: always()
+        run: ssh tebi 'rm -rf /tmp/apihub-release' || true
+
+      - name: Report the result
+        if: always()
+        run: ssh tebi '/tmp/mnt/new-api/bin/apihub --version 2>/dev/null; ls -1 /tmp/mnt/new-api/backups | tail -3' || true

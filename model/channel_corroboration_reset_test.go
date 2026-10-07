@@ -3,8 +3,8 @@ package model
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/loadbalancer"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

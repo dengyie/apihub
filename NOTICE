@@ -1,10 +1,24 @@
-new-api Notices
+APIHub Notices
 
-new-api
-Copyright (c) QuantumNous and contributors.
+APIHub
+Copyright (c) 2026 dengyie and APIHub contributors.
 
-This project is licensed under the GNU Affero General Public License v3.0.
+APIHub is a modified version of New API, which is itself derived from One API.
+This work is distributed under the GNU Affero General Public License v3.0.
 See LICENSE for the full project license terms.
+
+==== Upstream Projects ====
+
+New API
+Copyright (c) QuantumNous and contributors.
+https://github.com/QuantumNous/new-api
+
+One API
+Copyright (c) JustSong - https://github.com/songquanpeng/one-api
+
+APIHub is a derivative of these projects and substantial parts of it originate
+from them. Commits before the point marked "APIHub contributions begin" in the
+git history belong to the upstream projects and are not the work of APIHub.
 
 ==== Additional Terms under AGPLv3 Section 7 ====
 
@@ -23,6 +37,24 @@ https://github.com/QuantumNous/new-api
 
 Modified versions must not misrepresent the origin of the software and must
 mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== Changes made by APIHub (AGPLv3 Section 7(c)) ====
+
+In accordance with Section 7(c) of the AGPLv3, this modified version is marked
+as changed. The substantial APIHub contributions are:
+
+  * Per-(channel, model) circuit breaking, concurrency ceilings, and
+    rate-limit-aware selection in the loadbalancer/ package, driven by a
+    hot-reloadable policy file.
+  * Automatic channel disable with corroboration requirements, so a single
+    ambiguous upstream response cannot take a channel offline.
+  * Streaming billing correctness: partial-usage accounting, interrupted-stream
+    handling, and termination-frame detection.
+  * Zero-downtime deployment support: optional SO_REUSEPORT listeners and a
+    blue/green handover driven by scripts/deploy.sh.
+  * A rebuilt console and design system for the web frontend.
+
+Full authorship and dates are recorded in the git history.
 
 ==== Third-Party Notices ====
 

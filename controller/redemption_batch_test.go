@@ -8,9 +8,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/middleware"
-	"github.com/QuantumNous/new-api/model"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/middleware"
+	"github.com/dengyie/apihub/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"

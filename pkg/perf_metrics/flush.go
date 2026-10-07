@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/setting/perf_metrics_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/model"
+	"github.com/dengyie/apihub/setting/perf_metrics_setting"
 )
 
 func flushLoop() {

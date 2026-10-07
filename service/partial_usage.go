@@ -3,8 +3,8 @@ package service
 import (
 	"github.com/gin-gonic/gin"
 
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/dto"
 )
 
 // InterruptedTextUsage prices a streaming attempt that failed after producing

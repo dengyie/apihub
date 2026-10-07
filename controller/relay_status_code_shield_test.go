@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantumNous/new-api/loadbalancer"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/loadbalancer"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

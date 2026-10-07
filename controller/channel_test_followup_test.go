@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantumNous/new-api/model"
+	"github.com/dengyie/apihub/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

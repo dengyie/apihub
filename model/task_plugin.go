@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"

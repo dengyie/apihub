@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 	"gorm.io/gorm"
 )
 

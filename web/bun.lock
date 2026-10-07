@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "newapi-web",
+      "name": "apihub-web",
       "dependencies": {
         "@astryxdesign/core": "0.2.0",
         "@astryxdesign/theme-neutral": "0.2.0",

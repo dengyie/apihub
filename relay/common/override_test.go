@@ -6,11 +6,11 @@ import (
 	"reflect"
 	"testing"
 
-	common2 "github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	common2 "github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/relaykit/types"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/setting/model_setting"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
