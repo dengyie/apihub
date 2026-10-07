@@ -179,7 +179,8 @@ source_environment() {
   # original list ends up with a doubled quote and is mis-parsed.
   line="${line#environment=}"
   line="${line%\"}"
-  ENVIRONMENT_LINE="environment=${line}\",APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\""
+  # This holds the VALUE only; write_slot_conf prefixes "environment=" itself.
+  ENVIRONMENT_LINE="${line}\",APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\""
 }
 
 # write_slot_conf <slot> <autostart:0|1>
