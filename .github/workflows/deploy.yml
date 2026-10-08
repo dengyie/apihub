@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           module="$(go list -m)"
-          version="${{ github.sha }}"
+          version="$(cat VERSION)+${{ github.sha }}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -trimpath -ldflags "-s -w -X '${module}/common.Version=${version}'" -o dist/apihub .
           echo "built $(stat -c %s dist/apihub) bytes"
@@ -181,15 +181,21 @@ jobs:
           # validated per-version directory rather than the binary's embedded
           # copy. To undo a frontend-only change, redeploy the previous binary
           # without --web (or run deploy.sh --rollback, which restores both).
+          #
+          # VERSION is read from the same file the Makefile and build-release.yml
+          # read, so all three stamp `v29.36+<sha>` and not a bare commit hash.
+          # A bare hash also becomes the frontend directory's name, which is how
+          # `web/3d6d1a62ac4cb2c...` ended up next to `web/v29.36_7ee9e3462`.
+          version="$(cat VERSION)+$SHA"
           if [ "$BOOTSTRAP" = "true" ]; then
             ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
               /tmp/apihub-release/deploy.sh --bootstrap \
-                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --binary /tmp/apihub-release/apihub --version '$version' \
                 --web /tmp/apihub-release/apihub-web.tar.gz"
           else
             ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
               /tmp/apihub-release/deploy.sh \
-                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --binary /tmp/apihub-release/apihub --version '$version' \
                 --web /tmp/apihub-release/apihub-web.tar.gz"
           fi
 
