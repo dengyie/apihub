@@ -355,7 +355,11 @@ stage_web_bundle() {
   # matches what the Go loader expects (index.html at the root).
   if [[ ! -f "$staging/index.html" && -d "$staging"/*/ ]]; then
     local inner
-    inner="$(find "$staging" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    # -print -quit rather than `| head -1`: head closes the pipe on the first
+    # line, find dies of SIGPIPE, and under `set -o pipefail` that surfaces as a
+    # deploy aborting with "web bundle has no index.html at its root" for a
+    # bundle that had one all along.
+    inner="$(find "$staging" -mindepth 1 -maxdepth 1 -type d -print -quit)"
     [[ -n $inner && -f "$inner/index.html" ]] || { rm -rf "$staging"; die "web bundle has no index.html at its root"; }
     local flat="$staging.flat"
     mv "$inner" "$flat"

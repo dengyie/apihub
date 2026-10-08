@@ -103,7 +103,13 @@ jobs:
           set -euo pipefail
           tar -czf dist/apihub-web.tar.gz -C web/dist .
           echo "web artifact $(stat -c %s dist/apihub-web.tar.gz) bytes"
-          tar -tzf dist/apihub-web.tar.gz | head -3
+          # sed -n '1,3p', not `| head -3`. head exits after three lines and
+          # closes the pipe; tar then dies of SIGPIPE, and under `set -o pipefail`
+          # that exit code 2 fails the step. It read as a packaging failure, but
+          # the archive above was already written and correct -- which is why
+          # this step failed on every push and the frontend artifact was never
+          # once uploaded.
+          tar -tzf dist/apihub-web.tar.gz | sed -n '1,3p'
 
       - name: Configure SSH
         # tebi has a public address and sshd listening on 0.0.0.0:22, so the
