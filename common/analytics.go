@@ -19,8 +19,7 @@ var (
 // It is a pure function over bytes rather than a mutation of a package-level
 // variable, because once the frontend can also be served from disk there is no
 // single global index page any more: the embedded copy and the on-disk copy
-// each need the same treatment, and the on-disk one is re-read per request so
-// a rotated bundle takes effect without a restart.
+// each need the same treatment.
 //
 // Both replacements always run, even with no analytics configured. That
 // matches the previous behaviour: the placeholder is always consumed, so a

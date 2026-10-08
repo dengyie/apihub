@@ -276,6 +276,12 @@ func main() {
 	// Analytics is injected by the router rather than here: with the frontend
 	// separable, index.html may come from disk instead of this binary, and the
 	// two copies need the same treatment.
+	//
+	// APIHUB_STATIC_DIR is read here and nowhere else. The router used to read
+	// it as well and take the environment over WebAssets.StaticDir, which meant
+	// two entry points for one setting and an inverted precedence -- a caller
+	// passing StaticDir explicitly was silently overridden whenever the variable
+	// happened to be set in the environment.
 	router.SetRouter(server, router.WebAssets{
 		BuildFS:   buildFS,
 		IndexPage: indexPage,

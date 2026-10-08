@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"net/http"
@@ -44,6 +45,10 @@ func newWebEngine(t *testing.T, staticDir string) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
+	// APIHUB_STATIC_DIR is read once, in main.go, and handed over as
+	// WebAssets.StaticDir. The env var is cleared here so a stray value in the
+	// developer's shell cannot silently redirect these tests at a real bundle.
+	t.Setenv("APIHUB_STATIC_DIR", "")
 	SetWebRouter(engine, WebAssets{
 		BuildFS:   testBuildFS,
 		IndexPage: mustRead(t, "testdata/webdist/index.html"),
@@ -175,11 +180,41 @@ func TestSetWebRouter(t *testing.T) {
 	})
 }
 
-func TestFirstNonEmpty(t *testing.T) {
-	if got := firstNonEmpty("", "", "/from/assets"); got != "/from/assets" {
-		t.Errorf("firstNonEmpty = %q, want /from/assets", got)
+// TestIndexPageIsASnapshotWhileAssetsAreLive pins an asymmetry that is easy to
+// get backwards: static assets are re-read from disk on every request, but
+// index.html is read once at startup and held for the life of the process.
+//
+// The practical consequence is that replacing files inside a bound directory
+// swaps the JS while leaving the old HTML in place -- producing either a
+// console that silently never updates or a new index paired with old chunks.
+// Publishing a frontend is therefore "point a slot at a new directory and
+// restart it", which is what deploy.sh does per version. If this test ever
+// needs to change, the README and the SetWebRouter comment change with it.
+func TestIndexPageIsASnapshotWhileAssetsAreLive(t *testing.T) {
+	dir := writeBundle(t, t.TempDir(), "BUILD_ONE")
+	engine := newWebEngine(t, dir)
+
+	if rec := do(engine, "/"); !strings.Contains(rec.Body.String(), "BUILD_ONE") {
+		t.Fatalf("precondition: index should start from the on-disk bundle, got:\n%s", rec.Body.String())
 	}
-	if got := firstNonEmpty("", ""); got != "" {
-		t.Errorf("firstNonEmpty with no values = %q, want empty", got)
+
+	// Rotate the bundle in place, exactly what the README used to invite.
+	index := filepath.Join(dir, "index.html")
+	page, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, bytes.ReplaceAll(page, []byte("BUILD_ONE"), []byte("BUILD_TWO")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "static", "js", "d0.js"), []byte("BUILD_TWO"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec := do(engine, "/static/js/d0.js"); !strings.Contains(rec.Body.String(), "BUILD_TWO") {
+		t.Errorf("static assets must be re-read from disk per request, got:\n%s", rec.Body.String())
+	}
+	if rec := do(engine, "/"); !strings.Contains(rec.Body.String(), "BUILD_ONE") {
+		t.Errorf("index.html must stay the startup snapshot, but it changed:\n%s", rec.Body.String())
 	}
 }

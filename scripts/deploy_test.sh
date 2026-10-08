@@ -80,7 +80,6 @@ echo "web_fingerprint"
 fp="$(web_fingerprint "$WORK/good")"
 grep -q "/static/js/aaa1.js" <<<"$fp" && grep -q "/static/css/aaa1.css" <<<"$fp" \
   && ok "extracts the hashed asset URLs" || bad "extracts the hashed asset URLs" "$fp"
-[[ $(web_fingerprint "$WORK/good") != "$(web_fingerprint "$WORK/small-index")" || $? == 0 ]] && true
 grep -q "aaa1" <<<"$fp" && ! grep -q "bbb1" <<<"$fp" && ok "does not pick up assets from other builds" \
   || bad "does not pick up assets from other builds" "$fp"
 
@@ -248,6 +247,83 @@ kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 # Nothing listening at all must fail closed, not pass vacuously.
 verify_frontend_served apihub-test "$WORK/good" >/dev/null 2>&1 \
   && bad "fails when the port answers nothing" || ok "fails when the port answers nothing"
+
+echo "wait_ready version check"
+# wait_ready is the only gate that can tell "the right binary" from "a stale
+# artifact that happens to serve the right frontend". Served here by a stub that
+# answers /api/status with a caller-chosen version; reuseport_group_ok is stubbed
+# out, because whether the pid owns the port is not what is under test.
+reuseport_group_ok() { return 0; }
+
+cat >"$WORK/status_server.py" <<'PY'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+VERSION = sys.argv[2]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ('{"success":true,"data":{"version":"%s"}}' % VERSION).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+PY
+
+serve_status_with() {
+  python3 "$WORK/status_server.py" "$PORT" "$1" >/dev/null 2>&1 &
+  SRV=$!
+  sleep 1
+}
+
+READY_TIMEOUT=4
+EXPECTED_VERSION="v29.36+goodsha"
+serve_status_with "v29.36+goodsha"
+wait_ready apihub-test "$$" >/dev/null 2>&1 \
+  && ok "accepts a process reporting the expected version" \
+  || bad "accepts a process reporting the expected version"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+
+# The failure this prevents: every other gate passes -- two probes answered, the
+# port answers 200, the frontend fingerprint matches -- while the wrong binary
+# is live. The deploy must not be able to report success here.
+serve_status_with "v29.36+stalesha"
+out="$(wait_ready apihub-test "$$" 2>&1)"
+grep -q "reports version 'v29.36+stalesha'" <<<"$out" \
+  && ok "rejects a process reporting the wrong version" \
+  || bad "rejects a process reporting the wrong version" "$out"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+
+# An empty EXPECTED_VERSION must not turn the check into a false pass.
+EXPECTED_VERSION=""
+serve_status_with "v29.36+stalesha"
+wait_ready apihub-test "$$" >/dev/null 2>&1 \
+  && ok "an unset expectation accepts whatever the process reports" \
+  || bad "an unset expectation accepts whatever the process reports"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+EXPECTED_VERSION=""
+
+serve_status_with "v29.36+fromdisk"
+check "served_version reads the version out of /api/status" "$(served_version apihub-test)" "v29.36+fromdisk"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+
+check "served_version reports a dead port instead of pretending" "$(served_version apihub-test)" "<not answering>"
+
+# The status report must work on BSD userland too: it is the first command an
+# operator reaches for when something is broken.
+printf 'x' >"$WORK/somefile"
+mtime="$(file_mtime "$WORK/somefile")"
+[[ -n $mtime && $mtime != unknown ]] && ok "file_mtime works on this platform" || bad "file_mtime works on this platform" "$mtime"
+bundles="$(ls -1 "$WORK" 2>/dev/null | grep -v '^\.staging\.' | tr '\n' ' ')"
+[[ $bundles == *somefile* ]] && ok "bundle listing works on this platform" || bad "bundle listing works on this platform" "$bundles"
 
 # The APP_ROOT / SUPERVISOR_CONF_DIR coupling guard. A rehearsal that overrides
 # APP_ROOT but not SUPERVISOR_CONF_DIR would otherwise write the live

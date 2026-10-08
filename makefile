@@ -8,6 +8,15 @@ DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
 
+# 模块全限定名。ldflags 的 -X 目标是 <模块路径>/common.Version，而这个字符串
+# 之前是手抄的：模块从 github.com/QuantumNous/new-api 改名为
+# github.com/dengyie/apihub 之后它没有跟着改，而 Go 链接器对 -X 指向一个不存在
+# 的符号既不报错也不警告 —— `make build-api` 于是照常成功，产出 common.Version
+# 停留在 "v0.0.0" 的二进制（见 README 开发章节）。从 go.mod 推导，这个字符串就
+# 再也不会过期。
+MODULE := $(shell go list -m)
+VERSION_STAMP := $(MODULE)/common.Version
+
 .PHONY: all build-web build-all-web verify-embed build-api start-api dev dev-api dev-api-rebuild dev-web reset-setup test
 
 all: build-all-web start-api
@@ -49,11 +58,22 @@ verify-embed:
 
 # 本地构建生产二进制。版本串绑定 commit（v29.16 起的约定），与 CI 保持同一形状：
 # 三个不同产物共用同一个标签，事后无法判断跑的是哪次提交。
+#
+# 构建后立刻断言版本确实被戳进去了。-X 对不存在的符号是静默的，光靠构建成功
+# 说明不了任何事 —— 而这个闸门要挡住的就是「构建成功、版本号是 v0.0.0」。
 build-api: verify-embed
 	@echo "Building api binary..."
 	@cd $(API_DIR) && go build \
-		-ldflags "-X 'github.com/QuantumNous/new-api/common.Version=$$(cat VERSION)+$$(git rev-parse --short=9 HEAD)'" \
+		-ldflags "-s -w -X '$(VERSION_STAMP)=$$(cat VERSION)+$$(git rev-parse --short=9 HEAD)'" \
 		-o new-api
+	@want="$$(cat VERSION)+$$(git rev-parse --short=9 HEAD)"; \
+	got=$$(cd $(API_DIR) && ./new-api --version 2>/dev/null | tr -d '[:space:]'); \
+	if [ "$$got" != "$$want" ]; then \
+		echo "ERROR: 版本戳没有生效：期望 '$$want'，实际 '$$got'。"; \
+		echo "       检查 -X 的目标符号 '$(VERSION_STAMP)' 是否存在。"; \
+		exit 1; \
+	fi; \
+	echo "version stamped: $$got"
 
 start-api: verify-embed
 	@echo "Starting api dev server..."

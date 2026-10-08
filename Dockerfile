@@ -25,7 +25,11 @@ RUN go mod download
 
 COPY . .
 COPY --from=builder /build/web/dist ./web/dist
-RUN go build -ldflags "-s -w -X 'github.com/dengyie/apihub/common.Version=$(cat VERSION)'" -o apihub
+# -X 的目标从 go.mod 推导：手抄的模块路径在改名后会静默失效，链接器对未知符号
+# 既不报错也不警告，于是镜像里就是一个版本号停在 v0.0.0 的二进制。
+RUN module="$(go list -m)" && \
+    go build -ldflags "-s -w -X '${module}/common.Version=$(cat VERSION)'" -o apihub && \
+    go version -m apihub | grep -F "${module}/common.Version=$(cat VERSION)"
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 
