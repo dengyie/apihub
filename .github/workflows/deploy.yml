@@ -6,8 +6,15 @@ name: Deploy
 # one is still serving (SO_REUSEPORT lets both bind the port), and the old one
 # is only retired once the new one is answering. See scripts/deploy.sh.
 on:
-  push:
-    branches: [main]
+  # The push trigger is temporarily disabled for the one-time handover away
+  # from the legacy `new-api` program, which predates SO_REUSEPORT support.
+  # A push-triggered deploy in that window aborts with "legacy program ...
+  # predates SO_REUSEPORT support" -- safe, but a red run on main for a state
+  # that is already known. Run the bootstrap dispatch by hand once, then this
+  # trigger is restored.
+  #
+  # push:
+  #   branches: [main]
   workflow_dispatch:
     inputs:
       bootstrap:
