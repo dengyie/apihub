@@ -446,6 +446,19 @@ kept=$(find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging.*' | w
 # deploy early, which is the quiet version of this bug.
 check "the current symlink does not spend a retention slot" "$kept" "$((WEB_KEEP + 1))"
 
+echo "show_status"
+mkdir -p "$BIN_DIR" "$APP_ROOT/data"
+printf 'not-really-a-binary' > "$BIN_DIR/new-api"
+status_out="$(show_status 2>&1)"
+# supervisorctl answers "ERROR (no such process)" for the retired legacy
+# program, which is the normal state -- printing it back makes a healthy host
+# look like the one thing you reach for --status to rule out.
+[[ $status_out == *"not registered with supervisord"* ]] \
+  && ok "reports an unknown legacy program as absent" \
+  || bad "reports an unknown legacy program as absent" "$status_out"
+[[ $status_out != *ERROR* ]] && ok "never prints ERROR while the host is healthy" \
+  || bad "never prints ERROR while the host is healthy" "$status_out"
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

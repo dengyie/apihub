@@ -788,7 +788,16 @@ show_status() {
   log "supervisor slots:"
   sup status "${SLOTS[@]}" 2>/dev/null || true
   log ""
-  log "legacy program '$LEGACY_PROGRAM': $(slot_state "$LEGACY_PROGRAM" || echo UNTRACKED)"
+  # supervisorctl answers "ERROR (no such process)" and exits 4 for a program it
+  # has never heard of, which is the normal state once the legacy program has
+  # been retired. Printing that ERROR verbatim makes a healthy host look broken,
+  # and --status is the first command anyone runs when it is not.
+  local legacy_state
+  legacy_state="$(slot_state "$LEGACY_PROGRAM" 2>/dev/null || true)"
+  case $legacy_state in
+    ""|ERROR*) log "legacy program '$LEGACY_PROGRAM': not registered with supervisord" ;;
+    *)         log "legacy program '$LEGACY_PROGRAM': $legacy_state" ;;
+  esac
   log "live binary: $(file_mtime "$BIN_DIR/new-api" 2>/dev/null || echo 'not found'), $(file_size "$BIN_DIR/new-api") bytes"
   log "binary sha256: $(sha256_short "$BIN_DIR/new-api")"
   local s live=""
