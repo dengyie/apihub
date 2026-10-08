@@ -150,8 +150,13 @@ The dashboard ships as two artifacts built from one source tree:
   is what a Docker image or a bare `go build` gets, and it is the fallback that
   always works.
 - **on disk** — a `web/dist` bundle published next to the binary and served by
-  `APIHUB_STATIC_DIR`. Files are read from disk on every request, so a frontend
-  can be replaced without rebuilding the binary.
+  `APIHUB_STATIC_DIR`. Static assets are read from disk on every request, but
+  `index.html` is read once at startup and held for the life of the process.
+  Replacing files *inside* a bound directory therefore swaps the JS while
+  leaving the old HTML in place, which yields either a console that silently
+  never updates or a new index paired with old chunks. Publishing a frontend
+  means pointing a slot at a different directory and restarting it — which is
+  what `deploy.sh` does once per version.
 
 ```bash
 tar -czf apihub-web.tar.gz -C web/dist .
@@ -184,8 +189,22 @@ catches is silent:
 3. `common.LoadStaticBundle` re-checks the same thresholds at startup, so a bad
    directory is caught however it arrives.
 
+Readiness additionally asserts that the running process reports the `--version`
+this deploy was asked for. That is the only check that can tell "the right
+binary" from "a stale artifact that happens to serve the right frontend": the
+frontend fingerprint proves the console is current but says nothing about which
+binary is serving it.
+
 Old bundles are pruned to the newest `WEB_KEEP` (default 3), never including
 the live one or the one `--rollback` would return to.
+
+**`--rollback` is not zero-downtime.** It stops both slots before starting the
+previous release, so traffic is refused for the duration of the stop — up to
+`SHUTDOWN_TIMEOUT_SECONDS` (default 120s) if the outgoing process has in-flight
+work to drain. This is inherent: there is no second process to hand the port to,
+and a rollback that started the old binary *before* stopping the new one could
+not tell the two apart. Reach for it when a release is already wrong, not as a
+routine deploy step.
 
 ## Configuration
 

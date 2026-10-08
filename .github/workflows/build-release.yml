@@ -114,9 +114,19 @@ jobs:
           sha="$(git rev-parse --short=9 HEAD)"
           version="${base}+${sha}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # -X 的目标从 go.mod 推导。链接器对未知符号既不报错也不警告，手抄的
+          # 路径在模块改名后会静默失效，产出版本号停留在 v0.0.0 的产物却报告
+          # 构建成功（Makefile 曾长期如此）。
+          #
+          # 构建后用 `go version -m` 读回实际生效的链接参数确认一次。这个矩阵含
+          # arm64，没法在本机执行产物，所以只能读 build info —— 而 build info 里
+          # 的 -ldflags 行会被 -trimpath 抹掉。所以此处不要加 -trimpath；真要加，
+          # 就得换成别的校验方式。
+          module="$(go list -m)"
           go build \
-            -ldflags "-s -w -X 'github.com/dengyie/apihub/common.Version=${version}'" \
+            -ldflags "-s -w -X '${module}/common.Version=${version}'" \
             -o "new-api-${version}-linux-${GOARCH}"
+          go version -m "new-api-${version}-linux-${GOARCH}" | grep -F "${module}/common.Version=${version}"
           ls -la "new-api-${version}-linux-${GOARCH}"
 
       - name: Verify target architecture

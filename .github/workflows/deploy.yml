@@ -61,13 +61,34 @@ jobs:
         run: make verify-embed
 
       - name: Build the Linux binary
-        env:
-          VERSION: ${{ github.sha }}
+        # The version is stamped here rather than left entirely to the supervisor
+        # env, so the artifact is self-describing: `dist/apihub --version` says
+        # what it is even before it is installed. deploy.sh then asserts the
+        # running process reports the same string, so a stamp that silently
+        # failed to apply is caught at deploy time instead of becoming a mystery
+        # weeks later.
+        #
+        # The -X target is derived from go.mod's module line. A hand-copied path
+        # is silently ignored by the linker -- -X does not error on an unknown
+        # symbol -- which is exactly how the Makefile shipped a binary stamped
+        # v0.0.0 while reporting a successful build.
         run: |
           set -euo pipefail
+          module="$(go list -m)"
+          version="${{ github.sha }}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -trimpath -ldflags "-s -w" -o dist/apihub .
+            go build -trimpath -ldflags "-s -w -X '${module}/common.Version=${version}'" -o dist/apihub .
           echo "built $(stat -c %s dist/apihub) bytes"
+          # Verified by running the binary, not by reading `go version -m`:
+          # -trimpath suppresses the recorded -ldflags line, so a grep against the
+          # build info would fail here while proving nothing about the stamp.
+          # This runner is linux/amd64, the same target, so the binary runs.
+          stamped="$(./dist/apihub --version | tr -d '[:space:]')"
+          if [ "$stamped" != "$version" ]; then
+            echo "::error::version stamp did not reach the binary (want '$version', got '$stamped')"
+            exit 1
+          fi
+          echo "version stamped into the binary: ${stamped}"
 
       - name: Package the frontend as a separate artifact
         # The binary still embeds web/dist -- that is the fallback and the only
@@ -179,9 +200,17 @@ jobs:
         #
         # .apihub-deploy-state holds the backup path of the last successful
         # handover -- the same path `deploy.sh --rollback` consumes.
+        #
+        # The curl here runs as root ON tebi, where /root/.curlrc points at a
+        # local proxy. A bare curl sends the loopback probe to that proxy, which
+        # answers 502 for a service that is perfectly healthy -- so the one line
+        # an operator reads to decide whether the deploy worked would report the
+        # wrong thing at exactly the moment it matters. -q and --noproxy are the
+        # same two flags http_get() uses inside deploy.sh.
         run: |
           ssh tebi '
             supervisorctl status | grep -E "apihub-(blue|green)"
             echo "last backup: $(cat /tmp/mnt/new-api/.apihub-deploy-state 2>/dev/null || echo none)"
-            echo "http: $(curl -s -o /dev/null -w "%{http_code}" -m 5 http://127.0.0.1:3000/api/status)"
+            echo "http: $(curl -q --noproxy "*" -s -o /dev/null -w "%{http_code}" -m 5 http://127.0.0.1:3000/api/status)"
+            echo "serving version: $(curl -q --noproxy "*" -fsS -m 5 http://127.0.0.1:3000/api/status 2>/dev/null | sed -n "s/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)"
           ' || true

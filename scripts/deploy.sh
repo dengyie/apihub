@@ -224,6 +224,22 @@ file_size() {
   stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0
 }
 
+file_mtime() {
+  # Same GNU/BSD split as file_size. `stat -c '%y'` alone would print nothing at
+  # all on macOS, so a status report would look like the file does not exist.
+  stat -c '%y' "$1" 2>/dev/null || stat -f '%Sm' "$1" 2>/dev/null || echo unknown
+}
+
+# served_version <slot> -- what /api/status says the running slot is serving.
+# Reported by --status because "which binary is actually live" is otherwise only
+# answerable by reading the supervisor config and trusting it.
+served_version() {
+  local body
+  body="$(http_get /api/status)"
+  [[ -n $body ]] || { echo '<not answering>'; return 0; }
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$body" | head -1
+}
+
 sha256_short() {
   # sha256sum on tebi, shasum on macOS.
   sha256sum "$1" 2>/dev/null | cut -c1-16 || shasum -a 256 "$1" 2>/dev/null | cut -c1-16 || echo unknown
@@ -544,7 +560,7 @@ do_backup() {
 # the same check runs again against the survivor.
 # ---------------------------------------------------------------------------
 wait_ready() {
-  local slot="$1" pid="$2" deadline body ok=0 attempts=0
+  local slot="$1" pid="$2" deadline body ok=0 attempts=0 served=""
   deadline=$(( $(date +%s) + READY_TIMEOUT ))
 
   while (( $(date +%s) < deadline )); do
@@ -560,17 +576,29 @@ wait_ready() {
     if reuseport_group_ok "$pid"; then
       body="$(http_get "/api/status")"
       if [[ -n $body ]]; then
-        ok=$((ok + 1))
-        if (( ok >= 2 )); then
-          log "$slot (pid $pid) is in the socket group and answered $ok/$attempts probes"
-          return 0
+        # Is this the build we were asked to install? /api/status reports
+        # common.Version, so a stale artifact is detectable -- but only if
+        # somebody looks. Everything else in this script can pass while the
+        # wrong binary is serving: the frontend fingerprint would still match
+        # if the bundle is current, and "answered two probes" only proves
+        # something is listening. Without this check a deploy of the wrong
+        # file reports success.
+        served="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$body" | head -1)"
+        if [[ -z $EXPECTED_VERSION || $served == "$EXPECTED_VERSION" ]]; then
+          ok=$((ok + 1))
+          if (( ok >= 2 )); then
+            log "$slot (pid $pid) is in the socket group and answered $ok/$attempts probes on version ${served:-<unreported>}"
+            return 0
+          fi
+        else
+          warn "$slot reports version '$served' but this deploy was told to expect '$EXPECTED_VERSION'"
         fi
       fi
     fi
     sleep 1
   done
 
-  warn "$slot did not become ready within ${READY_TIMEOUT}s (answered $ok of $attempts probes)"
+  warn "$slot did not become ready within ${READY_TIMEOUT}s (answered $ok of $attempts probes; last reported version: ${served:-<none>})"
   return 1
 }
 
@@ -714,7 +742,7 @@ show_status() {
   sup status "${SLOTS[@]}" 2>/dev/null || true
   log ""
   log "legacy program '$LEGACY_PROGRAM': $(slot_state "$LEGACY_PROGRAM" || echo UNTRACKED)"
-  log "live binary: $(stat -c '%y %s bytes' "$BIN_DIR/new-api" 2>/dev/null || echo 'not found')"
+  log "live binary: $(file_mtime "$BIN_DIR/new-api" 2>/dev/null || echo 'not found'), $(file_size "$BIN_DIR/new-api") bytes"
   log "binary sha256: $(sha256_short "$BIN_DIR/new-api")"
   local s live=""
   for s in "${SLOTS[@]}"; do
@@ -723,13 +751,19 @@ show_status() {
   if [[ -n $live ]]; then
     log "live slot: $live -> frontend ${WEB_LINK} -> $(readlink -f "$WEB_LINK" 2>/dev/null || echo '<embedded in binary>')"
     log "  config says: $(slot_static_dir "$live" || echo '<embedded in binary>')"
+    log "  serving version: $(served_version "$live")"
   fi
-  [[ -d $WEB_ROOT ]] && log "frontend bundles: $(find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging.*' -printf '%f ' 2>/dev/null)"
+  # `ls -1` rather than `find -printf`, which GNU-only: --status is the first
+  # command an operator reaches for when something is wrong, so it must not go
+  # blank on the machine they are debugging from.
+  if [[ -d $WEB_ROOT ]]; then
+    log "frontend bundles: $(ls -1 "$WEB_ROOT" 2>/dev/null | grep -v '^\.staging\.' | tr '\n' ' ')"
+  fi
   if [[ -f $STATE_FILE ]]; then
     log "last deploy backup: $(cat "$STATE_FILE")"
   fi
-  if [[ -f $APP_ROOT/data/loadbalancer.yaml ]]; then
-    log "loadbalancer.yaml modified: $(stat -c '%y' "$APP_ROOT/data/loadbalancer.yaml")"
+  if [[ -f "$APP_ROOT/data/loadbalancer.yaml" ]]; then
+    log "loadbalancer.yaml modified: $(file_mtime "$APP_ROOT/data/loadbalancer.yaml")"
   fi
 }
 
@@ -791,7 +825,6 @@ main() {
     log "BOOTSTRAP: stopping $LEGACY_PROGRAM (expect a short connection gap)"
     sup stop "$LEGACY_PROGRAM"
 
-    EXPECTED_VERSION="$EXPECTED_VERSION"
     source_environment
     write_slot_conf apihub-blue 1 "$NEW_WEB_DIR"
     write_slot_conf apihub-green 0 "$NEW_WEB_DIR"

@@ -3,7 +3,6 @@ package router
 import (
 	"embed"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/dengyie/apihub/common"
@@ -34,17 +33,33 @@ type WebAssets struct {
 
 // resolvedFrontend is what SetWebRouter actually serves: a validated asset
 // source and the index page it came from.
+//
+// indexPage is read once, here, and held for the lifetime of the process. The
+// asset files behind `files` are re-read from disk on every request, but this
+// one is not -- see the comment on SetWebRouter before assuming otherwise.
 type resolvedFrontend struct {
 	files     static.ServeFileSystem
 	indexPage []byte
 }
 
+// SetWebRouter wires the dashboard route. Everything about which copy to serve
+// is decided here, once, at startup: a request never branches on where the
+// frontend came from.
+//
+// One consequence is worth stating plainly, because it is easy to assume the
+// opposite. Static assets are live -- http.Dir re-opens them per request -- but
+// index.html is a startup snapshot. Replacing the files inside the bound
+// directory therefore swaps the JS while leaving the old HTML in place, which
+// yields either a console that silently never updates or a new index paired
+// with old chunks. Publishing a frontend is consequently a matter of pointing a
+// slot at a different directory and restarting it, which is exactly what
+// deploy.sh does per version.
 func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.HandlerFunc) {
 	embedded := common.EmbedFolder(assets.BuildFS, "web/dist")
 
 	var disk static.ServeFileSystem
 	indexPage := assets.IndexPage
-	if dir := firstNonEmpty(os.Getenv("APIHUB_STATIC_DIR"), assets.StaticDir); dir != "" {
+	if dir := assets.StaticDir; dir != "" {
 		if bundle, err := common.LoadStaticBundle(dir); err != nil {
 			// A bad bundle must not take the console down: the binary still
 			// carries a working copy, so say what happened and carry on.
@@ -80,13 +95,4 @@ func SetWebRouter(router *gin.Engine, assets WebAssets, pluginDispatcher gin.Han
 			c.Data(http.StatusOK, "text/html; charset=utf-8", frontend.indexPage)
 		},
 	)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

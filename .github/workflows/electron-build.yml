@@ -55,13 +55,16 @@ jobs:
       #   if: runner.os != 'Windows'
       #   run: |
       #     go mod download
-      #     go build -ldflags "-s -w -X 'github.com/dengyie/apihub/common.Version=$(git describe --tags)' -extldflags '-static'" -o new-api
+      #     module="$(go list -m)"
+      #     go build -ldflags "-s -w -X '${module}/common.Version=$(git describe --tags)' -extldflags '-static'" -o new-api
 
       - name: Build Go binary (Windows)
         if: runner.os == 'Windows'
         run: |
           go mod download
-          go build -ldflags "-s -w -X 'github.com/dengyie/apihub/common.Version=$(git describe --tags)'" -o new-api.exe
+          module="$(go list -m)"
+          go build -ldflags "-s -w -X '${module}/common.Version=$(git describe --tags)'" -o new-api.exe
+          go version -m new-api.exe | grep -F "${module}/common.Version=$(git describe --tags)"
 
       - name: Update Electron version
         run: |
