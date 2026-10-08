@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/dto"
 )
 
 func p(s string) *string { return &s }

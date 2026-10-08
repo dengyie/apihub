@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"strings"
 
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/samber/lo"
 )
 

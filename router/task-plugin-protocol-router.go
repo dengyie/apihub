@@ -3,10 +3,10 @@ package router
 import (
 	"fmt"
 
-	"github.com/QuantumNous/new-api/controller"
-	"github.com/QuantumNous/new-api/middleware"
-	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/controller"
+	"github.com/dengyie/apihub/middleware"
+	pluginruntime "github.com/dengyie/apihub/pkg/jsplugin"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/gin-gonic/gin"
 )
 

@@ -5,10 +5,10 @@ import (
 	"math/rand"
 	"slices"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
-	"github.com/QuantumNous/new-api/loadbalancer"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/dto"
+	"github.com/dengyie/apihub/loadbalancer"
+	"github.com/dengyie/apihub/setting/ratio_setting"
 	"github.com/samber/lo"
 )
 

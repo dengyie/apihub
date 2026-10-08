@@ -1,6 +1,6 @@
 package claude
 
-import "github.com/QuantumNous/new-api/relaykit/dto"
+import "github.com/dengyie/apihub/relaykit/dto"
 
 func MapOpenAIToolChoice(toolChoice any, parallelToolCalls *bool) *dto.ClaudeToolChoice {
 	var claudeToolChoice *dto.ClaudeToolChoice

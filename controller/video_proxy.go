@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/model"
-	relaychannel "github.com/QuantumNous/new-api/relay/channel"
-	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/logger"
+	"github.com/dengyie/apihub/model"
+	relaychannel "github.com/dengyie/apihub/relay/channel"
+	"github.com/dengyie/apihub/service"
+	"github.com/dengyie/apihub/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/http/httpguts"
 )

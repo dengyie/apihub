@@ -1,0 +1,187 @@
+name: Deploy
+
+# Builds the release artifacts and installs them on the production host.
+#
+# The deploy itself is zero-downtime: the new process is started while the old
+# one is still serving (SO_REUSEPORT lets both bind the port), and the old one
+# is only retired once the new one is answering. See scripts/deploy.sh.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'First handover only: accept one brief connection gap to adopt SO_REUSEPORT'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one that is already touching
+# production: killing the job mid-handover could leave the draining slot
+# unmanaged.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy to tebi
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+
+      - name: Install and build the frontend
+        # The frontend is embedded via //go:embed, so the binary cannot be
+        # built without a real dist/ first.
+        run: make build-web
+
+      - name: Verify the embedded frontend
+        # Guards the failure that caused a 2h41m production blank screen:
+        # a placeholder index.html builds fine and serves 200 with an empty
+        # body. Keep in sync with main.go and the Makefile.
+        run: make verify-embed
+
+      - name: Build the Linux binary
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/apihub .
+          echo "built $(stat -c %s dist/apihub) bytes"
+
+      - name: Package the frontend as a separate artifact
+        # The binary still embeds web/dist -- that is the fallback and the only
+        # thing a Docker image or a bare `go build` gets. This tarball is the
+        # second artifact: deploy.sh unpacks it per version and binds it to the
+        # slot via APIHUB_STATIC_DIR, so the frontend can be published and
+        # rolled back independently of the binary.
+        #
+        # The contents are the same files the go:embed guard checked a moment
+        # ago; deploy.sh re-checks them on the host before anything is bound.
+        run: |
+          set -euo pipefail
+          tar -czf dist/apihub-web.tar.gz -C web/dist .
+          echo "web artifact $(stat -c %s dist/apihub-web.tar.gz) bytes"
+          tar -tzf dist/apihub-web.tar.gz | head -3
+
+      - name: Configure SSH
+        # tebi has a public address and sshd listening on 0.0.0.0:22, so the
+        # runner connects directly. This replaced a Cloudflare Access tunnel,
+        # which needed an interactive browser login or a Service Token that
+        # cannot be created without dashboard access.
+        #
+        # The host keys are pinned rather than discovered with ssh-keyscan:
+        # an unauthenticated scan lets anyone who can intercept the connection
+        # substitute their own key. These are tebi's actual host keys, read
+        # from /etc/ssh/ssh_host_*_key.pub and cross-checked against a network
+        # scan of 39.98.85.65.
+        env:
+          DEPLOY_HOST: ${{ secrets.TEBI_SSH_HOST }}
+          DEPLOY_KEY: ${{ secrets.TEBI_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          for v in DEPLOY_HOST DEPLOY_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::secret $v is not set; cannot deploy to production"
+              exit 1
+            fi
+          done
+
+          # The hosted runner has no ~/.ssh yet; install -m cannot create it.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/apihub_deploy_key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/apihub_deploy_key
+
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          cat >> ~/.ssh/known_hosts <<'HOSTKEYS'
+          39.98.85.65 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIELK477wqxavnZBkiIfelSephce6d71tYZAJ/EpAbRYR
+          39.98.85.65 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCe2ebDbnsRrhkm4414VtnolUhrIvu+FoMn8zrHMNciXIwxE2sBeCv9eJXpsaVBqdWVNfnLlb0kQrsZ+za/dqOL9w0sp84OrICiHcKHSoqwLFjaWcDtIFW0Sea6nlasrAjMSOSa2YbLEbo0sg36mYaWtRa+qlndHIZvZGNZH+PJbiKFRHS8Z6jpuqlsX83QAcyHC7dcBAb5X1q/gCLvIKPrYsVnWTxZnG+JaOYINVpVNFw0mumrTJzGNSuPXRquJSdpt9MTQMahPCt233YK/0X9trxWd1QQ1ujp8V0fSk/qk95RbMvs9jlkBoZtxvBipvdAk1E6CDMK/n0rNmAhB2qBXD9s6jUyPa1tBZRkSmNDQJ0fnBD+8PcthlC1vmCSa/XGBgr5drZusGz+E03GXCiAvqN4YU7Ud+snnfYl4PPU47Uv86ifycBx4lb88ABY6UkcBmDfXlfVwcwssxPgfCdBRS/1+blVPx/0/Y+YDy1y0ZkjqCwgqRF9M7iQeQEIBxU=
+          HOSTKEYS
+
+          cat > ~/.ssh/config <<EOF
+          Host tebi
+            HostName $DEPLOY_HOST
+            User root
+            IdentityFile ~/.ssh/apihub_deploy_key
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+            ServerAliveCountMax 3
+          EOF
+
+      - name: Check that the host is reachable
+        run: ssh tebi 'hostname && supervisorctl version'
+
+      - name: Upload the release
+        run: |
+          set -euo pipefail
+          ssh tebi 'mkdir -p /tmp/apihub-release'
+          scp dist/apihub tebi:/tmp/apihub-release/apihub
+          scp dist/apihub-web.tar.gz tebi:/tmp/apihub-release/apihub-web.tar.gz
+          scp scripts/deploy.sh tebi:/tmp/apihub-release/deploy.sh
+
+      - name: Deploy
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap || false }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The bootstrap flag is only meaningful for the very first handover,
+          # from a build that predates SO_REUSEPORT support.
+          #
+          # --web is passed on every deploy so the frontend always comes from a
+          # validated per-version directory rather than the binary's embedded
+          # copy. To undo a frontend-only change, redeploy the previous binary
+          # without --web (or run deploy.sh --rollback, which restores both).
+          if [ "$BOOTSTRAP" = "true" ]; then
+            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
+              /tmp/apihub-release/deploy.sh --bootstrap \
+                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --web /tmp/apihub-release/apihub-web.tar.gz"
+          else
+            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
+              /tmp/apihub-release/deploy.sh \
+                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --web /tmp/apihub-release/apihub-web.tar.gz"
+          fi
+
+      - name: Clean up the upload
+        if: always()
+        run: ssh tebi 'rm -rf /tmp/apihub-release' || true
+
+      - name: Report the result
+        if: always()
+        # deploy.sh installs the binary as bin/new-api (the on-disk name is
+        # unchanged from the legacy program so the rollback path stays
+        # recognisable). Asking for bin/apihub here reported nothing, and the
+        # trailing `|| true` hid that.
+        #
+        # .apihub-deploy-state holds the backup path of the last successful
+        # handover -- the same path `deploy.sh --rollback` consumes.
+        run: |
+          ssh tebi '
+            supervisorctl status | grep -E "apihub-(blue|green)"
+            echo "last backup: $(cat /tmp/mnt/new-api/.apihub-deploy-state 2>/dev/null || echo none)"
+            echo "http: $(curl -s -o /dev/null -w "%{http_code}" -m 5 http://127.0.0.1:3000/api/status)"
+          ' || true

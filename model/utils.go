@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"

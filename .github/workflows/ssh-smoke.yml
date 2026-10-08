@@ -1,0 +1,42 @@
+name: SSH smoke test
+
+# Throwaway: proves a GitHub-hosted runner can actually reach tebi before the
+# deploy workflow is allowed to touch production. Uses the exact SSH setup and
+# the same pinned host keys as deploy.yml.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DEPLOY_HOST: ${{ secrets.TEBI_SSH_HOST }}
+      DEPLOY_KEY: ${{ secrets.TEBI_SSH_KEY }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          # The hosted runner has no ~/.ssh yet; install -m cannot create it.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/apihub_deploy_key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/apihub_deploy_key
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          cat >> ~/.ssh/known_hosts <<'HOSTKEYS'
+          39.98.85.65 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIELK477wqxavnZBkiIfelSephce6d71tYZAJ/EpAbRYR
+          HOSTKEYS
+          cat > ~/.ssh/config <<EOF2
+          Host tebi
+            HostName $DEPLOY_HOST
+            User root
+            IdentityFile ~/.ssh/apihub_deploy_key
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            StrictHostKeyChecking yes
+          EOF2
+
+      - name: Reach tebi
+        run: ssh tebi 'hostname; uptime; supervisorctl status new-api'

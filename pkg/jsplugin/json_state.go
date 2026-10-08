@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Calcium-Ion/moejs/engine"
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 )
 
 const (

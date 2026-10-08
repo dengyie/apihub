@@ -1,8 +1,8 @@
 package common
 
 import (
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/relaykit/dto"
 )
 
 // GetAdvancedCustomPreset returns fresh defaults.

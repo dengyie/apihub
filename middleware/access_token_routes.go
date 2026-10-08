@@ -6,8 +6,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/dengyie/apihub/service"
+	"github.com/dengyie/apihub/service/authz"
 )
 
 type accessTokenRuleKind int

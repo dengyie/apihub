@@ -1,6 +1,6 @@
 package system_setting
 
-import "github.com/QuantumNous/new-api/common"
+import "github.com/dengyie/apihub/common"
 
 const (
 	DefaultTaskArtifactInvalidRateLimitPerMinute = 60

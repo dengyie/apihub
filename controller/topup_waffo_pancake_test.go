@@ -4,9 +4,9 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/setting"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/setting"
+	"github.com/dengyie/apihub/setting/operation_setting"
 	"github.com/stretchr/testify/require"
 )
 

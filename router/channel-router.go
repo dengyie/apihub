@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"path"
 
-	"github.com/QuantumNous/new-api/controller"
-	"github.com/QuantumNous/new-api/middleware"
-	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/dengyie/apihub/controller"
+	"github.com/dengyie/apihub/middleware"
+	"github.com/dengyie/apihub/service/authz"
 	"github.com/gin-gonic/gin"
 )
 
