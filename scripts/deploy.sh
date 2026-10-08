@@ -44,7 +44,12 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 # Configuration. Override via environment.
 # ---------------------------------------------------------------------------
-APP_ROOT="${APP_ROOT:-/tmp/mnt/new-api}"
+# The live deployment root. /data, not the old /tmp/mnt: that filesystem is a
+# 30G volume that had reached 82% full, while /data is the root overlay with 79G
+# free. NFS is deliberately not an option -- it is mounted vers=3,nolock, so
+# SQLite and .git have to stay on local disk or the database corrupts.
+DEFAULT_APP_ROOT="/data/new-api"
+APP_ROOT="${APP_ROOT:-$DEFAULT_APP_ROOT}"
 BIN_DIR="${BIN_DIR:-$APP_ROOT/bin}"
 # The SQLite file. Derived from APP_ROOT so a deployment root owns its own
 # database, and overridable so the path can be pinned somewhere else for a
@@ -184,7 +189,7 @@ verify_binary_version() {
 # same string. Naming the directory is the assertion that the caller knows where
 # the slot configs are, which is the whole risk.
 guard_conf_dir() {
-  if [[ $APP_ROOT != /tmp/mnt/new-api && -z $SUPERVISOR_CONF_DIR_EXPLICIT ]]; then
+  if [[ $APP_ROOT != "$DEFAULT_APP_ROOT" && -z $SUPERVISOR_CONF_DIR_EXPLICIT ]]; then
     die "APP_ROOT is '$APP_ROOT' but SUPERVISOR_CONF_DIR was not named (it defaults to $SUPERVISOR_CONF_DIR).
        The two are independent, so this run would overwrite the production
        apihub-blue/green configs. Set SUPERVISOR_CONF_DIR explicitly if the

@@ -133,7 +133,7 @@ echo "source_environment / write_slot_conf"
 LEGACY_PROGRAM="new-api"
 cat >"$SUPERVISOR_CONF_DIR/new-api.conf" <<EOF
 [program:new-api]
-environment=SESSION_SECRET="s3cr3t-value",SQLITE_PATH="/tmp/mnt/new-api/data/new-api.db",APIHUB_STATIC_DIR="$WEB_ROOT/stale-dir"
+environment=SESSION_SECRET="s3cr3t-value",SQLITE_PATH="$DEFAULT_APP_ROOT/data/new-api.db",APIHUB_STATIC_DIR="$WEB_ROOT/stale-dir"
 EOF
 EXPECTED_VERSION="abc123"
 # Called directly, not in a command substitution: source_environment sets the
@@ -160,7 +160,7 @@ grep -q '""' <<<"$ENVIRONMENT_LINE" && bad "no doubled quotes in the assembled l
 # SQLITE_PATH used to be the input's last variable and stayed last; it is now
 # re-appended after VERSION, so the closing-quote invariant is checked against
 # whichever variable actually ends the line.
-grep -q 'SQLITE_PATH="/tmp/mnt/new-api/data/new-api.db"$' <<<"$ENVIRONMENT_LINE" \
+grep -q "SQLITE_PATH=\"$DEFAULT_APP_ROOT/data/new-api.db\"\$" <<<"$ENVIRONMENT_LINE" \
   && ok "a quoted final variable keeps its closing quote" || bad "a quoted final variable keeps its closing quote" "$ENVIRONMENT_LINE"
 
 cat >"$SUPERVISOR_CONF_DIR/new-api.conf" <<EOF
@@ -448,7 +448,7 @@ SUPERVISOR_CONF_DIR_EXPLICIT="x"
 SUPERVISOR_CONF_DIR=/tmp/sandbox-conf; SUPERVISOR_CONF_DIR_EXPLICIT="x"
 ( guard_conf_dir ) >/dev/null 2>&1 && ok "allows an explicit sandbox conf dir" || bad "allows an explicit sandbox conf dir"
 
-APP_ROOT=/tmp/mnt/new-api; SUPERVISOR_CONF_DIR_EXPLICIT=""
+APP_ROOT="$DEFAULT_APP_ROOT"; SUPERVISOR_CONF_DIR_EXPLICIT=""
 out="$( ( guard_conf_dir ) 2>&1 )"
 check "allows the production defaults" "$?" "0"
 
