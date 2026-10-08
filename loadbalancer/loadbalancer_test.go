@@ -70,6 +70,57 @@ func TestTrackerInflight(t *testing.T) {
 	assert.Equal(t, 0, tr.Inflight(1))
 }
 
+func TestTrackerEndCancelledDoesNotResetFailures(t *testing.T) {
+	old := currentPolicy.Load()
+	currentPolicy.Store(testPolicy())
+	defer currentPolicy.Store(old)
+
+	tr := newTestTracker()
+
+	// 模拟已发生 2 次连续硬失败（阈值为 3）
+	h1 := tr.Begin(10, testModel)
+	h1.End(false, true)
+	h2 := tr.Begin(10, testModel)
+	h2.End(false, true)
+
+	s := statsFor(tr, 10)
+	assert.Equal(t, int32(2), s.consecutiveFailures.Load())
+
+	// 下游客户端主动断开：调用 EndCancelled
+	h3 := tr.Begin(10, testModel)
+	assert.Equal(t, 1, tr.Inflight(10))
+	h3.EndCancelled()
+	assert.Equal(t, 0, tr.Inflight(10))
+
+	// 验证：consecutiveFailures 严禁被归零洗白！
+	assert.Equal(t, int32(2), s.consecutiveFailures.Load(), "EndCancelled 必须保留历史故障计数")
+
+	// 再来一次硬失败，累计到 3 次应成功触发熔断
+	h4 := tr.Begin(10, testModel)
+	h4.End(false, true)
+	ok, reason := tr.IsAvailable(10, testModel)
+	assert.False(t, ok, "累计达到 3 次故障必须触发熔断")
+	assert.Equal(t, "circuit_open", reason)
+}
+
+func TestTrackerPreStreamTTFTTimeoutTripsBreaker(t *testing.T) {
+	old := currentPolicy.Load()
+	currentPolicy.Store(testPolicy())
+	defer currentPolicy.Store(old)
+
+	tr := newTestTracker()
+
+	// 模拟 3 次连续首字前 TTFT 超时：每次调用 End(slow=true, failed=true)
+	for i := 0; i < 3; i++ {
+		h := tr.Begin(20, testModel)
+		h.End(true, true)
+	}
+
+	ok, reason := tr.IsAvailable(20, testModel)
+	assert.False(t, ok, "连续 3 次首字前 TTFT 超时必须触发硬熔断")
+	assert.Equal(t, "circuit_open", reason)
+}
+
 func TestBreakerTripAndRecover(t *testing.T) {
 	old := currentPolicy.Load()
 	currentPolicy.Store(testPolicy())

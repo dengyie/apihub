@@ -4,10 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -235,4 +238,152 @@ func TestToWebSocketURL(t *testing.T) {
 	} {
 		assert.Equal(t, want, toWebSocketURL(input), input)
 	}
+}
+
+func TestDoRequest_HeaderTTFTTimeout(t *testing.T) {
+	hangServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hangServer.Close()
+
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Default.TTFTTimeoutMs = 80
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body"))
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 68,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hangServer.URL, strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.Error(t, err)
+	require.Nil(t, resp)
+
+	assert.True(t, loadbalancer.IsTTFTTimeout(err))
+	var ttftErr *loadbalancer.TTFTTimeoutError
+	require.ErrorAs(t, err, &ttftErr)
+	assert.Equal(t, 68, ttftErr.ChannelID)
+	assert.Equal(t, int64(80), ttftErr.TimeoutMs)
+}
+
+func TestDoRequest_HeaderFastSuccess(t *testing.T) {
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer fastServer.Close()
+
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Default.TTFTTimeoutMs = 500
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body"))
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 75,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, fastServer.URL, strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestDoRequest_ClientCanceledReturnsClientAborted(t *testing.T) {
+	hangServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hangServer.Close()
+
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Default.TTFTTimeoutMs = 500
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body")).WithContext(clientCtx)
+
+	time.AfterFunc(30*time.Millisecond, clientCancel)
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 68,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hangServer.URL, strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.Error(t, err)
+	require.Nil(t, resp)
+
+	assert.False(t, loadbalancer.IsTTFTTimeout(err))
+	assert.True(t, types.IsClientAbortedError(err))
+}
+
+func TestDoRequest_StreamingBodyReadAfterHeaderTimeoutCancel(t *testing.T) {
+	streamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("data: hello\n\n"))
+		w.(http.Flusher).Flush()
+	}))
+	defer streamServer.Close()
+
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Default.TTFTTimeoutMs = 500
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body"))
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 75,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, streamServer.URL, strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Body.Close()
+
+	buf := make([]byte, 1024)
+	n, readErr := resp.Body.Read(buf)
+	require.NoError(t, readErr)
+	assert.Equal(t, "data: hello\n\n", string(buf[:n]))
 }

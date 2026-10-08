@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
@@ -189,4 +190,50 @@ func TestZeroByteRetryableAndStreamDeliveredContent(t *testing.T) {
 		http.StatusBadRequest,
 		types.ErrOptionWithSkipRetry(),
 	)))
+}
+
+func TestIsClientAbortUpstreamHang(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 1. 下游已写出响应（流式或已有数据） -> 不是假死逼退
+	w1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(w1)
+	_, _ = c1.Writer.Write([]byte("data: hi\n\n"))
+	assert.False(t, isClientAbortUpstreamHang(c1, &relaycommon.RelayInfo{}, time.Now().Add(-60*time.Second)))
+
+	// 2. relayInfo 记录已有响应帧 -> 不是假死逼退
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	assert.False(t, isClientAbortUpstreamHang(c2, &relaycommon.RelayInfo{ReceivedResponseCount: 2}, time.Now().Add(-60*time.Second)))
+
+	// 3. relayInfo 记录已有字节 -> 不是假死逼退
+	w3 := httptest.NewRecorder()
+	c3, _ := gin.CreateTestContext(w3)
+	assert.False(t, isClientAbortUpstreamHang(c3, &relaycommon.RelayInfo{ReceivedContentBytes: 100}, time.Now().Add(-60*time.Second)))
+
+	// 4. 用户快速主动取消（耗时未达 30s，例如 5s） -> 正常交互取消，不计入假死逼退
+	w4 := httptest.NewRecorder()
+	c4, _ := gin.CreateTestContext(w4)
+	assert.False(t, isClientAbortUpstreamHang(c4, &relaycommon.RelayInfo{}, time.Now().Add(-5*time.Second)))
+
+	// 5. 上游死挂逼退（零字节交付，且等待时间达 35s） -> 判定为上游死挂，计入渠道故障
+	w5 := httptest.NewRecorder()
+	c5, _ := gin.CreateTestContext(w5)
+	assert.True(t, isClientAbortUpstreamHang(c5, &relaycommon.RelayInfo{}, time.Now().Add(-35*time.Second)))
+
+	// 6. 渠道配置较短的 TTFT 阈值（如 10s）：下游等待 15s（未达 30s 默认但超过渠道阈值） -> 判定为上游死挂
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Channels = map[int]loadbalancer.ChannelPolicy{
+		88: {TTFTTimeoutMs: 10000},
+	}
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	w6 := httptest.NewRecorder()
+	c6, _ := gin.CreateTestContext(w6)
+	info6 := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 88},
+	}
+	assert.True(t, isClientAbortUpstreamHang(c6, info6, time.Now().Add(-15*time.Second)))
 }

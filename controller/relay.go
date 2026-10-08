@@ -210,6 +210,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 智能负载：本轮尝试计入 inflight。原先只有流式路径在 scanner 里
 		// Begin/End，非流式与任务请求对 max_inflight 完全不可见，并发上限形同
 		// 虚设。句柄存入 context 供 StreamScannerHandler 复用同一个计数器。
+		attemptStartTime := time.Now()
 		lbAttempt := loadbalancer.GlobalTracker().Begin(channel.Id, relayInfo.OriginModelName)
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		// panic 兜底：保证 inflight 一定归还。
@@ -277,13 +278,22 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if service.IsClientAbort(c, relayInfo, nil) {
 				// 扫描器在客户端断开时返回 nil。尚未写出响应体则补 499；
 				// 已经出字则按部分成功收尾，不再发伪装上游故障的错误帧。
-				lbAttempt.End(false, false)
 				if !c.Writer.Written() {
+					// 客户端在未收到任何响应时断开。若耗时已久且上游零字节，说明是上游假死逼退用户，
+					// 计入失败；否则为用户主动取消，仅归还 inflight，不洗白坏渠道的历史失败计数。
+					if isClientAbortUpstreamHang(c, relayInfo, attemptStartTime) {
+						logger.LogError(c, fmt.Sprintf("渠道 #%d 上游死挂导致客户端等待后断开（耗时 %v），计入渠道故障",
+							channel.Id, time.Since(attemptStartTime)))
+						lbAttempt.End(true, true)
+					} else {
+						lbAttempt.EndCancelled()
+					}
 					newAPIError = types.NewClientAbortedError(context.Canceled)
 					relayInfo.LastError = newAPIError
 					logger.LogInfo(c, "客户端已断开，停止重试")
 					break
 				}
+				lbAttempt.End(false, false)
 				service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 				loadbalancer.GlobalTracker().ClearEmptyStream(channel.Id, relayInfo.OriginModelName)
 				relayInfo.LastError = nil
@@ -319,10 +329,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 判据用请求级事实（context.Canceled / StreamStatus.IsClientAbort），
 		// 不依赖错误链——OpenAIError 构造经常丢掉 Unwrap。
 		if service.IsClientAbort(c, relayInfo, newAPIError) {
+			// 判据：若客户端断开时零字节交付且等待时间已超 30s，属于上游死挂逼退客户端，计入故障
+			if isClientAbortUpstreamHang(c, relayInfo, attemptStartTime) {
+				logger.LogError(c, fmt.Sprintf("渠道 #%d 上游死挂导致客户端等待后断开（耗时 %v），计入渠道故障",
+					channel.Id, time.Since(attemptStartTime)))
+				lbAttempt.End(true, true)
+			} else {
+				lbAttempt.EndCancelled()
+			}
 			newAPIError = types.NewClientAbortedError(newAPIError)
 			relayInfo.LastError = newAPIError
 			logger.LogInfo(c, "客户端已断开，停止重试")
-			lbAttempt.End(false, false)
 			break
 		}
 
@@ -355,15 +372,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 这里的 End 不会双记；只有没有流状态的失败（首字节前的错误、非流式）
 		// 才由本层补记。400 不计入（参数不支持不代表渠道不健康）。
 		// 无论是否计入都必须 End，否则 inflight 不归还，并发上限会被永久占满。
-		lbAttempt.End(false,
-			relayInfo.StreamStatus == nil &&
-				newAPIError.StatusCode != 400 &&
-				!loadbalancer.IsTTFTTimeout(newAPIError) &&
-				!loadbalancer.IsEmptyStream(newAPIError) &&
-				!loadbalancer.IsEmptyStreamBudget(newAPIError) &&
-				!loadbalancer.IsStreamBroken(newAPIError) &&
-				!loadbalancer.IsUpstreamRateLimitError(newAPIError) &&
-				!types.IsClientAbortedError(newAPIError))
+		isPreStreamTTFT := relayInfo.StreamStatus == nil && loadbalancer.IsTTFTTimeout(newAPIError)
+		isPreStreamNonTTFTFailure := relayInfo.StreamStatus == nil &&
+			newAPIError.StatusCode != 400 &&
+			!loadbalancer.IsTTFTTimeout(newAPIError) &&
+			!loadbalancer.IsEmptyStream(newAPIError) &&
+			!loadbalancer.IsEmptyStreamBudget(newAPIError) &&
+			!loadbalancer.IsStreamBroken(newAPIError) &&
+			!loadbalancer.IsUpstreamRateLimitError(newAPIError) &&
+			!types.IsClientAbortedError(newAPIError)
+		lbAttempt.End(loadbalancer.IsTTFTTimeout(newAPIError), isPreStreamTTFT || isPreStreamNonTTFTFailure)
 		// 熔断作用域：只有可证明是账号/密钥/中继级的问题才熔整个渠道，
 		// 其余只熔 (渠道, 模型) 这一对——一个模型 404 不该让该渠道
 		// 上百个健康模型一起退出轮转。判据见 loadbalancer.BreakerScopeOf。
@@ -577,6 +595,27 @@ func streamDeliveredContent(relayInfo *relaycommon.RelayInfo) bool {
 		return false
 	}
 	return relayInfo.ReceivedResponseCount > 0 || relayInfo.ReceivedContentBytes > 0
+}
+
+func isClientAbortUpstreamHang(c *gin.Context, relayInfo *relaycommon.RelayInfo, attemptStartTime time.Time) bool {
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return false
+	}
+	if streamDeliveredContent(relayInfo) {
+		return false
+	}
+	hangThreshold := 30 * time.Second
+	if loadbalancer.Enabled() && relayInfo != nil {
+		channelID := relayInfo.GetChannelID()
+		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
+		if lbPolicy.TTFTTimeoutMs > 0 {
+			channelThreshold := time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
+			if channelThreshold < hangThreshold {
+				hangThreshold = channelThreshold
+			}
+		}
+	}
+	return time.Since(attemptStartTime) >= hangThreshold
 }
 
 func zeroByteRetryable(err *types.NewAPIError) bool {

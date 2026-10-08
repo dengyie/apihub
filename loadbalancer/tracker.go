@@ -483,6 +483,22 @@ func (h *RequestHandle) End(slow, failed bool) {
 	}
 }
 
+// EndCancelled 请求被下游客户端主动取消时收尾：仅释放 inflight 资源，
+// 严禁清零连续失败计数。
+//
+// 背景：用户/客户端断开连接（如用户关闭窗口、客户端超时等）是下游行为，不代表渠道
+// 本身恢复健康。若在此调用普通的 End(false, false) 将 consecutiveFailures 归零，
+// 会导致此前已连续发生故障/慢请求的坏渠道被意外“洗白”，破坏熔断计数器。
+func (h *RequestHandle) EndCancelled() {
+	if h.done.Swap(true) {
+		return
+	}
+	if h.channelID <= 0 {
+		return
+	}
+	h.inflight.Add(-1)
+}
+
 // tripBreaker 打开熔断器并开启一轮递增冷却。
 //
 // 递增退避：第 n 次连续熔断的冷却 = cooldown_seconds × min(n, escalation_cap)

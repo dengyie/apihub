@@ -8,6 +8,7 @@ import (
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	relayconstant "github.com/dengyie/apihub/relay/constant"
@@ -158,6 +159,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var httpResp *http.Response
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		if ttftErr, ok := err.(*loadbalancer.TTFTTimeoutError); ok {
+			return types.NewErrorWithStatusCode(
+				ttftErr,
+				types.ErrorCodeChannelResponseTimeExceeded,
+				http.StatusGatewayTimeout,
+			)
+		}
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
 

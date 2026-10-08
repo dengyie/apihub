@@ -12,6 +12,7 @@ import (
 	"time"
 
 	common2 "github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
 	"github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relay/constant"
@@ -371,7 +372,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
-		if types.IsClientAbortedError(err) {
+		if types.IsClientAbortedError(err) || loadbalancer.IsTTFTTimeout(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -411,7 +412,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
-		if types.IsClientAbortedError(err) {
+		if types.IsClientAbortedError(err) || loadbalancer.IsTTFTTimeout(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -568,6 +569,17 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+type responseBodyWithCancel struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (b *responseBodyWithCancel) Close() error {
+	b.once.Do(b.cancel)
+	return b.ReadCloser.Close()
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
@@ -610,8 +622,48 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	// 智能负载：为上游响应头等待注入 TTFT 边界，解决上游死挂不回 Header 的盲区。
+	// 流式请求中 StreamScannerHandler 负责首字及流式读取超时，但它必须在拿到 *http.Response
+	// 后才初始化。若上游 TCP 握手成功后卡死不发 Header，默认会死等 RELAY_RESPONSE_HEADER_TIMEOUT
+	// （1800s）。这里限制接收 Header 的最长等待时间，超时后判定为 TTFT 超时，触发透明换渠道重试。
+	// 收到 Header 后立即停止定时器，并将 context 取消延迟到 resp.Body.Close()，避免破坏流式传输。
+	var cancelHeaderTimeout context.CancelFunc
+	var headerTimer *time.Timer
+	if loadbalancer.Enabled() {
+		channelID := 0
+		if info != nil {
+			channelID = info.GetChannelID()
+		}
+		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
+		if lbPolicy.TTFTTimeoutMs > 0 {
+			var headerCtx context.Context
+			headerCtx, cancelHeaderTimeout = context.WithCancel(req.Context())
+			req = req.WithContext(headerCtx)
+			headerTimer = time.AfterFunc(time.Duration(lbPolicy.TTFTTimeoutMs)*time.Millisecond, func() {
+				cancelHeaderTimeout()
+			})
+		}
+	}
+
 	resp, err := relayClient.Do(req)
+	if headerTimer != nil {
+		headerTimer.Stop()
+	}
 	if err != nil {
+		if cancelHeaderTimeout != nil {
+			cancelHeaderTimeout()
+		}
+		// 若 Header 等待超时且客户端仍在线，判定为 TTFT 超时错误，触发透明换渠道重试
+		if c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "canceled") || strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "Timeout")) {
+			channelID := 0
+			if info != nil {
+				channelID = info.GetChannelID()
+			}
+			lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
+			logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%dms），触发换渠道重试", channelID, lbPolicy.TTFTTimeoutMs))
+			return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs}
+		}
 		if isClientCanceled(err, req.Context()) {
 			logger.LogInfo(c, "do request aborted: client closed connection")
 			return nil, types.NewClientAbortedError(err)
@@ -620,7 +672,16 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
+		if cancelHeaderTimeout != nil {
+			cancelHeaderTimeout()
+		}
 		return nil, errors.New("resp is nil")
+	}
+	if cancelHeaderTimeout != nil && resp.Body != nil {
+		resp.Body = &responseBodyWithCancel{
+			ReadCloser: resp.Body,
+			cancel:     cancelHeaderTimeout,
+		}
 	}
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
@@ -668,7 +729,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
-		if types.IsClientAbortedError(err) {
+		if types.IsClientAbortedError(err) || loadbalancer.IsTTFTTimeout(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("do request failed: %w", err)
