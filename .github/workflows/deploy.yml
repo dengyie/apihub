@@ -69,6 +69,21 @@ jobs:
             go build -trimpath -ldflags "-s -w" -o dist/apihub .
           echo "built $(stat -c %s dist/apihub) bytes"
 
+      - name: Package the frontend as a separate artifact
+        # The binary still embeds web/dist -- that is the fallback and the only
+        # thing a Docker image or a bare `go build` gets. This tarball is the
+        # second artifact: deploy.sh unpacks it per version and binds it to the
+        # slot via APIHUB_STATIC_DIR, so the frontend can be published and
+        # rolled back independently of the binary.
+        #
+        # The contents are the same files the go:embed guard checked a moment
+        # ago; deploy.sh re-checks them on the host before anything is bound.
+        run: |
+          set -euo pipefail
+          tar -czf dist/apihub-web.tar.gz -C web/dist .
+          echo "web artifact $(stat -c %s dist/apihub-web.tar.gz) bytes"
+          tar -tzf dist/apihub-web.tar.gz | head -3
+
       - name: Configure SSH
         # tebi has a public address and sshd listening on 0.0.0.0:22, so the
         # runner connects directly. This replaced a Cloudflare Access tunnel,
@@ -123,6 +138,7 @@ jobs:
           set -euo pipefail
           ssh tebi 'mkdir -p /tmp/apihub-release'
           scp dist/apihub tebi:/tmp/apihub-release/apihub
+          scp dist/apihub-web.tar.gz tebi:/tmp/apihub-release/apihub-web.tar.gz
           scp scripts/deploy.sh tebi:/tmp/apihub-release/deploy.sh
 
       - name: Deploy
@@ -133,14 +149,21 @@ jobs:
           set -euo pipefail
           # The bootstrap flag is only meaningful for the very first handover,
           # from a build that predates SO_REUSEPORT support.
+          #
+          # --web is passed on every deploy so the frontend always comes from a
+          # validated per-version directory rather than the binary's embedded
+          # copy. To undo a frontend-only change, redeploy the previous binary
+          # without --web (or run deploy.sh --rollback, which restores both).
           if [ "$BOOTSTRAP" = "true" ]; then
             ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
               /tmp/apihub-release/deploy.sh --bootstrap \
-                --binary /tmp/apihub-release/apihub --version '$SHA'"
+                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --web /tmp/apihub-release/apihub-web.tar.gz"
           else
             ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
               /tmp/apihub-release/deploy.sh \
-                --binary /tmp/apihub-release/apihub --version '$SHA'"
+                --binary /tmp/apihub-release/apihub --version '$SHA' \
+                --web /tmp/apihub-release/apihub-web.tar.gz"
           fi
 
       - name: Clean up the upload

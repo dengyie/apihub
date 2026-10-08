@@ -13,6 +13,14 @@
 # idle slot, waits until it is genuinely in the socket group, and only then
 # drains the slot that was serving.
 #
+# The frontend is a SECOND, separately published artifact. `--web <tarball>`
+# unpacks it into a per-version directory and binds that directory to the
+# incoming slot via APIHUB_STATIC_DIR. It is per-slot on purpose: the handover
+# is process-scoped, so two processes sharing one directory would serve a mix
+# of old index.html and new script bundles for the seconds the overlap lasts.
+# Without `--web` the binary serves its own embedded copy, which is exactly the
+# pre-existing behaviour.
+#
 # IMPORTANT -- supervisord restarts any program whose config file changed when
 # `supervisorctl update` runs. Rewriting the config of the slot that is
 # currently serving would therefore restart it and drop in-flight requests. So
@@ -22,10 +30,14 @@
 # next deploy.
 #
 # Usage:
-#   deploy.sh --binary <path/to/new-api> --version <expected-version>
-#   deploy.sh --bootstrap --binary <path> --version <v>   # first handover only
+#   deploy.sh --binary <path/to/new-api> --version <expected-version> [--web <dist.tar.gz>]
+#   deploy.sh --bootstrap --binary <path> --version <v> [--web <dist.tar.gz>]
 #   deploy.sh --status
 #   deploy.sh --rollback
+#
+# Omit --web to deploy the binary alone; the frontend then comes from the copy
+# embedded in it, which is the safe default and the instant way to undo a
+# frontend release.
 
 set -Eeuo pipefail
 
@@ -34,6 +46,9 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 APP_ROOT="${APP_ROOT:-/tmp/mnt/new-api}"
 BIN_DIR="${BIN_DIR:-$APP_ROOT/bin}"
+WEB_ROOT="${WEB_ROOT:-$APP_ROOT/web}"
+WEB_LINK="${WEB_LINK:-$WEB_ROOT/current}"
+WEB_KEEP="${WEB_KEEP:-3}"
 SUPERVISOR_CONF_DIR="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"
 BACKUP_DIR="${BACKUP_DIR:-$APP_ROOT/backups}"
 LOG_DIR="${LOG_DIR:-$APP_ROOT/logs}"
@@ -41,15 +56,27 @@ STATE_FILE="${STATE_FILE:-$APP_ROOT/.apihub-deploy-state}"
 LOCK_FILE="${LOCK_FILE:-$APP_ROOT/.apihub-deploy.lock}"
 PORT="${PORT:-3000}"
 READY_TIMEOUT="${READY_TIMEOUT:-90}"
+FINGERPRINT_TIMEOUT="${FINGERPRINT_TIMEOUT:-20}"
 SLOTS=(apihub-blue apihub-green)
+
+# Completeness thresholds for a frontend bundle. These must stay equal to
+# common.MinIndexBytes / common.MinStaticFiles on the Go side, the Makefile's
+# verify-embed target, and the same-named step in build-release.yml. A bundle
+# that fails here is exactly the 2026-10-03 blank-page shape: it builds, serves
+# 200, and renders nothing.
+MIN_WEB_INDEX_BYTES="${MIN_WEB_INDEX_BYTES:-200}"
+MIN_WEB_STATIC_FILES="${MIN_WEB_STATIC_FILES:-10}"
 
 EXPECTED_VERSION=""
 NEW_BINARY=""
+NEW_WEB=""
 BOOTSTRAP=0
 MODE="deploy"
 BACKUP_PATH=""
 ACTIVE_SLOT=""
 NEW_SLOT=""
+NEW_WEB_DIR=""
+STAGED_WEB_DIR=""
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -61,22 +88,24 @@ die()  { printf '[%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-while [[ $# -gt 0 ]]; do
+while [[ ${DEPLOY_SH_LIB:-0} != 1 && $# -gt 0 ]]; do
   case "$1" in
     --binary)    NEW_BINARY="${2:-}"; shift 2 ;;
     --version)   EXPECTED_VERSION="${2:-}"; shift 2 ;;
+    --web)       NEW_WEB="${2:-}"; shift 2 ;;
     --bootstrap) BOOTSTRAP=1; shift ;;
     --status)    MODE="status"; shift ;;
     --rollback)  MODE="rollback"; shift ;;
-    -h|--help)   sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,36p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-if [[ $MODE == deploy ]]; then
+if [[ ${DEPLOY_SH_LIB:-0} != 1 && $MODE == deploy ]]; then
   [[ -n $NEW_BINARY ]] || die "--binary is required"
   [[ -f $NEW_BINARY ]] || die "binary not found: $NEW_BINARY"
   [[ -n $EXPECTED_VERSION ]] || die "--version is required"
+  [[ -z $NEW_WEB ]] || [[ -f $NEW_WEB ]] || die "web bundle not found: $NEW_WEB"
 fi
 
 # ---------------------------------------------------------------------------
@@ -84,6 +113,21 @@ fi
 # ---------------------------------------------------------------------------
 need_root() { [[ $(id -u) -eq 0 ]] || die "must run as root (supervisord and $APP_ROOT are root-owned)"; }
 need_cmd()  { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+# A rehearsal against a sandbox APP_ROOT must not silently keep writing into the
+# real /etc/supervisor/conf.d. SUPERVISOR_CONF_DIR does NOT follow APP_ROOT, so
+# overriding one without the other points every write_slot_conf at the live
+# production configs while the script backs up and probes a sandbox. That is not
+# hypothetical: a rehearsal of this script once did exactly that, and the
+# production slot configs had to be restored from the backup it had taken.
+guard_conf_dir() {
+  if [[ $APP_ROOT != /tmp/mnt/new-api && $SUPERVISOR_CONF_DIR == /etc/supervisor/conf.d ]]; then
+    die "APP_ROOT is '$APP_ROOT' but SUPERVISOR_CONF_DIR is still /etc/supervisor/conf.d.
+       The two are independent, so this run would overwrite the production
+       apihub-blue/green configs. Set SUPERVISOR_CONF_DIR explicitly if the
+       override really is intended."
+  fi
+}
 
 sup() { supervisorctl "$@"; }
 
@@ -157,6 +201,169 @@ check_reuseport_logged() {
 }
 
 # ---------------------------------------------------------------------------
+# Frontend bundle
+#
+# The bundle is validated BEFORE it is bound to a slot, so a bad one can never
+# reach a running process. The check is the same pair of thresholds the binary
+# applies to its embedded copy: an index.html that is a plausible size and a
+# static tree with a plausible number of files. Both are cheap, and both catch
+# the failure that actually happened in production on 2026-10-03 -- a build
+# that produced an index.html but almost no assets.
+# ---------------------------------------------------------------------------
+
+# static_file_count <dir> -- regular files under <dir>/static; directories do
+# not count, matching common.LoadStaticBundle on the Go side.
+static_file_count() {
+  [[ -d "$1/static" ]] || { echo 0; return 0; }
+  find "$1/static" -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
+file_size() {
+  # GNU stat on tebi, BSD stat on a developer machine; the test suite runs on
+  # both, and a silently-wrong size here would defeat the bundle check.
+  stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0
+}
+
+sha256_short() {
+  # sha256sum on tebi, shasum on macOS.
+  sha256sum "$1" 2>/dev/null | cut -c1-16 || shasum -a 256 "$1" 2>/dev/null | cut -c1-16 || echo unknown
+}
+
+verify_web_bundle() {
+  local dir="$1"
+  local index="$dir/index.html" bytes count
+  [[ -d $dir ]] || die "frontend bundle directory does not exist: $dir"
+  [[ -f $index ]] || die "frontend bundle has no index.html: $index"
+
+  bytes="$(file_size "$index")"
+  if (( bytes < MIN_WEB_INDEX_BYTES )); then
+    die "frontend index.html is only $bytes bytes (need >= $MIN_WEB_INDEX_BYTES); refusing to publish a bundle that would render a blank page"
+  fi
+
+  count="$(static_file_count "$dir")"
+  if (( count < MIN_WEB_STATIC_FILES )); then
+    die "frontend static tree has only $count files (need >= $MIN_WEB_STATIC_FILES); refusing to publish"
+  fi
+
+  log "frontend bundle verified: index.html ${bytes}B, $count static files"
+}
+
+# web_fingerprint <dir> -- the asset URLs index.html pulls in. Two builds of
+# different code produce different content-hashed filenames, so these strings
+# are what distinguishes "serving the frontend we just shipped" from "serving
+# something older".
+web_fingerprint() {
+  grep -oE '(src|href)="[^"]+\.(js|css)"' "$1/index.html" 2>/dev/null \
+    | sed 's/^[^"]*"//; s/"$//' | sort -u
+}
+
+# The directory a slot's supervisor config points at, read back from the config
+# rather than tracked separately, so the two can never disagree.
+slot_static_dir() {
+  local conf="$SUPERVISOR_CONF_DIR/$1.conf" v
+  [[ -f $conf ]] || return 0
+  v="$(sed -n 's/.*APIHUB_STATIC_DIR="\([^"]*\)".*/\1/p' "$conf" | head -1)"
+  [[ $v != "$WEB_ROOT"/* ]] && v=""
+  printf '%s' "$v"
+}
+
+# stage_web_bundle <tarball> -- unpack into a per-version directory, verify it,
+# and set STAGED_WEB_DIR. The result is a global rather than stdout because the
+# logging helpers also write to stdout and would end up in a command
+# substitution.
+#
+# Extracting into a fresh version directory rather than over a shared "current"
+# path is the whole point: the outgoing process keeps reading the directory it
+# was bound to for as long as it lives, so neither side can ever see the other
+# build's files.
+stage_web_bundle() {
+  local tarball="$1"
+  need_cmd tar
+
+  # A tarball from CI is trusted input, but an absolute or parent-relative member
+  # would unpack outside WEB_ROOT, so refuse the archive rather than the damage.
+  if tar -tzf "$tarball" | grep -qE '^/|(^|/)\.\.(/|$)'; then
+    die "web bundle contains an absolute or parent-relative path; refusing to unpack"
+  fi
+
+  local slug="${EXPECTED_VERSION//[^A-Za-z0-9._-]/_}"
+  local dir="$WEB_ROOT/$slug"
+  local active_dir=""
+  [[ -n $ACTIVE_SLOT ]] && active_dir="$(slot_static_dir "$ACTIVE_SLOT")"
+
+  if [[ -d $dir && $dir == "$active_dir" ]]; then
+    # Re-deploying a version that is currently being served: replacing the files
+    # under a live process is exactly the mismatch per-slot directories exist to
+    # prevent. Take a sibling directory instead.
+    dir="$WEB_ROOT/$slug-r$(date +%s)"
+    log "web directory for $slug is in use by $ACTIVE_SLOT; staging this build as $(basename "$dir")"
+  fi
+
+  local staging="$WEB_ROOT/.staging.$$"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  tar -xzf "$tarball" -C "$staging"
+
+  # Some tarballs carry a single top-level directory; unwrap it so the shape
+  # matches what the Go loader expects (index.html at the root).
+  if [[ ! -f "$staging/index.html" && -d "$staging"/*/ ]]; then
+    local inner
+    inner="$(find "$staging" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -n $inner && -f "$inner/index.html" ]] || { rm -rf "$staging"; die "web bundle has no index.html at its root"; }
+    local flat="$staging.flat"
+    mv "$inner" "$flat"
+    rm -rf "$staging"
+    mv "$flat" "$staging"
+  fi
+
+  verify_web_bundle "$staging"
+
+  rm -rf "$dir"
+  mv "$staging" "$dir"
+  log "frontend staged at $dir ($(du -sh "$dir" | cut -f1), tarball sha256 $(sha256_short "$tarball"))"
+  STAGED_WEB_DIR="$dir"
+}
+
+# The `current` symlink is for humans only. Nothing serves through it -- every
+# slot is bound to a concrete directory -- so a stale or dangling link can
+# never break a request, and an empty argument means "embedded in the binary"
+# and removes the link rather than pointing it at nothing.
+publish_web_link() {
+  local dir="${1:-}"
+  if [[ -z $dir ]]; then
+    rm -f "$WEB_LINK"
+  else
+    ln -sfn "$dir" "$WEB_LINK"
+  fi
+}
+
+# prune_web_dirs <protected...> -- keep the newest WEB_KEEP version directories
+# plus anything named on the command line. The protected list always includes
+# the directory the live slot serves and the one --rollback would return to, so
+# pruning can never remove the only frontend a rollback could use.
+prune_web_dirs() {
+  [[ -d $WEB_ROOT ]] || return 0
+  local keep_list=" $* "
+  local d base n=0
+  # Newest first. `ls -dt` rather than `find -printf`, which is GNU-only, so the
+  # test suite runs on macOS as well as on tebi.
+  while IFS= read -r d; do
+    [[ -d $d ]] || continue
+    base="$(basename "$d")"
+    [[ $base == .staging.* ]] && continue
+    # Protected directories never count against the retention budget: the live
+    # one and the one --rollback would return to must survive regardless of how
+    # many deploys have happened since.
+    [[ $keep_list == *" $base "* ]] && continue
+    n=$((n + 1))
+    (( n <= WEB_KEEP )) && continue
+    rm -rf "$d"
+    log "pruned old frontend directory $base"
+  done < <(ls -1dt "$WEB_ROOT"/*/ 2>/dev/null)
+  rm -rf "$WEB_ROOT"/.staging.* 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Supervisor configuration
 #
 # The environment line is copied verbatim from the existing production config so
@@ -166,33 +373,79 @@ check_reuseport_logged() {
 # ---------------------------------------------------------------------------
 source_environment() {
   local conf="$SUPERVISOR_CONF_DIR/$LEGACY_PROGRAM.conf"
-  [[ -f $conf ]] || die "cannot find $conf; refusing to guess the production environment"
+  if [[ ! -f $conf ]]; then
+    # After the first handover the legacy config is gone; the retired slot's
+    # config is the one that still carries the untouched production
+    # environment, so read it from there instead.
+    local s
+    for s in "${SLOTS[@]}"; do
+      conf="$SUPERVISOR_CONF_DIR/$s.conf"
+      [[ -f $conf ]] && break
+    done
+  fi
+  [[ -f $conf ]] || die "cannot find $LEGACY_PROGRAM.conf or any slot config; refusing to guess the production environment"
 
   local line
   line="$(grep -E '^environment=' "$conf" | head -1)"
   [[ -n $line ]] || die "$conf has no environment= line"
   [[ $line == *SESSION_SECRET* ]] || warn "$conf has no SESSION_SECRET; sessions will not survive the deploy"
 
-  # supervisord accepts KEY=VALUE pairs separated by commas, where a quoted
-  # value ends at its closing quote. The captured line ends with that quote, so
-  # drop it before appending further pairs -- otherwise the last variable of the
-  # original list ends up with a doubled quote and is mis-parsed.
   line="${line#environment=}"
-  line="${line%\"}"
-  # This holds the VALUE only; write_slot_conf prefixes "environment=" itself.
-  ENVIRONMENT_LINE="${line}\",APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\""
+
+  # Drop any APIHUB_STATIC_DIR inherited from the config being read, so a
+  # rollback does not silently inherit the release it is rolling back from.
+  #
+  # This runs BEFORE the trailing quote is stripped, because that quote belongs
+  # to the last element -- if the last element is the one being removed, taking
+  # the quote first would leave the survivor without its terminator and produce
+  # a doubled quote when the new pairs are appended. The last element has to go
+  # through the loop too: it is the one most likely to hold the variable, since
+  # deploy.sh always appends its own pairs after the original list.
+  local pair out="" first=1
+  while :; do
+    if [[ $line == *,* ]]; then
+      pair="${line%%,*}"; line="${line#*,}"
+    else
+      pair="$line"; line=""
+    fi
+    case "$pair" in
+      APIHUB_STATIC_DIR=*|APIHUB_REUSEPORT=*|VERSION=*) ;;
+      *)
+        # Separators go BETWEEN pairs, never after the last one. Appending a
+        # comma per pair and trimming it at the end leaves a quoted final value
+        # looking like it lost its quote, which then got added back.
+        if (( first )); then out="$pair"; first=0; else out="${out},${pair}"; fi ;;
+    esac
+    [[ -n $line ]] || break
+  done
+  line="$out"
+
+  # `line` is now a verbatim copy of the original pairs, so extending it only
+  # needs a comma. The old code stripped a trailing quote and re-opened one,
+  # which is what turned a final PORT=3998 into PORT=3998".
+  # A leading comma would be a syntax error, so an empty result stays empty.
+  ENVIRONMENT_LINE="${line:+${line},}APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\""
 }
 
-# write_slot_conf <slot> <autostart:0|1>
+# write_slot_conf <slot> <autostart:0|1> [static_dir]
 #
-# Only ever call this for a slot that is not currently RUNNING.
+# Only ever call this for a slot that is not currently RUNNING. static_dir is
+# the frontend bundle bound to that slot; empty means "use the copy embedded in
+# the binary", which is the pre-separation behaviour.
 write_slot_conf() {
-  local slot="$1" autostart="$2" conf="$SUPERVISOR_CONF_DIR/$1.conf"
+  local slot="$1" autostart="$2" static_dir="${3:-}" conf="$SUPERVISOR_CONF_DIR/$1.conf"
+
+  local static_line=""
+  [[ -n $static_dir ]] && static_line=",APIHUB_STATIC_DIR=\"${static_dir}\""
+
   cat >"$conf" <<EOF
 ; Generated by scripts/deploy.sh -- do not edit by hand.
 ; One of these two slots is live at any time; deploy.sh switches which.
 ; Both bind the same port with SO_REUSEPORT, so during a handover the kernel
 ; spreads new connections across both while each drains its own in-flight work.
+; APIHUB_STATIC_DIR (when present) is this slot's own frontend bundle. It is
+; per-slot, never shared: the outgoing process must keep serving the frontend it
+; started with for as long as it lives.
 [program:$slot]
 directory=$BIN_DIR
 command=$BIN_DIR/new-api --port $PORT
@@ -205,7 +458,7 @@ stopsignal=TERM
 stopwaitsecs=150
 stopasgroup=true
 killasgroup=true
-environment=$ENVIRONMENT_LINE
+environment=$ENVIRONMENT_LINE$static_line
 redirect_stderr=true
 stdout_logfile=$LOG_DIR/$slot.out.log
 stderr_logfile=$LOG_DIR/$slot.err.log
@@ -214,7 +467,7 @@ stdout_logfile_backups=5
 stderr_logfile_maxbytes=10MB
 stderr_logfile_backups=5
 EOF
-  log "wrote $conf"
+  log "wrote $conf${static_dir:+ (frontend: $static_dir)}"
 }
 
 # apply_supervisor_conf -- reload. Safe only when no RUNNING slot's config
@@ -250,6 +503,19 @@ do_backup() {
   for f in "$SUPERVISOR_CONF_DIR/$LEGACY_PROGRAM.conf" "$SUPERVISOR_CONF_DIR"/apihub-*.conf; do
     [[ -f $f ]] && cp -a "$f" "$dest/$(basename "$f")"
   done
+
+  # Which frontend the live slot is bound to right now. Recorded here so a
+  # rollback restores the binary and the frontend together; restoring one
+  # without the other is how a deploy ends up serving a console whose scripts
+  # the API no longer matches. Read from the config, so it cannot drift from
+  # what the process actually has.
+  local live_slot="" live_web=""
+  live_slot="$(running_slot 2>/dev/null || true)"
+  if [[ -n $live_slot ]]; then
+    live_web="$(slot_static_dir "$live_slot")"
+  fi
+  printf '%s' "$live_web" >"$dest/deploy-state.webdir"
+  log "recorded live frontend for $live_slot: ${live_web:-<embedded in binary>}"
 
   local db="$APP_ROOT/data/new-api.db"
   if [[ -f $db ]]; then
@@ -292,7 +558,7 @@ wait_ready() {
     fi
 
     if reuseport_group_ok "$pid"; then
-      body="$(curl -fsS --max-time 5 "http://127.0.0.1:$PORT/api/status" 2>/dev/null || true)"
+      body="$(http_get "/api/status")"
       if [[ -n $body ]]; then
         ok=$((ok + 1))
         if (( ok >= 2 )); then
@@ -306,6 +572,86 @@ wait_ready() {
 
   warn "$slot did not become ready within ${READY_TIMEOUT}s (answered $ok of $attempts probes)"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Local HTTP probe
+#
+# Every probe in this script targets 127.0.0.1, but curl still honours the
+# operator's ~/.curlrc and the ambient proxy environment. If a proxy is
+# configured (tebi runs Clash on 127.0.0.1:7897 via ~/.curlrc), curl sends
+# the request to the proxy instead of the socket, and a proxy that cannot
+# reach loopback answers 502 -- which reads here as "not ready yet" and can
+# fail a perfectly healthy handover. `-q` disables .curlrc and `--noproxy`
+# disables the environment, so a probe can only ever hit the local socket.
+# ---------------------------------------------------------------------------
+http_get() {
+  curl -q --noproxy '*' -fsS --max-time 5 "http://127.0.0.1:$PORT$1" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Frontend verification, after the handover
+#
+# Readiness proves the process is alive and answering. It does not prove it is
+# answering with the frontend this deploy just installed -- the config could
+# have failed to pick up APIHUB_STATIC_DIR, the directory could have been
+# unreadable, or the request could have landed on the retired slot. All three
+# produce a perfectly healthy service showing a stale console, which is silent.
+#
+# This runs only after the old slot has drained, so the port has exactly one
+# owner and the answer is unambiguous.
+# ---------------------------------------------------------------------------
+verify_frontend_served() {
+  local slot="$1" dir="$2" deadline body tokens missing token
+  deadline=$(( $(date +%s) + FINGERPRINT_TIMEOUT ))
+
+  if [[ -z $dir ]]; then
+    # No bundle deployed: the binary serves its embedded copy. There is no
+    # fingerprint to match, but the page still has to be a real document --
+    # a 200 with an empty body is precisely the blank-screen failure.
+    while (( $(date +%s) < deadline )); do
+      body="$(http_get /)"
+      if [[ -n $body ]] && (( ${#body} >= MIN_WEB_INDEX_BYTES )); then
+        log "$slot: serving the embedded frontend (${#body}B index page)"
+        return 0
+      fi
+      sleep 1
+    done
+    warn "$slot did not serve a usable index page within ${FINGERPRINT_TIMEOUT}s"
+    return 1
+  fi
+
+  tokens="$(web_fingerprint "$dir")"
+  [[ -n $tokens ]] || { warn "$dir/index.html references no .js/.css assets; cannot fingerprint it"; return 1; }
+
+  missing=""
+  while (( $(date +%s) < deadline )); do
+    body="$(http_get /)"
+    if [[ -n $body ]]; then
+      missing=""
+      while IFS= read -r token; do
+        [[ -z $token ]] && continue
+        grep -qF -- "$token" <<<"$body" || missing="${missing} ${token}"
+      done <<<"$tokens"
+      [[ -z $missing ]] && { log "$slot: serving the frontend from $dir (fingerprint matched)"; return 0; }
+    fi
+    sleep 1
+  done
+
+  warn "$slot is not serving the frontend that was just installed; missing from the served page:$missing"
+  return 1
+}
+
+# A fingerprint miss means the console users are looking at is not the one this
+# deploy shipped. Rolling back automatically is the right default here: the
+# handover is already complete and there is no old process left to fall back to
+# gradually, and a half-applied frontend release is worse than the previous
+# known-good one.
+recover_from_frontend_miss() {
+  printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
+  warn "rolling back automatically to the previous release"
+  do_rollback || die "automatic rollback failed -- start a slot by hand. Backup: $BACKUP_PATH"
+  die "the frontend did not match the deployed bundle; the previous release has been restored"
 }
 
 # ---------------------------------------------------------------------------
@@ -333,18 +679,33 @@ do_rollback() {
   [[ -n $prev_version ]] || die "backup $backup does not record the previous version"
   EXPECTED_VERSION="$prev_version"
 
+  # Restore the frontend that was live alongside that binary. A backup recorded
+  # before the frontend was separated records an empty value, which is correct:
+  # it means "served the copy embedded in the binary".
+  local prev_web
+  prev_web="$(cat "$backup/deploy-state.webdir" 2>/dev/null || true)"
+  prev_web="${prev_web//[$'\n\r']/}"
+  if [[ -n $prev_web && ! -d $prev_web ]]; then
+    warn "the recorded frontend directory $prev_web is gone; falling back to the embedded copy"
+    prev_web=""
+  elif [[ -n $prev_web ]]; then
+    verify_web_bundle "$prev_web" || die "the recorded frontend directory is no longer usable: $prev_web"
+  fi
+
   # Both slots are stopped now, so rewriting both configs is safe.
   source_environment
   for slot in "${SLOTS[@]}"; do
     autostart=0
     [[ $slot == "$prev_slot" ]] && autostart=1
-    write_slot_conf "$slot" "$autostart"
+    write_slot_conf "$slot" "$autostart" "$prev_web"
   done
   apply_supervisor_conf
 
   sup start "$prev_slot" || die "failed to restart $prev_slot"
-  log "$prev_slot restarted on version $EXPECTED_VERSION; verifying"
+  log "$prev_slot restarted on version $EXPECTED_VERSION (frontend: ${prev_web:-<embedded>}); verifying"
   wait_ready "$prev_slot" "$(slot_pid "$prev_slot")" || die "rollback did not come up cleanly; inspect $LOG_DIR/$prev_slot.err.log"
+  verify_frontend_served "$prev_slot" "$prev_web" || warn "the rolled-back slot did not serve the expected frontend; check the APIHUB_STATIC_DIR setting"
+  publish_web_link "$prev_web" 2>/dev/null || true
   log "rollback complete"
 }
 
@@ -354,7 +715,16 @@ show_status() {
   log ""
   log "legacy program '$LEGACY_PROGRAM': $(slot_state "$LEGACY_PROGRAM" || echo UNTRACKED)"
   log "live binary: $(stat -c '%y %s bytes' "$BIN_DIR/new-api" 2>/dev/null || echo 'not found')"
-  log "binary sha256: $(sha256sum "$BIN_DIR/new-api" 2>/dev/null | cut -c1-16 || echo n/a)"
+  log "binary sha256: $(sha256_short "$BIN_DIR/new-api")"
+  local s live=""
+  for s in "${SLOTS[@]}"; do
+    [[ $(slot_state "$s") == "RUNNING" ]] && live="$s"
+  done
+  if [[ -n $live ]]; then
+    log "live slot: $live -> frontend ${WEB_LINK} -> $(readlink -f "$WEB_LINK" 2>/dev/null || echo '<embedded in binary>')"
+    log "  config says: $(slot_static_dir "$live" || echo '<embedded in binary>')"
+  fi
+  [[ -d $WEB_ROOT ]] && log "frontend bundles: $(find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging.*' -printf '%f ' 2>/dev/null)"
   if [[ -f $STATE_FILE ]]; then
     log "last deploy backup: $(cat "$STATE_FILE")"
   fi
@@ -368,6 +738,7 @@ show_status() {
 # ---------------------------------------------------------------------------
 main() {
   need_root
+  guard_conf_dir
 
   case "$MODE" in
     status)   show_status; return 0 ;;
@@ -377,7 +748,7 @@ main() {
   need_cmd curl
   need_cmd supervisorctl
   need_cmd flock
-  mkdir -p "$BACKUP_DIR" "$LOG_DIR"
+  mkdir -p "$BACKUP_DIR" "$LOG_DIR" "$WEB_ROOT"
 
   # One deploy at a time: two overlapping runs would race over which slot is
   # live and could stop the wrong process.
@@ -391,7 +762,20 @@ main() {
   local staged="$BIN_DIR/new-api.new"
   install -m 0755 "$NEW_BINARY" "$staged"
   mv -f "$staged" "$BIN_DIR/new-api"
-  log "installed binary ($(stat -c %s "$BIN_DIR/new-api") bytes, sha256 $(sha256sum "$BIN_DIR/new-api" | cut -c1-16))"
+  log "installed binary ($(file_size "$BIN_DIR/new-api") bytes, sha256 $(sha256_short "$BIN_DIR/new-api"))"
+
+  # Resolve which slot is live before staging anything: staging must not touch
+  # a directory the serving process is reading from.
+  legacy_running || ACTIVE_SLOT="$(running_slot || true)"
+
+  # Stage the frontend before anything is bound to it. A bundle that fails
+  # validation aborts here, while the old slot is still serving untouched.
+  if [[ -n $NEW_WEB ]]; then
+    stage_web_bundle "$NEW_WEB"
+    NEW_WEB_DIR="$STAGED_WEB_DIR"
+  else
+    log "no --web bundle given; this deploy serves the frontend embedded in the binary"
+  fi
 
   if legacy_running; then
     if (( BOOTSTRAP == 0 )); then
@@ -409,8 +793,8 @@ main() {
 
     EXPECTED_VERSION="$EXPECTED_VERSION"
     source_environment
-    write_slot_conf apihub-blue 1
-    write_slot_conf apihub-green 0
+    write_slot_conf apihub-blue 1 "$NEW_WEB_DIR"
+    write_slot_conf apihub-green 0 "$NEW_WEB_DIR"
     apply_supervisor_conf
 
     local pid
@@ -418,6 +802,8 @@ main() {
     [[ -n $pid ]] || die "apihub-blue did not start; check $LOG_DIR/apihub-blue.err.log"
     if wait_ready apihub-blue "$pid"; then
       check_reuseport_logged apihub-blue || true
+      verify_frontend_served apihub-blue "$NEW_WEB_DIR" || warn "apihub-blue is up but the frontend fingerprint did not match; check APIHUB_STATIC_DIR"
+      publish_web_link "$NEW_WEB_DIR" 2>/dev/null || true
       printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
       log "bootstrap complete; apihub-blue is live on version $EXPECTED_VERSION"
       log "subsequent deploys are zero-downtime"
@@ -438,9 +824,10 @@ main() {
     || warn "$ACTIVE_SLOT may not support reuseport; a first --bootstrap deploy was probably skipped"
 
   # Only the idle slot's config is touched, so `update` cannot restart the
-  # process that is currently serving traffic.
+  # process that is currently serving traffic. The incoming slot is bound to
+  # this release's own frontend directory.
   source_environment
-  write_slot_conf "$NEW_SLOT" 0
+  write_slot_conf "$NEW_SLOT" 0 "$NEW_WEB_DIR"
   apply_supervisor_conf
 
   sup start "$NEW_SLOT"
@@ -470,17 +857,38 @@ main() {
   log "$ACTIVE_SLOT drained after $(( $(date +%s) - drain_start ))s"
 
   # The retired slot is stopped, so its config can now be brought in line with
-  # the new version for the next deploy.
-  write_slot_conf "$ACTIVE_SLOT" 0
+  # the new version for the next deploy. It gets the same frontend directory:
+  # whichever slot serves the next handover must be internally consistent, and
+  # the live slot keeps serving the one it started with until it is drained.
+  write_slot_conf "$ACTIVE_SLOT" 0 "$NEW_WEB_DIR"
   apply_supervisor_conf
 
   if ! wait_ready "$NEW_SLOT" "$(slot_pid "$NEW_SLOT")"; then
     die "post-handover health check failed on $NEW_SLOT. Previous backup: $BACKUP_PATH"
   fi
 
+  # The old slot is gone, so the port now has a single owner and the answer to
+  # "which frontend is this?" is unambiguous. This is the last gate before the
+  # deploy is declared good.
+  verify_frontend_served "$NEW_SLOT" "$NEW_WEB_DIR" || recover_from_frontend_miss
+
+  publish_web_link "$NEW_WEB_DIR" 2>/dev/null || true
   printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
-  log "handover complete; $NEW_SLOT serving version $EXPECTED_VERSION"
+
+  # Only now that the release is known good do we discard bundles that are
+  # neither live nor reachable by --rollback.
+  prune_web_dirs "$NEW_WEB_DIR" "$(cat "$BACKUP_PATH/deploy-state.webdir" 2>/dev/null || true)"
+
+  log "handover complete; $NEW_SLOT serving version $EXPECTED_VERSION (frontend: ${NEW_WEB_DIR:-<embedded in binary>})"
   sup status "${SLOTS[@]}" 2>/dev/null || true
 }
+
+
+# Sourcing with DEPLOY_SH_LIB=1 exposes the helpers above for testing without running
+# a deploy. The alternative -- wrapping main in an if -- would put a branch on the
+# production path that no real deploy ever exercises.
+if [[ ${DEPLOY_SH_LIB:-0} == 1 ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 main "$@"

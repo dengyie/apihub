@@ -139,7 +139,53 @@ after that is zero-downtime.
 Before the binary is touched, a timestamped backup is taken on the persistent
 volume (`backups/<timestamp>/`), including the previous binary and a
 `sqlite3 .backup` snapshot of the database. `--rollback` restores the previous
-binary and restarts the slot that was previously live.
+binary **and the frontend that was live alongside it**, then restarts the slot
+that was previously live.
+
+## Frontend as a separate artifact
+
+The dashboard ships as two artifacts built from one source tree:
+
+- **embedded** — `//go:embed web/dist` puts the frontend inside the binary. This
+  is what a Docker image or a bare `go build` gets, and it is the fallback that
+  always works.
+- **on disk** — a `web/dist` bundle published next to the binary and served by
+  `APIHUB_STATIC_DIR`. Files are read from disk on every request, so a frontend
+  can be replaced without rebuilding the binary.
+
+```bash
+tar -czf apihub-web.tar.gz -C web/dist .
+deploy.sh --binary ./apihub --version v29.36 --web ./apihub-web.tar.gz
+```
+
+`APIHUB_STATIC_DIR` unset means "serve the embedded copy" — the pre-existing
+behaviour, and the instant way to undo a frontend release. When it is set, the
+directory is validated first (`index.html` ≥ 200 bytes, ≥ 10 files under
+`static/`, the same thresholds the embedded copy is held to) and any failure
+falls back to the embedded copy with a log line rather than taking the console
+down.
+
+**Each slot is bound to its own version directory, never a shared `current`
+symlink.** The handover is process-scoped: for the seconds both processes run,
+a shared directory would serve some requests a new `index.html` and some an old
+script bundle. The `web/current` symlink exists for humans only; nothing serves
+through it.
+
+Three gates protect the result, and each one exists because the failure it
+catches is silent:
+
+1. **Before** anything is bound, the bundle is validated on the host. A bad
+   bundle aborts the deploy while the old slot is still serving.
+2. **After** the old slot has drained — when the port has exactly one owner —
+   the served `index.html` must reference the asset filenames of the bundle
+   that was just installed. If it does not, the deploy rolls itself back:
+   a healthy service showing a stale console is worse than the previous
+   release.
+3. `common.LoadStaticBundle` re-checks the same thresholds at startup, so a bad
+   directory is caught however it arrives.
+
+Old bundles are pruned to the newest `WEB_KEEP` (default 3), never including
+the live one or the one `--rollback` would return to.
 
 ## Configuration
 
@@ -148,6 +194,7 @@ Selected environment variables:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APIHUB_REUSEPORT` | `0` | Enable `SO_REUSEPORT`; required for zero-downtime deploys |
+| `APIHUB_STATIC_DIR` | *(empty)* | Serve the frontend from this directory; empty serves the copy embedded in the binary |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `120` | Grace period for in-flight requests on `SIGTERM` |
 | `SQLITE_PATH` | `one-api.db` | SQLite database location |
 | `GLOBAL_API_RATE_LIMIT` | `360` | Global API request limit |
@@ -161,11 +208,13 @@ make build-web     # frontend (bun)
 make build-api     # backend (go)
 make test          # full test suite
 make verify-embed  # assert web/dist is a real build, not a placeholder
+bash scripts/deploy_test.sh   # frontend bundle staging, config binding, fingerprint probe
 ```
 
 `make verify-embed` exists because a placeholder `index.html` builds into a
 binary that starts, serves `200`, and renders a blank console. That failure
-once cost 2h41m of production; the check is enforced in CI and at startup.
+once cost 2h41m of production; the check is enforced in CI, at startup, and
+again on the host before each frontend publish.
 
 ## Attribution and licence
 
