@@ -2,6 +2,8 @@ package channel
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -384,6 +386,15 @@ func TestDoRequest_StreamingBodyReadAfterHeaderTimeoutCancel(t *testing.T) {
 
 	buf := make([]byte, 1024)
 	n, readErr := resp.Body.Read(buf)
-	require.NoError(t, readErr)
+	// io.Reader is explicitly allowed to return data and io.EOF from the same
+	// call, and the chunked decoder does exactly that here: the handler flushed
+	// the payload and then returned, so the terminating zero-length chunk is
+	// already sitting in the read buffer when this lands. Asserting readErr was
+	// nil asserted a scheduling accident, not the behaviour under test -- it
+	// failed 20 times out of 20 on a correct implementation. Production reads
+	// through bufio.Scanner in relay/helper, which honours the (n>0, EOF) pair.
+	if readErr != nil && !(errors.Is(readErr, io.EOF) && n > 0) {
+		require.NoError(t, readErr)
+	}
 	assert.Equal(t, "data: hello\n\n", string(buf[:n]))
 }
