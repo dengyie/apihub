@@ -57,6 +57,17 @@ jobs:
       - name: Test root and relaykit modules
         run: make test
 
+      # The deployment script is not exercised by `make test`, and nothing else
+      # ran these either: --rollback and --bootstrap had zero coverage because
+      # the suite that would have covered them was only ever run by hand, on the
+      # machine of whoever last changed it. Both paths are the ones that run when
+      # a deploy has already gone wrong.
+      - name: Test the deploy script
+        run: bash scripts/deploy_test.sh
+
+      - name: Check the deployment layout has no second copy
+        run: bash scripts/check-deploy-refs.sh
+
   frontend:
     name: Frontend typecheck and test
     if: github.event.action != 'closed' || github.event.pull_request.merged == true
