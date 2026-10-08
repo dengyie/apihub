@@ -1,6 +1,6 @@
 package service
 
-import "github.com/QuantumNous/new-api/pkg/wsmanager"
+import "github.com/dengyie/apihub/pkg/wsmanager"
 
 const ChannelDisabledCloseReason = "channel disabled or deleted"
 

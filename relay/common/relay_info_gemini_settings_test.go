@@ -3,7 +3,7 @@ package common
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/dengyie/apihub/setting/model_setting"
 	"github.com/stretchr/testify/assert"
 )
 

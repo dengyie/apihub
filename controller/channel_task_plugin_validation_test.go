@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/model"
+	"github.com/dengyie/apihub/pkg/jsplugin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/QuantumNous/new-api/loadbalancer"
-	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/loadbalancer"
+	perfmetrics "github.com/dengyie/apihub/pkg/perf_metrics"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/types"
 )
 
 // armRequestBudget 的 cancel 不能污染记账：非流式请求的 perf 指标必须照常落库。

@@ -3,7 +3,7 @@ package openai
 import (
 	"encoding/json"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/dto"
 )
 
 // reasoningAsContentClaude rewrites thinking blocks into text blocks.

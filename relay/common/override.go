@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
-	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/common"
+	kitreasoning "github.com/dengyie/apihub/relaykit/relayconvert/reasoning"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

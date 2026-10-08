@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/dto"
 )
 
 // StickyKeyFromRequest 从请求中提取用于一致性 hash 的 key（prompt 前缀）。

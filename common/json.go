@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
 	"github.com/gin-gonic/gin/binding"
 )
 

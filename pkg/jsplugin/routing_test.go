@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/new-api/constant"
+	"github.com/dengyie/apihub/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

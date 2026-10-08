@@ -6,13 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/pkg/jsplugin"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/setting/billing_setting"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/pkg/jsplugin"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/setting/billing_setting"
+	"github.com/dengyie/apihub/setting/ratio_setting"
+	"github.com/dengyie/apihub/types"
 )
 
 type PricingPluginVariant struct {

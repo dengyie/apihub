@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert/convmeta"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
 )
 
 const (

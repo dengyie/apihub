@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 )
 
 const DefaultMaxTokenAutoGroups = 5

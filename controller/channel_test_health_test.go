@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/stretchr/testify/assert"
 )
 

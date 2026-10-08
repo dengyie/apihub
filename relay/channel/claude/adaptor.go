@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/QuantumNous/new-api/relay/channel"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert"
-	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/dengyie/apihub/relay/channel"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert"
+	"github.com/dengyie/apihub/relaykit/types"
+	"github.com/dengyie/apihub/service"
+	"github.com/dengyie/apihub/setting/model_setting"
 
 	"github.com/gin-gonic/gin"
 )

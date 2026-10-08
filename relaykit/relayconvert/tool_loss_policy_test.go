@@ -3,10 +3,10 @@ package relayconvert
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert/convmeta"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
+	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

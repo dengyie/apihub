@@ -31,7 +31,7 @@ export function LandingPage() {
   const { systemName } = useSystemConfig()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
-  const brand = systemName || 'New API'
+  const brand = systemName || 'APIHub'
 
   return (
     <div className='landing-root'>

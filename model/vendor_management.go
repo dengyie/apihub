@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 	"gorm.io/gorm"
 )
 

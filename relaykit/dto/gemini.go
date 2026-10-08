@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
+	"github.com/dengyie/apihub/relaykit/types"
 )
 
 type GeminiChatRequest struct {

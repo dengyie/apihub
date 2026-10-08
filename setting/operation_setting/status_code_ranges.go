@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relaykit/types"
 )
 
 type StatusCodeRange struct {

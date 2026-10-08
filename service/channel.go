@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/loadbalancer"
-	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/loadbalancer"
+	"github.com/dengyie/apihub/model"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/types"
+	"github.com/dengyie/apihub/setting/operation_setting"
 )
 
 func formatNotifyType(channelId int, status int) string {

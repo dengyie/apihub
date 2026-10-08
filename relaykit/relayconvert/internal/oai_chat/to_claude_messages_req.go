@@ -6,13 +6,13 @@ import (
 
 	"context"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
-	relaymedia "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/media"
-	sharedclaude "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/claude"
-	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert/convmeta"
+	"github.com/dengyie/apihub/relaykit/relayconvert/internal/convdiag"
+	relaymedia "github.com/dengyie/apihub/relaykit/relayconvert/internal/media"
+	sharedclaude "github.com/dengyie/apihub/relaykit/relayconvert/internal/shared/claude"
+	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
+	"github.com/dengyie/apihub/relaykit/relayconvert/reasoning"
 )
 
 func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, textRequest dto.GeneralOpenAIRequest) (*dto.ClaudeRequest, error) {

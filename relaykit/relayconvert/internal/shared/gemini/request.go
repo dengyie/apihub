@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
-	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/relaykit/relayconvert/convmeta"
+	"github.com/dengyie/apihub/relaykit/relayconvert/internal/convdiag"
+	"github.com/dengyie/apihub/relaykit/relayconvert/reasoning"
+	"github.com/dengyie/apihub/relaykit/types"
 )
 
 var SupportedMimeTypes = map[string]bool{

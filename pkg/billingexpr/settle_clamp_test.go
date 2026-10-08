@@ -3,8 +3,8 @@ package billingexpr_test
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/pkg/billingexpr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

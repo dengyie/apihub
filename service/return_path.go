@@ -3,7 +3,7 @@ package service
 import (
 	"strings"
 
-	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/dengyie/apihub/setting/system_setting"
 )
 
 func PaymentReturnURL(suffix string) string {

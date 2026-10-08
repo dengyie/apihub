@@ -1,9 +1,10 @@
-# New-API Docker Compose Configuration
-# 
+# APIHub Docker Compose Configuration
+#
 # Quick Start:
-#   1. docker-compose up -d
+#   1. docker compose up -d --build
 #   2. Access at http://localhost:3000
 #
+# The image is built from this repository, so the running container is APIHub.
 # Using MySQL instead of PostgreSQL:
 #   1. Comment out the postgres service and SQL_DSN line 15
 #   2. Uncomment the mysql service and SQL_DSN line 16
@@ -15,9 +16,12 @@
 version: '3.4' # For compatibility with older Docker versions
 
 services:
-  new-api:
-    image: calciumion/new-api:latest
-    container_name: new-api
+  apihub:
+    # Built from this repository rather than pulled from Docker Hub, so that a
+    # `docker compose up` runs APIHub and not the upstream image.
+    build: .
+    image: apihub:latest
+    container_name: apihub
     restart: always
     command: --log-dir /app/logs
     ports:

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
+	"github.com/dengyie/apihub/common"
 	"github.com/glebarez/sqlite"
 
 	"github.com/stretchr/testify/assert"

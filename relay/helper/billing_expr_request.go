@@ -4,10 +4,10 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/pkg/billingexpr"
-	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/pkg/billingexpr"
+	relaycommon "github.com/dengyie/apihub/relay/common"
+	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/gin-gonic/gin"
 )
 

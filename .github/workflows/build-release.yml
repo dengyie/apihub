@@ -115,7 +115,7 @@ jobs:
           version="${base}+${sha}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           go build \
-            -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=${version}'" \
+            -ldflags "-s -w -X 'github.com/dengyie/apihub/common.Version=${version}'" \
             -o "new-api-${version}-linux-${GOARCH}"
           ls -la "new-api-${version}-linux-${GOARCH}"
 
