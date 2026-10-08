@@ -92,6 +92,8 @@ jobs:
             fi
           done
 
+          # The hosted runner has no ~/.ssh yet; install -m cannot create it.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
           install -m 600 /dev/null ~/.ssh/apihub_deploy_key
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/apihub_deploy_key
 
