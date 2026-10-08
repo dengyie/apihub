@@ -718,6 +718,80 @@ check "a missing guard source is not a deploy failure" "$rc" "0"
   || bad "and says why it skipped" "$out"
 rm -f "$WATCHDOG_SRC.bak"
 
+echo "prune_backup_dirs"
+# do_backup writes a full copy of the binary and a database snapshot into a fresh
+# timestamped directory on every deploy. Nothing removed the old ones, so backups/
+# grew by ~350MB per deployment with no ceiling -- 7.7GB after a day and a half,
+# the largest consumer on a 98G root filesystem. These assertions pin the two
+# guards that make deleting them safe.
+BD="$WORK/backups"
+mk_backup() { mkdir -p "$BD/$1"; printf 'x' >"$BD/$1/new-api.prev"; printf 'x' >"$BD/$1/new-api.db"; }
+BACKUP_DIR="$BD"
+
+rm -rf "$BD"; mkdir -p "$BD"
+for n in 20261001-010101 20261002-010101 20261003-010101 20261004-010101 \
+         20261005-010101 20261006-010101 20261007-010101; do mk_backup "$n"; done
+# Hand-named safety copies. These are not deploy residue and must never be a
+# candidate, however old they get.
+for n in stale-db-snapshots autorecover-20261002-034614 \
+         pre-del-401-20261002-0410 whitelist-20261002-015012; do mk_backup "$n"; done
+
+prune_backup_dirs "$BD/20261007-010101" >/dev/null
+[[ ! -e $BD/20261001-010101 ]] \
+  && ok "removes deploy backups past the retention count" \
+  || bad "removes deploy backups past the retention count" "the oldest deploy backup is still there"
+kept=$(find "$BD" -mindepth 1 -maxdepth 1 -type d -name '2026*' | wc -l | tr -d ' ')
+check "keeps BACKUP_KEEP deploy backups plus the protected one" "$kept" "$((BACKUP_KEEP + 1))"
+for n in stale-db-snapshots autorecover-20261002-034614 \
+         pre-del-401-20261002-0410 whitelist-20261002-015012; do
+  [[ -d $BD/$n ]] || bad "never touches hand-named safety copies" "$n was pruned"
+done
+ok "never touches hand-named safety copies"
+
+# The count above passes for the wrong reason if the protected entry is also the
+# newest: the retention counter would have kept it anyway. Pin the order so the
+# guard is the only thing that can save it -- the rollback target is whatever the
+# last deploy recorded, which is old exactly when a rollback has moved us back.
+rm -rf "$BD"; mkdir -p "$BD"
+BACKUP_KEEP=1
+for n in 20261001-010101 20261005-010101 20261007-010101; do mk_backup "$n"; done
+mk_backup stale-db-snapshots
+# A directory whose name only looks like a stamp must not be swept up either.
+mk_backup 20261008
+mk_backup 20261008-0101
+ln -sfn "$BD/20261007-010101" "$BD/20261009-010101"
+prune_backup_dirs "$BD/20261001-010101" >/dev/null
+[[ -d $BD/20261001-010101 ]] \
+  && ok "keeps the rollback target even when it is the oldest backup" \
+  || bad "keeps the rollback target even when it is the oldest backup" "pruned; the guard is not protecting it"
+[[ ! -e $BD/20261005-010101 ]] \
+  && ok "still prunes past the retention count with a protected entry present" \
+  || bad "still prunes past the retention count with a protected entry present" "nothing was pruned"
+[[ -d $BD/stale-db-snapshots && -d $BD/20261008 && -d $BD/20261008-0101 ]] \
+  && ok "leaves near-miss names and hand-named copies alone" \
+  || bad "leaves near-miss names and hand-named copies alone" "a name that is not YYYYMMDD-HHMMSS was pruned"
+[[ -L $BD/20261009-010101 ]] \
+  && ok "never deletes a symlink that looks like a backup" \
+  || bad "never deletes a symlink that looks like a backup" "the link was removed"
+[[ -d $BD/20261007-010101 ]] \
+  && ok "and does not follow it to the real directory" \
+  || bad "and does not follow it to the real directory" "rm -rf followed the link"
+
+# Fewer backups than the budget: pruning must be a no-op, not an excuse to delete.
+rm -rf "$BD"; mkdir -p "$BD"
+BACKUP_KEEP=5
+mk_backup 20261007-010101
+mk_backup 20261006-010101
+prune_backup_dirs >/dev/null
+check "leaves everything alone below the retention count" \
+  "$(find "$BD" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "2"
+
+# A missing backup directory is a fresh install, not a reason to fail a deploy.
+BACKUP_DIR="$WORK/not-created-yet"
+prune_backup_dirs >/dev/null 2>&1 && ok "a missing backup directory is not an error" \
+  || bad "a missing backup directory is not an error"
+BACKUP_DIR="$BD"
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

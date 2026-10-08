@@ -68,6 +68,11 @@ DATA_DIR="${DATA_DIR:-$APP_ROOT/data}"
 WEB_ROOT="${WEB_ROOT:-$APP_ROOT/web}"
 WEB_LINK="${WEB_LINK:-$WEB_ROOT/current}"
 WEB_KEEP="${WEB_KEEP:-3}"
+# How many deploy backups to keep in $BACKUP_DIR. Each one carries a copy of
+# the binary and a database snapshot, so the default costs roughly 350MB a
+# slot -- 1.75GB at five. See prune_backup_dirs for what is and is not a
+# candidate.
+BACKUP_KEEP="${BACKUP_KEEP:-5}"
 # Whether SUPERVISOR_CONF_DIR was named by the caller rather than defaulted.
 # Captured BEFORE the assignment above -- after it, the variable is set on every
 # path and the test would always answer "yes".
@@ -574,6 +579,55 @@ prune_web_dirs() {
     log "pruned old frontend directory $base"
   done < <(ls -1dt "$WEB_ROOT"/*/ 2>/dev/null)
   rm -rf "$WEB_ROOT"/.staging.* 2>/dev/null || true
+}
+
+# prune_backup_dirs <protected...> -- keep the newest BACKUP_KEEP deploy backups
+# plus anything named on the command line.
+#
+# Why this exists: do_backup writes a fresh timestamped directory on every deploy,
+# each carrying a copy of the binary (~130MB) and a database snapshot (~210MB).
+# Nothing removed the old ones, so backups/ grew by ~350MB per deployment with no
+# ceiling. After a day and a half it was 7.7GB -- the largest consumer on the root
+# filesystem, and the thing that eventually fills the disk and takes the database
+# down with it.
+#
+# Two guards, because this deletes the artifact --rollback restores from:
+#
+#   * Only a directory named exactly YYYYMMDD-HHMMSS is a candidate. The
+#     hand-named ones (stale-db-snapshots, autorecover-*, pre-*, whitelist-*) are
+#     deliberate safety copies, not deploy residue, and are never touched.
+#   * The directory recorded in .apihub-deploy-state -- the one --rollback
+#     consumes -- is protected, and does not spend a retention slot.
+prune_backup_dirs() {
+  [[ -d $BACKUP_DIR ]] || return 0
+  local keep_list=" " p
+  for p in "$@"; do
+    [[ -n $p ]] && keep_list+="$(basename "$p") "
+  done
+  local d base n=0
+  # Newest name first. Two deliberate choices here, and the second one is a trap I
+  # walked into while writing it.
+  #
+  # Name order rather than mtime order: for a YYYYMMDD-HHMMSS name the two agree,
+  # but mtime also moves when anything inside is copied with -a or restored, and a
+  # retention policy that reorders itself after a restore is not one anybody can
+  # reason about. The name is the stamp, and the stamp is the age.
+  #
+  # DESCENDING, because the counter below keeps the first BACKUP_KEEP entries it
+  # sees. Ascending would have kept the oldest N and deleted the newest -- which
+  # is the exact opposite of a retention policy, and would have thrown away the
+  # most recent deploy backups while preserving ancient ones.
+  while IFS= read -r d; do
+    d="${d%/}"
+    [[ -d $d && ! -L $d ]] || continue
+    base="$(basename "$d")"
+    [[ $base =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+    [[ $keep_list == *" $base "* ]] && continue
+    n=$((n + 1))
+    (( n <= BACKUP_KEEP )) && continue
+    rm -rf "$d"
+    log "pruned old deploy backup $base"
+  done < <(ls -1dr "$BACKUP_DIR"/*/ 2>/dev/null)
 }
 
 # ---------------------------------------------------------------------------
@@ -1199,6 +1253,11 @@ main() {
   # Only now that the release is known good do we discard bundles that are
   # neither live nor reachable by --rollback.
   prune_web_dirs "$NEW_WEB_DIR" "$(cat "$BACKUP_PATH/deploy-state.webdir" 2>/dev/null || true)"
+
+  # Same reasoning for backups/. $STATE_FILE was just rewritten with $BACKUP_PATH,
+  # so reading it back yields exactly what --rollback will consume, and that one
+  # directory is exempt however many deploys have gone by since.
+  prune_backup_dirs "$(cat "$STATE_FILE" 2>/dev/null || true)"
 
   log "handover complete; $NEW_SLOT serving version $EXPECTED_VERSION (frontend: ${NEW_WEB_DIR:-<embedded in binary>})"
   sup status "${SLOTS[@]}" 2>/dev/null || true

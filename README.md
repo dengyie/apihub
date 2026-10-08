@@ -206,6 +206,16 @@ before the lock, the backup, or the first byte written.
 Old bundles are pruned to the newest `WEB_KEEP` (default 3), never including
 the live one or the one `--rollback` would return to.
 
+Deploy backups are pruned the same way, to the newest `BACKUP_KEEP` (default 5).
+Each one costs roughly 350MB — a copy of the binary plus a database snapshot — so
+without a ceiling `backups/` grows by that much per deployment indefinitely.
+Only a directory named exactly `YYYYMMDD-HHMMSS` is a candidate: the hand-named
+ones (`stale-db-snapshots`, `pre-*`, `autorecover-*`) are deliberate safety
+copies and are never touched. The directory `--rollback` would return to is
+protected and does not spend a slot. Note that pruning removes the ability to
+roll back to an arbitrarily old deployment; supervisor configs and the database
+remain recoverable from the hourly backup to the private repo regardless.
+
 **`--rollback` is not zero-downtime.** It stops both slots before starting the
 previous release, so traffic is refused for the duration of the stop — up to
 `SHUTDOWN_TIMEOUT_SECONDS` (default 120s) if the outgoing process has in-flight
