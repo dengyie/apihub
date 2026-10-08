@@ -384,11 +384,67 @@ prune_web_dirs "$WEB_ROOT/v5" >/dev/null
 [[ -d $WEB_ROOT/v5 ]] && ok "keeps the directory that is live" || bad "keeps the directory that is live"
 [[ ! -e $WEB_ROOT/v1 ]] && ok "removes directories beyond the retention count" || bad "removes directories beyond the retention count"
 kept=$(find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging.*' | wc -l | tr -d ' ')
-check "keeps WEB_KEEP versions" "$kept" "$WEB_KEEP"
+# WEB_KEEP counts unprotected directories only. v5 is protected, so the total is
+# one higher -- and it used to come out one LOWER, because the broken guard let
+# v5 spend a slot and this assertion was quietly pinning that bug in place.
+check "keeps WEB_KEEP versions plus the protected one" "$kept" "$((WEB_KEEP + 1))"
 
 make_bundle "$WEB_ROOT/rollbackme" "rb1"
 prune_web_dirs "$WEB_ROOT/v5" "$WEB_ROOT/rollbackme" >/dev/null
 [[ -d $WEB_ROOT/rollbackme ]] && ok "keeps a directory --rollback would return to" || bad "keeps a directory --rollback would return to"
+
+# The two assertions above passed for the wrong reason. `ls -dt` returns the
+# newest first, and the protected directory was also the newest, so the
+# retention counter never reached it and the broken guard was never exercised.
+# Production does not line up that way: a bundle is unpacked from a tarball
+# whose entries carry the build machine's mtime, so the directory that most
+# needs protecting can be the OLDEST on disk. That is exactly how the live
+# slot's bundle got deleted on the first real deployment. Pin the order so the
+# guard is the only thing keeping these directories alive.
+rm -rf "${WEB_ROOT:?}"/*; mkdir -p "$WEB_ROOT"
+for n in v1 v2 v3 v4 v5; do make_bundle "$WEB_ROOT/$n" "$n"; done
+# Distinct mtimes, so "oldest first out" is a fact and not a tie the filesystem
+# happens to break. v5 is the live directory and v1 the oldest, neither of which
+# a tarball-unpacked bundle would necessarily be.
+touch -t 202601010101 "$WEB_ROOT/v1"
+touch -t 202601020202 "$WEB_ROOT/v2"
+touch -t 202601030303 "$WEB_ROOT/v3"
+touch -t 202602020202 "$WEB_ROOT/v5"
+touch -t 202603030303 "$WEB_ROOT/v4"   # newest of all, and unprotected
+prune_web_dirs "$WEB_ROOT/v5" >/dev/null
+[[ -d $WEB_ROOT/v5 ]] && ok "keeps the live directory even when it is not the newest" \
+  || bad "keeps the live directory even when it is not the newest" "v5 was pruned; the guard is comparing paths to basenames again"
+[[ ! -e $WEB_ROOT/v1 ]] && ok "still removes directories beyond the retention count" || bad "still removes directories beyond the retention count"
+
+make_bundle "$WEB_ROOT/rollbackme" "rb1"
+touch -t 202601010101 "$WEB_ROOT/rollbackme"
+prune_web_dirs "$WEB_ROOT/v5" "$WEB_ROOT/rollbackme" >/dev/null
+[[ -d $WEB_ROOT/rollbackme ]] && ok "keeps the rollback directory even when it is the oldest" \
+  || bad "keeps the rollback directory even when it is the oldest" "rollbackme was pruned"
+
+# The live directory is now the OLDEST thing in the tree, and the `current` link
+# -- which [[ -d ]] happily accepts -- sits alongside it. Both properties held at
+# once in production: a bundle unpacked from a tarball carries the build
+# machine's mtime, so it can post-date nothing, and publish_web_link always
+# creates `current` fresh.
+rm -rf "${WEB_ROOT:?}"/*; mkdir -p "$WEB_ROOT"
+for n in v1 v2 v3 v4 v5; do make_bundle "$WEB_ROOT/$n" "$n"; done
+touch -t 202601010101 "$WEB_ROOT/v5"     # live, and the oldest on disk
+touch -t 202601020202 "$WEB_ROOT/v1"
+touch -t 202601030303 "$WEB_ROOT/v2"
+touch -t 202601040404 "$WEB_ROOT/v3"
+touch -t 202603030303 "$WEB_ROOT/v4"     # newest, and unprotected
+ln -sfn "$WEB_ROOT/v5" "$WEB_LINK"
+prune_web_dirs "$WEB_ROOT/v5" >/dev/null
+[[ -d $WEB_ROOT/v5 ]] && ok "keeps the live directory even when it is the oldest on disk" \
+  || bad "keeps the live directory even when it is the oldest on disk" "v5 was pruned"
+[[ -L $WEB_LINK ]] && ok "never prunes the current symlink" \
+  || bad "never prunes the current symlink" "the link was removed"
+kept=$(find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging.*' | wc -l | tr -d ' ')
+# v5 is protected and so is not charged for; the symlink is not a version at all
+# and must not spend a slot either. Anything less and a real bundle is pruned a
+# deploy early, which is the quiet version of this bug.
+check "the current symlink does not spend a retention slot" "$kept" "$((WEB_KEEP + 1))"
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"

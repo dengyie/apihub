@@ -390,14 +390,30 @@ publish_web_link() {
 # pruning can never remove the only frontend a rollback could use.
 prune_web_dirs() {
   [[ -d $WEB_ROOT ]] || return 0
-  local keep_list=" $* "
+  # Reduce the protected list to basenames before comparing. Both callers pass
+  # absolute paths -- NEW_WEB_DIR and slot_static_dir are both built from
+  # WEB_ROOT -- so testing them verbatim against a basename never matches, and
+  # the guard silently protected nothing. That is not hypothetical: it deleted
+  # the live slot's own bundle on the first real deployment, leaving the console
+  # quietly serving the binary's embedded copy.
+  local keep_list=" " p
+  for p in "$@"; do
+    [[ -n $p ]] && keep_list+="$(basename "$p") "
+  done
   local d base n=0
   # Newest first. `ls -dt` rather than `find -printf`, which is GNU-only, so the
   # test suite runs on macOS as well as on tebi.
   while IFS= read -r d; do
-    [[ -d $d ]] || continue
+    # ls prints directories with a trailing slash, and a trailing slash makes
+    # [[ -L ]] follow the link instead of reporting it. Strip it first, then
+    # require a real directory: `current` is a symlink to a directory, so
+    # [[ -d ]] alone accepts it, spends a retention slot on it, and eventually
+    # hands it to rm -rf.
+    d="${d%/}"
+    [[ -d $d && ! -L $d ]] || continue
     base="$(basename "$d")"
     [[ $base == .staging.* ]] && continue
+    [[ $base == "$(basename "$WEB_LINK")" ]] && continue
     # Protected directories never count against the retention budget: the live
     # one and the one --rollback would return to must survive regardless of how
     # many deploys have happened since.
