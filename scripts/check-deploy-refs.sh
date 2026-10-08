@@ -38,6 +38,13 @@ pass() { printf '  ok   %s\n' "$1"; }
 
 # scan <pattern> [pathspec...] -- matching lines in tracked files, minus the
 # ones that are only explaining the pattern in a comment.
+#
+# Every call below also excludes this file. It necessarily spells each pattern
+# out as a literal argument and it scans ".", so without the exclusion it
+# matches its own source on the very first rule and fails on a CLEAN tree.
+# That is not hypothetical -- it is exactly what happened. It survived only
+# because the check lived in a workflow that never ran on this repo's shipping
+# path: ci.yml triggered on pull_request alone, and the work lands on main.
 scan() {
   local pat="$1"; shift
   git ls-files -z -- "$@" 2>/dev/null \
@@ -45,7 +52,9 @@ scan() {
     | grep -vE ':[0-9]+:[[:space:]]*#' || true
 }
 
-hits="$(scan '/tmp/mnt' . ':!scripts/deploy.sh')"
+SELF=':!scripts/check-deploy-refs.sh'
+
+hits="$(scan '/tmp/mnt' . ':!scripts/deploy.sh' "$SELF")"
 if [[ -z $hits ]]; then
   pass "no leftover references to the retired /tmp/mnt root"
 else
@@ -54,7 +63,7 @@ fi
 
 # The rollback pointer belongs to deploy.sh alone. A workflow that reads it has
 # its own copy of the layout, and that copy is the thing that goes stale.
-hits="$(scan '\.apihub-deploy-state' .github)"
+hits="$(scan '\.apihub-deploy-state' .github "$SELF")"
 if [[ -z $hits ]]; then
   pass "no workflow reads the deploy state file behind deploy.sh's back"
 else
@@ -63,7 +72,7 @@ fi
 
 # Same reasoning for the deployment root: a workflow that spells it out is a
 # second copy. Asking deploy.sh is the only way to stay correct across a move.
-hits="$(scan '/(tmp|opt|var|home)/[a-zA-Z0-9._-]+/new-api' .github)"
+hits="$(scan '/(tmp|opt|var|home)/[a-zA-Z0-9._-]+/new-api' .github "$SELF")"
 if [[ -z $hits ]]; then
   pass "no workflow hardcodes a deployment root"
 else

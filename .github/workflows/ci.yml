@@ -3,6 +3,12 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, closed]
+  # This repo ships by pushing straight to main -- there are no review PRs to
+  # lean on -- so a pull_request-only CI ran zero times for the code that
+  # actually deploys to production. That is why the deploy suite below sat in
+  # the repo while the rollback path it covers shipped untested.
+  push:
+    branches: [main]
 
 permissions:
   contents: read
