@@ -180,6 +180,10 @@ rm -f "$SUPERVISOR_CONF_DIR/new-api.conf"
 ( source_environment ) >/dev/null 2>&1 && bad "refuses to guess when no config exists" \
   || ok "refuses to guess when no config exists"
 
+# slot_static_dir reads a real bundle, so the directory it points at has to be a
+# real bundle: this used to assert against a bare mkdir, which passed under the
+# old "is it under WEB_ROOT" rule and is correctly rejected now.
+make_bundle "$WEB_ROOT/abc123" "abc123"
 write_slot_conf apihub-blue 1 "$WEB_ROOT/abc123" >/dev/null
 conf="$SUPERVISOR_CONF_DIR/apihub-blue.conf"
 grep -q "APIHUB_STATIC_DIR=\"$WEB_ROOT/abc123\"" "$conf" && ok "binds the slot to its own frontend directory" || bad "binds the slot to its own frontend directory"
@@ -194,9 +198,19 @@ write_slot_conf apihub-green 0 "" >/dev/null
   && ok "omits the variable when there is no bundle" || bad "omits the variable when there is no bundle"
 check "an unbound slot reports no directory" "$(slot_static_dir apihub-green)" ""
 
-# A path outside WEB_ROOT is not ours to serve.
+# A directory that is not a frontend bundle is not ours to serve. /etc is a
+# directory, so existence alone would accept it; the index.html is what tells a
+# bundle apart from an arbitrary path someone left in a config.
 write_slot_conf apihub-green 0 "/etc" >/dev/null
-check "refuses to read a directory outside WEB_ROOT" "$(slot_static_dir apihub-green)" ""
+check "refuses a directory that is not a frontend bundle" "$(slot_static_dir apihub-green)" ""
+
+# The migration case: a live slot bound to the previous root's bundle, read
+# after WEB_ROOT has moved. Refusing this recorded an empty value, and
+# --rollback would then have quietly restored the embedded copy instead.
+make_bundle "$WORK/old-root-web/abc123" "abc123"
+write_slot_conf apihub-green 0 "$WORK/old-root-web/abc123" >/dev/null
+check "accepts a live bundle from the previous root" \
+  "$(slot_static_dir apihub-green)" "$WORK/old-root-web/abc123"
 
 # A slot config becomes the input for the next deploy once the legacy one is
 # gone. The variables this script appends must therefore appear exactly once

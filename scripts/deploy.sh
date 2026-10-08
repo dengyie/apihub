@@ -342,7 +342,18 @@ slot_static_dir() {
   local conf="$SUPERVISOR_CONF_DIR/$1.conf" v
   [[ -f $conf ]] || return 0
   v="$(sed -n 's/.*APIHUB_STATIC_DIR="\([^"]*\)".*/\1/p' "$conf" | head -1)"
-  [[ $v != "$WEB_ROOT"/* ]] && v=""
+  # Accept whatever real bundle directory the config names, not only one under
+  # the current WEB_ROOT. During a root migration the live slot is still bound to
+  # the *previous* root -- that is the whole point of the per-slot binding -- so
+  # testing against WEB_ROOT discarded a perfectly good directory and recorded
+  # an empty value, which a later --rollback would read as "served the embedded
+  # copy" and silently give up the frontend binding.
+  #
+  # "Is a directory" would be too loose in the other direction: the configs are
+  # ordinary files on disk and anything hand-edited into one, /etc among them,
+  # is a directory. What distinguishes a frontend bundle is index.html, so test
+  # for that; verify_web_bundle checks the thresholds before anything serves it.
+  if [[ -z $v || ! -f $v/index.html ]]; then v=""; fi
   printf '%s' "$v"
 }
 
