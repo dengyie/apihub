@@ -69,46 +69,49 @@ jobs:
             go build -trimpath -ldflags "-s -w" -o dist/apihub .
           echo "built $(stat -c %s dist/apihub) bytes"
 
-      - name: Configure SSH through the Cloudflare tunnel
-        # tebi has no inbound port of its own; it is reached through a
-        # Cloudflare Access tunnel. A service token is required because the
-        # hosted runner cannot complete the interactive browser login.
+      - name: Configure SSH
+        # tebi has a public address and sshd listening on 0.0.0.0:22, so the
+        # runner connects directly. This replaced a Cloudflare Access tunnel,
+        # which needed an interactive browser login or a Service Token that
+        # cannot be created without dashboard access.
+        #
+        # The host keys are pinned rather than discovered with ssh-keyscan:
+        # an unauthenticated scan lets anyone who can intercept the connection
+        # substitute their own key. These are tebi's actual host keys, read
+        # from /etc/ssh/ssh_host_*_key.pub and cross-checked against a network
+        # scan of 39.98.85.65.
         env:
-          CF_HOST: ${{ secrets.TEBI_SSH_HOST }}
-          CF_TOKEN_ID: ${{ secrets.CF_ACCESS_SERVICE_TOKEN_ID }}
-          CF_TOKEN_SECRET: ${{ secrets.CF_ACCESS_SERVICE_TOKEN_SECRET }}
+          DEPLOY_HOST: ${{ secrets.TEBI_SSH_HOST }}
           DEPLOY_KEY: ${{ secrets.TEBI_SSH_KEY }}
         run: |
           set -euo pipefail
-          for v in CF_HOST CF_TOKEN_ID CF_TOKEN_SECRET DEPLOY_KEY; do
+          for v in DEPLOY_HOST DEPLOY_KEY; do
             if [ -z "${!v}" ]; then
               echo "::error::secret $v is not set; cannot deploy to production"
               exit 1
             fi
           done
 
-          curl -fsSL -o cloudflared \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared
-
           install -m 600 /dev/null ~/.ssh/apihub_deploy_key
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/apihub_deploy_key
-          ssh-keyscan "$CF_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          cat >> ~/.ssh/known_hosts <<'HOSTKEYS'
+          39.98.85.65 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIELK477wqxavnZBkiIfelSephce6d71tYZAJ/EpAbRYR
+          39.98.85.65 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCe2ebDbnsRrhkm4414VtnolUhrIvu+FoMn8zrHMNciXIwxE2sBeCv9eJXpsaVBqdWVNfnLlb0kQrsZ+za/dqOL9w0sp84OrICiHcKHSoqwLFjaWcDtIFW0Sea6nlasrAjMSOSa2YbLEbo0sg36mYaWtRa+qlndHIZvZGNZH+PJbiKFRHS8Z6jpuqlsX83QAcyHC7dcBAb5X1q/gCLvIKPrYsVnWTxZnG+JaOYINVpVNFw0mumrTJzGNSuPXRquJSdpt9MTQMahPCt233YK/0X9trxWd1QQ1ujp8V0fSk/qk95RbMvs9jlkBoZtxvBipvdAk1E6CDMK/n0rNmAhB2qBXD9s6jUyPa1tBZRkSmNDQJ0fnBD+8PcthlC1vmCSa/XGBgr5drZusGz+E03GXCiAvqN4YU7Ud+snnfYl4PPU47Uv86ifycBx4lb88ABY6UkcBmDfXlfVwcwssxPgfCdBRS/1+blVPx/0/Y+YDy1y0ZkjqCwgqRF9M7iQeQEIBxU=
+          HOSTKEYS
 
           cat > ~/.ssh/config <<EOF
           Host tebi
-            HostName $CF_HOST
+            HostName $DEPLOY_HOST
             User root
             IdentityFile ~/.ssh/apihub_deploy_key
             IdentitiesOnly yes
             PreferredAuthentications publickey
-            ProxyCommand ~/.cloudflared/cloudflared access ssh --hostname %h \
-              --service-token-id $CF_TOKEN_ID --service-token-secret $CF_TOKEN_SECRET
+            StrictHostKeyChecking yes
             ServerAliveInterval 30
             ServerAliveCountMax 3
           EOF
-          mkdir -p ~/.cloudflared
-          mv cloudflared ~/.cloudflared/cloudflared
 
       - name: Check that the host is reachable
         run: ssh tebi 'hostname && supervisorctl version'
