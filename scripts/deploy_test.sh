@@ -142,7 +142,11 @@ EXPECTED_VERSION="abc123"
 source_environment >/dev/null 2>&1
 grep -q 'APIHUB_STATIC_DIR' <<<"$ENVIRONMENT_LINE" && bad "drops an inherited APIHUB_STATIC_DIR" "$ENVIRONMENT_LINE" \
   || ok "drops an inherited APIHUB_STATIC_DIR"
-grep -q 'SQLITE_PATH="/tmp/mnt/new-api/data/new-api.db",' <<<"$ENVIRONMENT_LINE" \
+# SQLITE_PATH used to sit between SESSION_SECRET and the appended block, carried
+# through verbatim. It is now dropped and re-appended, so SESSION_SECRET is the
+# last inherited pair; what still matters is that removing its neighbour left the
+# quoting and the separator intact.
+grep -q 'SESSION_SECRET="s3cr3t-value",' <<<"$ENVIRONMENT_LINE" \
   && ok "preserves the surrounding environment pairs verbatim" || bad "preserves the surrounding environment pairs verbatim" "$ENVIRONMENT_LINE"
 grep -q 'SESSION_SECRET="s3cr3t-value"' <<<"$ENVIRONMENT_LINE" \
   && ok "preserves SESSION_SECRET" || bad "preserves SESSION_SECRET"
@@ -153,7 +157,10 @@ grep -q 'APIHUB_REUSEPORT=1' <<<"$ENVIRONMENT_LINE" && ok "still appends APIHUB_
 # `PORT=3998` produced `PORT=3998"` and the process then read the wrong value.
 grep -q '""' <<<"$ENVIRONMENT_LINE" && bad "no doubled quotes in the assembled line" "$ENVIRONMENT_LINE" \
   || ok "no doubled quotes in the assembled line"
-grep -q 'SQLITE_PATH="/tmp/mnt/new-api/data/new-api.db",APIHUB_REUSEPORT' <<<"$ENVIRONMENT_LINE" \
+# SQLITE_PATH used to be the input's last variable and stayed last; it is now
+# re-appended after VERSION, so the closing-quote invariant is checked against
+# whichever variable actually ends the line.
+grep -q 'SQLITE_PATH="/tmp/mnt/new-api/data/new-api.db"$' <<<"$ENVIRONMENT_LINE" \
   && ok "a quoted final variable keeps its closing quote" || bad "a quoted final variable keeps its closing quote" "$ENVIRONMENT_LINE"
 
 cat >"$SUPERVISOR_CONF_DIR/new-api.conf" <<EOF
@@ -208,6 +215,45 @@ done
 grep -q 'SESSION_SECRET="s3cr3t-value"' <<<"$ENVIRONMENT_LINE" \
   && ok "the production environment survives a slot-config re-read" \
   || bad "the production environment survives a slot-config re-read" "$ENVIRONMENT_LINE"
+
+echo "SQLITE_PATH ownership"
+# SQLITE_PATH is inherited verbatim like every other variable, which during a
+# storage migration means the incoming slot keeps using the OLD database file
+# forever -- or, if it were merely appended, uses both. The deployment root has
+# to own it, or DB_PATH cannot do its one job.
+DB_PATH="/data/new-api/data/new-api.db"
+source_environment >/dev/null 2>&1
+grep -q 'SQLITE_PATH="/data/new-api/data/new-api.db"' <<<"$ENVIRONMENT_LINE" \
+  && ok "SQLITE_PATH follows DB_PATH, not the previous config" \
+  || bad "SQLITE_PATH follows DB_PATH, not the previous config" "$ENVIRONMENT_LINE"
+check "SQLITE_PATH appears exactly once" \
+  "$(grep -o 'SQLITE_PATH=' <<<"$ENVIRONMENT_LINE" | wc -l | tr -d ' ')" "1"
+DB_PATH="$APP_ROOT/data/new-api.db"
+
+echo "ensure_data_link"
+# loadbalancer.Init("data/loadbalancer.yaml") is relative to BIN_DIR and nothing
+# else resolves it. Without this link a relocated root boots cleanly on default
+# routing policy with nothing in the log to say so.
+LINK_DIR="$WORK/linktest"
+rm -rf "$LINK_DIR"; mkdir -p "$LINK_DIR/bin" "$LINK_DIR/data"
+BIN_DIR="$LINK_DIR/bin"; DATA_DIR="$LINK_DIR/data"
+ensure_data_link >/dev/null 2>&1
+check "creates the data link when it is missing" "$(readlink "$BIN_DIR/data")" "$DATA_DIR"
+touch "$DATA_DIR/loadbalancer.yaml"
+[[ -f "$BIN_DIR/data/loadbalancer.yaml" ]] \
+  && ok "the policy file is reachable through the link" \
+  || bad "the policy file is reachable through the link"
+ensure_data_link >/dev/null 2>&1
+check "leaves a correct link alone" "$(readlink "$BIN_DIR/data")" "$DATA_DIR"
+DATA_DIR="$LINK_DIR/data-moved"; mkdir -p "$DATA_DIR"
+ensure_data_link >/dev/null 2>&1
+check "repoints a stale link" "$(readlink "$BIN_DIR/data")" "$DATA_DIR"
+rm -f "$BIN_DIR/data"; mkdir -p "$BIN_DIR/data"
+# In a subshell: the refusal goes through die(), which calls exit -- invoked at
+# this level it would end the whole test run instead of failing one assertion.
+( ensure_data_link ) >/dev/null 2>&1
+check "refuses to replace a real directory" "$([[ -d $BIN_DIR/data && ! -L $BIN_DIR/data ]] && echo kept)" "kept"
+BIN_DIR="$APP_ROOT/bin"; DATA_DIR="$APP_ROOT/data"
 
 echo "verify_frontend_served"
 # Uses a real HTTP server on a loopback port, because the whole point of the

@@ -46,6 +46,20 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 APP_ROOT="${APP_ROOT:-/tmp/mnt/new-api}"
 BIN_DIR="${BIN_DIR:-$APP_ROOT/bin}"
+# The SQLite file. Derived from APP_ROOT so a deployment root owns its own
+# database, and overridable so the path can be pinned somewhere else for a
+# single deploy. That override is what makes a storage migration possible at
+# all: the handover runs the outgoing and incoming slots at the same time, and
+# two processes on two different database files would each keep their own copy
+# of the quota ledger. Sharing one file is what keeps the handover lossless;
+# SQLITE_PATH is therefore owned here and never inherited (see
+# source_environment) rather than copied forward from whatever the last deploy
+# happened to write.
+DB_PATH="${DB_PATH:-$APP_ROOT/data/new-api.db}"
+# Where loadbalancer.yaml and the database live. Kept separate from DB_PATH
+# because the two are not moved together: a migration can repin the database
+# while the editable policy file stays put, and vice versa.
+DATA_DIR="${DATA_DIR:-$APP_ROOT/data}"
 WEB_ROOT="${WEB_ROOT:-$APP_ROOT/web}"
 WEB_LINK="${WEB_LINK:-$WEB_ROOT/current}"
 WEB_KEEP="${WEB_KEEP:-3}"
@@ -388,6 +402,27 @@ publish_web_link() {
   fi
 }
 
+# main.go calls loadbalancer.Init("data/loadbalancer.yaml") -- a path relative
+# to the working directory, which supervisord sets to BIN_DIR. Nothing in the
+# Go code resolves it against the executable, the database, or an environment
+# variable, so the only reason production reads its configured routing policy
+# instead of the compiled-in default is a `data` symlink inside BIN_DIR.
+# Relocate the deployment root without recreating that link and the app starts
+# perfectly cleanly against default load balancing: no error, no log line, just
+# different routing decisions. Recreate it here rather than leaving it to the
+# operator.
+ensure_data_link() {
+  local link="$BIN_DIR/data"
+  [[ -d $DATA_DIR ]] || return 0
+  if [[ -L $link ]]; then
+    [[ $(readlink "$link") == "$DATA_DIR" ]] && return 0
+  elif [[ -e $link ]]; then
+    die "$link exists and is not a symlink; refusing to replace it"
+  fi
+  ln -sfn "$DATA_DIR" "$link"
+  log "linked $link -> $DATA_DIR (this is how data/loadbalancer.yaml is found)"
+}
+
 # prune_web_dirs <protected...> -- keep the newest WEB_KEEP version directories
 # plus anything named on the command line. The protected list always includes
 # the directory the live slot serves and the one --rollback would return to, so
@@ -476,7 +511,7 @@ source_environment() {
       pair="$line"; line=""
     fi
     case "$pair" in
-      APIHUB_STATIC_DIR=*|APIHUB_REUSEPORT=*|VERSION=*) ;;
+      APIHUB_STATIC_DIR=*|APIHUB_REUSEPORT=*|VERSION=*|SQLITE_PATH=*) ;;
       *)
         # Separators go BETWEEN pairs, never after the last one. Appending a
         # comma per pair and trimming it at the end leaves a quoted final value
@@ -491,7 +526,7 @@ source_environment() {
   # needs a comma. The old code stripped a trailing quote and re-opened one,
   # which is what turned a final PORT=3998 into PORT=3998".
   # A leading comma would be a syntax error, so an empty result stays empty.
-  ENVIRONMENT_LINE="${line:+${line},}APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\""
+  ENVIRONMENT_LINE="${line:+${line},}APIHUB_REUSEPORT=1,VERSION=\"${EXPECTED_VERSION}\",SQLITE_PATH=\"${DB_PATH}\""
 }
 
 # write_slot_conf <slot> <autostart:0|1> [static_dir]
@@ -584,7 +619,7 @@ do_backup() {
   printf '%s' "$live_web" >"$dest/deploy-state.webdir"
   log "recorded live frontend for $live_slot: ${live_web:-<embedded in binary>}"
 
-  local db="$APP_ROOT/data/new-api.db"
+  local db="$DB_PATH"
   if [[ -f $db ]]; then
     if command -v sqlite3 >/dev/null 2>&1; then
       sqlite3 "$db" ".backup '$dest/new-api.db'" && log "database snapshotted via sqlite3 .backup"
@@ -822,8 +857,8 @@ show_status() {
   if [[ -f $STATE_FILE ]]; then
     log "last deploy backup: $(cat "$STATE_FILE")"
   fi
-  if [[ -f "$APP_ROOT/data/loadbalancer.yaml" ]]; then
-    log "loadbalancer.yaml modified: $(file_mtime "$APP_ROOT/data/loadbalancer.yaml")"
+  if [[ -f "$DATA_DIR/loadbalancer.yaml" ]]; then
+    log "loadbalancer.yaml modified: $(file_mtime "$DATA_DIR/loadbalancer.yaml")"
   fi
 }
 
@@ -848,7 +883,11 @@ main() {
   # wrong or unstamped binary costs nothing.
   verify_binary_version "$NEW_BINARY" "$EXPECTED_VERSION"
 
-  mkdir -p "$BACKUP_DIR" "$LOG_DIR" "$WEB_ROOT"
+  mkdir -p "$BIN_DIR" "$BACKUP_DIR" "$LOG_DIR" "$WEB_ROOT" "$DATA_DIR"
+
+  # Ahead of the backup, because a deployment root that has never been used
+  # needs its data link before anything tries to read a policy file through it.
+  ensure_data_link
 
   # One deploy at a time: two overlapping runs would race over which slot is
   # live and could stop the wrong process.
