@@ -9,10 +9,20 @@ on:
   # the repo while the rollback path it covers shipped untested.
   push:
     branches: [main]
+  # The deploy workflow calls this one as its gate. It was added because
+  # `needs:` cannot cross workflow boundaries, so deploy.yml could not depend on
+  # this run directly -- the two fired on the same push, concurrently, in no
+  # defined order, and a red CI did nothing at all to stop the binary from
+  # reaching production. Calling it makes the ordering explicit and unskippable.
+  workflow_call:
 
 permissions:
   contents: read
 
+# github.workflow is the CALLER's name for a reusable workflow, so the deploy
+# gate's runs get group ci-Deploy-<ref> while a standalone CI run gets
+# ci-CI-<ref>. That separation is deliberate and is what keeps cancel-in-progress
+# from letting a hand-triggered CI run cancel the gate the deploy is waiting on.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -30,7 +40,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ github.event.pull_request.base.repo.full_name }}
+          # `|| github.repository` is load-bearing now that this workflow is also
+          # called as a reusable gate. On a pull_request event the first operand
+          # resolves; on the push and workflow_call events that reach it from
+          # deploy.yml there is no pull_request object at all, so it evaluates to
+          # empty and actions/checkout is handed repository: "" -- which is not
+          # the same as omitting the input, and fails the checkout.
+          repository: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
           ref: ${{ github.event.action == 'closed' && github.event.pull_request.base.ref || github.ref }}
 
       - name: Set up Go
@@ -87,7 +103,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ github.event.pull_request.base.repo.full_name }}
+          # `|| github.repository` is load-bearing now that this workflow is also
+          # called as a reusable gate. On a pull_request event the first operand
+          # resolves; on the push and workflow_call events that reach it from
+          # deploy.yml there is no pull_request object at all, so it evaluates to
+          # empty and actions/checkout is handed repository: "" -- which is not
+          # the same as omitting the input, and fails the checkout.
+          repository: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
           ref: ${{ github.event.action == 'closed' && github.event.pull_request.base.ref || github.ref }}
 
       - name: Set up Bun

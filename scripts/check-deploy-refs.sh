@@ -54,7 +54,14 @@ scan() {
 
 SELF=':!scripts/check-deploy-refs.sh'
 
-hits="$(scan '/tmp/mnt' . ':!scripts/deploy.sh' "$SELF")"
+# deploy.sh is deliberately NOT excluded. An earlier version excluded it, to let
+# a single explanatory mention of the retired root in a comment through -- but
+# scan() already drops comment lines, so the exclusion bought nothing and cost
+# the one file whose DEFAULT_APP_ROOT every path on the host is derived from.
+# Injecting DEFAULT_APP_ROOT="/tmp/mnt/new-api" into deploy.sh passed the check
+# while it was excluded and failed it once the exclusion came out. deploy_test.sh
+# now asserts that, so the hole cannot be reopened quietly.
+hits="$(scan '/tmp/mnt' . "$SELF")"
 if [[ -z $hits ]]; then
   pass "no leftover references to the retired /tmp/mnt root"
 else

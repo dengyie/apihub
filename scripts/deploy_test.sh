@@ -792,6 +792,115 @@ prune_backup_dirs >/dev/null 2>&1 && ok "a missing backup directory is not an er
   || bad "a missing backup directory is not an error"
 BACKUP_DIR="$BD"
 
+# ---------------------------------------------------------------------------
+# BACKUP_KEEP is read into (( )) arithmetic inside prune_backup_dirs, and bash
+# resolves a bare non-numeric operand there as an unset VARIABLE NAME, which is
+# 0. "5x" therefore printed an arithmetic complaint to stderr and then compared
+# as "1 <= 0": false, so it deleted every deploy backup except the rollback
+# target. The complaint is not a failure -- the function kept going and pruned.
+# The validation lives at the top level of deploy.sh (it has to, since the
+# variable is consumed long after any argument parsing), so it is exercised in
+# a subprocess rather than by re-sourcing.
+# ---------------------------------------------------------------------------
+echo "BACKUP_KEEP validation"
+
+run_with_backup_keep() {
+  BACKUP_KEEP="$1" bash "$SCRIPT_DIR/deploy.sh" --status 2>&1 | head -1
+}
+
+for badv in 5x abc -1 3.5; do
+  out="$(run_with_backup_keep "$badv")"
+  if [[ $out == *"BACKUP_KEEP must be a non-negative integer"* ]]; then
+    ok "rejects a malformed BACKUP_KEEP ($badv) instead of pruning everything"
+  else
+    bad "rejects a malformed BACKUP_KEEP ($badv) instead of pruning everything" "$out"
+  fi
+done
+
+# The guard must not fire on the values an operator actually uses, or it would
+# break a working deploy to defend against a typo. Getting past it is visible as
+# the script reaching the next check instead of complaining about BACKUP_KEEP.
+for goodv in 0 1 5 25; do
+  out="$(run_with_backup_keep "$goodv")"
+  if [[ $out != *"BACKUP_KEEP must be"* ]]; then
+    ok "accepts a valid BACKUP_KEEP ($goodv)"
+  else
+    bad "accepts a valid BACKUP_KEEP ($goodv)" "$out"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# check-deploy-refs.sh once excluded scripts/deploy.sh from the /tmp/mnt scan,
+# to let a single explanatory mention in a comment through. But scan() already
+# drops comment lines, so the exclusion bought nothing -- and it blinded the
+# check on the one file every path on the host is derived from. Injecting
+# DEFAULT_APP_ROOT="/tmp/mnt/new-api" passed the check while deploy.sh was
+# excluded. Asserting the absence of that exclusion is what keeps the hole shut.
+# ---------------------------------------------------------------------------
+echo "deployment layout check coverage"
+
+if grep -q "':!scripts/deploy.sh'" "$SCRIPT_DIR/check-deploy-refs.sh"; then
+  bad "the layout check still scans deploy.sh" \
+      "scripts/check-deploy-refs.sh excludes scripts/deploy.sh from the retired-root scan"
+else
+  ok "the layout check still scans deploy.sh"
+fi
+
+if bash "$SCRIPT_DIR/check-deploy-refs.sh" >/dev/null 2>&1; then
+  ok "the layout check passes on a clean tree"
+else
+  bad "the layout check passes on a clean tree" "it reported a violation with no changes staged"
+fi
+
+# ---------------------------------------------------------------------------
+# The production gate. `needs:` cannot cross a workflow boundary, so deploy.yml
+# has to call ci.yml as a reusable workflow -- and the two facts that make that
+# gate real (the call, and the deploy job actually waiting on it) are both easy
+# to delete without anything failing. A deploy that runs alongside a red CI is
+# indistinguishable from a correct one until you read the YAML.
+# ---------------------------------------------------------------------------
+echo "production release gate"
+
+deploy_wf="$SCRIPT_DIR/../.github/workflows/deploy.yml"
+ci_wf="$SCRIPT_DIR/../.github/workflows/ci.yml"
+
+if [ ! -f "$deploy_wf" ] || [ ! -f "$ci_wf" ]; then
+  bad "the release gate is wired up" "a workflow file is missing from $deploy_wf"
+elif grep -q 'uses: \./\.github/workflows/ci\.yml' "$deploy_wf"; then
+  ok "deploy.yml calls the CI workflow as a gate"
+else
+  bad "deploy.yml calls the CI workflow as a gate" \
+      "no 'uses: ./.github/workflows/ci.yml' job in deploy.yml; CI and deploy race"
+fi
+
+if grep -q 'workflow_call' "$ci_wf"; then
+  ok "ci.yml accepts being called"
+else
+  bad "ci.yml accepts being called" "ci.yml has no workflow_call trigger, so the gate cannot run"
+fi
+
+if grep -qE '^[[:space:]]+needs:[[:space:]]*verify[[:space:]]*$' "$deploy_wf"; then
+  ok "the deploy job waits for the gate"
+else
+  bad "the deploy job waits for the gate" \
+      "no job in deploy.yml declares 'needs: verify'; the build/deploy are ungated"
+fi
+
+if grep -qE '^[[:space:]]+environment:[[:space:]]*production[[:space:]]*$' "$deploy_wf"; then
+  ok "production is still gated by its environment"
+else
+  bad "production is still gated by its environment" "no environment: production in deploy.yml"
+fi
+
+# The gate is worthless if the deploy job rebuilds and ships something the gate
+# never inspected, so the build must be a separate job handing over an artifact.
+if grep -q 'needs: build' "$deploy_wf" && grep -q 'download-artifact@' "$deploy_wf"; then
+  ok "the deploy ships the artifact the build job verified"
+else
+  bad "the deploy ships the artifact the build job verified" \
+      "deploy.yml does not download a build artifact; it builds its own binary"
+fi
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

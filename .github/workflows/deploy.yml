@@ -26,11 +26,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Build and deploy to tebi
+  verify:
+    name: CI gate
+    # The point of this job. Until it existed, CI and this workflow both fired on
+    # the same push to main, ran concurrently, and finished in whatever order they
+    # happened to finish -- `needs:` cannot cross workflow boundaries, so there was
+    # no way to make one wait for the other. A red CI therefore stopped nothing: the
+    # same commit that failed the test suite could still build and reach production
+    # in parallel, and the failure would surface after the deploy had succeeded.
+    #
+    # Calling the CI workflow rather than restating its steps keeps one definition
+    # of "green" -- a check added to ci.yml becomes a production gate with no
+    # second edit here to forget.
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build release artifacts
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: production
+    outputs:
+      version: ${{ steps.stamp.outputs.version }}
 
     steps:
       - name: Checkout
@@ -61,6 +77,7 @@ jobs:
         run: make verify-embed
 
       - name: Build the Linux binary
+        id: stamp
         # The version is stamped here rather than left entirely to the supervisor
         # env, so the artifact is self-describing: `dist/apihub --version` says
         # what it is even before it is installed. deploy.sh then asserts the
@@ -89,6 +106,7 @@ jobs:
             exit 1
           fi
           echo "version stamped into the binary: ${stamped}"
+          echo "version=${stamped}" >> "$GITHUB_OUTPUT"
 
       - name: Package the frontend as a separate artifact
         # The binary still embeds web/dist -- that is the fallback and the only
@@ -110,6 +128,41 @@ jobs:
           # this step failed on every push and the frontend artifact was never
           # once uploaded.
           tar -tzf dist/apihub-web.tar.gz | sed -n '1,3p'
+
+      - name: Upload the release artifacts
+        # The deploy job does not rebuild. It downloads exactly these bytes, so
+        # what lands on tebi is what this job verified the version stamp on --
+        # a second `go build` in the deploy job would be a different invocation
+        # of the toolchain and nothing downstream could tell.
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: apihub-release
+          path: |
+            dist/apihub
+            dist/apihub-web.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to tebi
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: Checkout
+        # Still needed: deploy.sh and slot-watchdog.sh ship to the host from the
+        # repository, not from the artifact. deploy.sh installs the watchdog
+        # next to itself and registers it with supervisord, so the running
+        # guard is never older than the commit being deployed.
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download the release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apihub-release
+          path: dist
 
       - name: Configure SSH
         # tebi has a public address and sshd listening on 0.0.0.0:22, so the
@@ -163,6 +216,12 @@ jobs:
       - name: Upload the release
         run: |
           set -euo pipefail
+          # upload-artifact does not carry file modes, so the binary comes back
+          # from download-artifact without +x. deploy.sh chmods it defensively
+          # before running --version, but the mode is restored here so the file
+          # is correct on the wire rather than correct by luck of a guard clause.
+          chmod +x dist/apihub
+
           ssh tebi 'mkdir -p /tmp/apihub-release'
           scp dist/apihub tebi:/tmp/apihub-release/apihub
           scp dist/apihub-web.tar.gz tebi:/tmp/apihub-release/apihub-web.tar.gz
@@ -177,7 +236,7 @@ jobs:
       - name: Deploy
         env:
           BOOTSTRAP: ${{ inputs.bootstrap || false }}
-          SHA: ${{ github.sha }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           # The bootstrap flag is only meaningful for the very first handover,
@@ -188,11 +247,16 @@ jobs:
           # copy. To undo a frontend-only change, redeploy the previous binary
           # without --web (or run deploy.sh --rollback, which restores both).
           #
-          # VERSION is read from the same file the Makefile and build-release.yml
-          # read, so all three stamp `v29.36+<sha>` and not a bare commit hash.
-          # A bare hash also becomes the frontend directory's name, which is how
-          # `web/3d6d1a62ac4cb2c...` ended up next to `web/v29.36_7ee9e3462`.
-          version="$(cat VERSION)+$SHA"
+          # The version is the one the build job stamped into the binary it just
+          # uploaded, not a second computation of "$(cat VERSION)+${{ github.sha }}"
+          # here. Two
+          # evaluations of the same expression are two chances to disagree, and
+          # this one is the only thing that decides which directory the frontend
+          # is unpacked into and which string deploy.sh asserts the running
+          # process reports. If they ever diverged, the deploy would fail its
+          # assertion -- or worse, succeed against a version the artifact does
+          # not carry.
+          version="$VERSION"
           if [ "$BOOTSTRAP" = "true" ]; then
             ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
               /tmp/apihub-release/deploy.sh --bootstrap \

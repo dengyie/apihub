@@ -128,6 +128,15 @@ log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%F %T')" "$*" >&2; }
 die()  { printf '[%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
+# Validate it here rather than trusting it into arithmetic later. In bash an
+# unquoted non-numeric operand inside (( )) is read as an unset VARIABLE
+# name and evaluates to 0 -- so BACKUP_KEEP="5x" printed an arithmetic
+# complaint to stderr and then compared as "1 <= 0", which is false, which
+# deleted every deploy backup except the rollback target. The complaint is
+# not a failure: the function carried on and pruned. A one-character typo
+# must stop the deploy, not silently empty the rollback history.
+[[ $BACKUP_KEEP =~ ^[0-9]+$ ]] || die "BACKUP_KEEP must be a non-negative integer, got '$BACKUP_KEEP'"
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
