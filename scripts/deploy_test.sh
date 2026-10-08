@@ -317,6 +317,43 @@ kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 
 check "served_version reports a dead port instead of pretending" "$(served_version apihub-test)" "<not answering>"
 
+echo "verify_binary_version"
+# A stub that answers --version, standing in for the real binary. The point of
+# this gate is that a build whose -X target did not resolve must never reach the
+# host's bin directory -- and it cannot be caught at runtime, because InitEnv
+# overwrites common.Version from the VERSION env var this script writes itself.
+stub="$(mktemp -d)"
+cat >"$stub/fakebinary" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'v29.36+0a1cc23b3'
+SH
+chmod +x "$stub/fakebinary"
+
+verify_binary_version "$stub/fakebinary" "v29.36+0a1cc23b3" >/dev/null 2>&1 \
+  && ok "accepts a binary that reports the expected version" \
+  || bad "accepts a binary that reports the expected version"
+
+out="$(verify_binary_version "$stub/fakebinary" "v29.36+0a1cc23b" 2>&1)"
+grep -q "Refusing to install" <<<"$out" \
+  && ok "refuses a binary stamped with a different version" \
+  || bad "refuses a binary stamped with a different version" "$out"
+grep -q "common.Version at its compiled-in default" <<<"$out" \
+  && ok "explains an unresolved -X target rather than just failing" \
+  || bad "explains an unresolved -X target rather than just failing" "$out"
+
+# The shape a silently-unstamped build actually has: the binary runs, but
+# common.Version never left its compiled-in default.
+cat >"$stub/fakebinary" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'v0.0.0'
+SH
+chmod +x "$stub/fakebinary"
+out="$(verify_binary_version "$stub/fakebinary" "v29.36+0a1cc23b3" 2>&1)"
+grep -q "v0.0.0" <<<"$out" \
+  && ok "catches the v0.0.0 default that a failed -X leaves behind" \
+  || bad "catches the v0.0.0 default that a failed -X leaves behind" "$out"
+rm -rf "$stub"
+
 # The status report must work on BSD userland too: it is the first command an
 # operator reaches for when something is broken.
 printf 'x' >"$WORK/somefile"

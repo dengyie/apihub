@@ -195,6 +195,14 @@ binary" from "a stale artifact that happens to serve the right frontend": the
 frontend fingerprint proves the console is current but says nothing about which
 binary is serving it.
 
+Before any of that, the uploaded binary is asked what it is (`--version`, which
+exits long before the database is opened). This is not redundant with the
+readiness check: `common.InitEnv` overwrites `common.Version` from the `VERSION`
+environment variable, which `deploy.sh` writes from `--version` itself — so a
+binary whose build-time stamp never applied would still report the expected
+version once running. Only the artifact knows. A mismatch aborts the deploy
+before the lock, the backup, or the first byte written.
+
 Old bundles are pruned to the newest `WEB_KEEP` (default 3), never including
 the live one or the one `--rollback` would return to.
 

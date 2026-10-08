@@ -29,6 +29,11 @@ tiktoken_cache
 
 electron/node_modules
 electron/dist
+# 顶层构建产物目录（.github/workflows/deploy.yml 里的 dist/apihub 与
+# dist/apihub-web.tar.gz）。此前只忽略了 web/dist 和 electron/dist，于是一次
+# 本地交叉编译 + `git add -A` 就把 130MB 的二进制提交了进去，push 被 GitHub
+# 的 100MB 限制挡下。
+/dist/
 /data/
 .gomodcache/
 .gocache-temp

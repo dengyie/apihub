@@ -114,6 +114,37 @@ fi
 need_root() { [[ $(id -u) -eq 0 ]] || die "must run as root (supervisord and $APP_ROOT are root-owned)"; }
 need_cmd()  { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
+# verify_binary_version <path> <expected>
+#
+# Ask the artifact itself what it is, before anything on the host is touched.
+#
+# The runtime version reported by /api/status is NOT sufficient for this, because
+# common.InitEnv overwrites common.Version from the VERSION environment variable
+# -- which this script writes from --version itself. A binary whose build-time
+# stamp silently failed to apply would still report the expected version once
+# running, so checking the running process cannot distinguish "correctly stamped"
+# from "stamp never happened".
+#
+# `--version` prints and exits in InitEnv, long before InitDB, so running it here
+# opens no database, binds no port and touches no configuration. It does require
+# the binary to be executable on this host, which is why a mismatch is reported as
+# a refusal to guess rather than silently skipped.
+verify_binary_version() {
+  local path="$1" expected="$2" got
+  [[ -x $path ]] || chmod +x "$path" 2>/dev/null || true
+  got="$("$path" --version 2>/dev/null | tr -d '[:space:]')"
+  if [[ $got != "$expected" ]]; then
+    die "the binary at $path reports version '$got', but this deploy was told to
+       expect '$expected'. Refusing to install it.
+
+       This is what a build whose -X target did not resolve looks like: the linker
+       applies no -X value to an unknown symbol and reports success, leaving
+       common.Version at its compiled-in default. The build steps assert the stamp
+       for exactly this reason."
+  fi
+  log "binary self-reports version $got, as expected"
+}
+
 # A rehearsal against a sandbox APP_ROOT must not silently keep writing into the
 # real /etc/supervisor/conf.d. SUPERVISOR_CONF_DIR does NOT follow APP_ROOT, so
 # overriding one without the other points every write_slot_conf at the live
@@ -782,6 +813,12 @@ main() {
   need_cmd curl
   need_cmd supervisorctl
   need_cmd flock
+
+  # Before the lock, the backup, or the first byte written: ask the uploaded
+  # artifact what it is. Nothing on the host has been touched at this point, so a
+  # wrong or unstamped binary costs nothing.
+  verify_binary_version "$NEW_BINARY" "$EXPECTED_VERSION"
+
   mkdir -p "$BACKUP_DIR" "$LOG_DIR" "$WEB_ROOT"
 
   # One deploy at a time: two overlapping runs would race over which slot is
