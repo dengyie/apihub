@@ -167,6 +167,12 @@ jobs:
           scp dist/apihub tebi:/tmp/apihub-release/apihub
           scp dist/apihub-web.tar.gz tebi:/tmp/apihub-release/apihub-web.tar.gz
           scp scripts/deploy.sh tebi:/tmp/apihub-release/deploy.sh
+          # deploy.sh installs this next to itself and registers it as a
+          # supervisord program, so the running guard is never an older version
+          # than the one in this commit. Without the upload, install_slot_guard
+          # skips and the guard goes unmanaged again -- which is exactly how the
+          # hand-armed version disappeared.
+          scp scripts/slot-watchdog.sh tebi:/tmp/apihub-release/slot-watchdog.sh
 
       - name: Deploy
         env:
@@ -199,21 +205,21 @@ jobs:
                 --web /tmp/apihub-release/apihub-web.tar.gz"
           fi
 
-      - name: Clean up the upload
-        if: always()
-        run: ssh tebi 'rm -rf /tmp/apihub-release' || true
-
       - name: Report the result
         if: always()
-        # deploy.sh installs the binary as bin/new-api (the on-disk name is
-        # unchanged from the legacy program so the rollback path stays
-        # recognisable). Asking for bin/apihub here reported nothing, and the
-        # trailing `|| true` hid that.
+        # Everything about where things live is asked of deploy.sh rather than
+        # written out here a second time. This step used to read the deploy
+        # state file by an absolute path of its own; when the deployment root
+        # moved to /data the script followed and this copy did not, so the step
+        # whose entire job is to tell an operator whether the deploy worked
+        # printed "last backup: none" -- every time, with no error. A duplicate
+        # that is wrong is worse than no duplicate: it does not fail, it answers.
         #
-        # .apihub-deploy-state holds the backup path of the last successful
-        # handover -- the same path `deploy.sh --rollback` consumes.
+        # deploy.sh --status derives the live slot, the frontend it is bound to,
+        # the binary digest and the rollback pointer from the same variables the
+        # deploy itself used.
         #
-        # The curl here runs as root ON tebi, where /root/.curlrc points at a
+        # The curl probes run as root ON tebi, where /root/.curlrc points at a
         # local proxy. A bare curl sends the loopback probe to that proxy, which
         # answers 502 for a service that is perfectly healthy -- so the one line
         # an operator reads to decide whether the deploy worked would report the
@@ -221,8 +227,14 @@ jobs:
         # same two flags http_get() uses inside deploy.sh.
         run: |
           ssh tebi '
-            supervisorctl status | grep -E "apihub-(blue|green)"
-            echo "last backup: $(cat /tmp/mnt/new-api/.apihub-deploy-state 2>/dev/null || echo none)"
+            /tmp/apihub-release/deploy.sh --status 2>&1 || echo "deploy.sh --status failed"
             echo "http: $(curl -q --noproxy "*" -s -o /dev/null -w "%{http_code}" -m 5 http://127.0.0.1:3000/api/status)"
             echo "serving version: $(curl -q --noproxy "*" -fsS -m 5 http://127.0.0.1:3000/api/status 2>/dev/null | sed -n "s/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)"
           ' || true
+
+      - name: Clean up the upload
+        if: always()
+        # After the report, not before it. The report reads deploy.sh out of the
+        # upload directory, so cleaning up first deleted the very script that
+        # prints where the rollback pointer lives.
+        run: ssh tebi 'rm -rf /tmp/apihub-release' || true

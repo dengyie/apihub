@@ -535,6 +535,189 @@ status_out="$(show_status 2>&1)"
 [[ $status_out != *ERROR* ]] && ok "never prints ERROR while the host is healthy" \
   || bad "never prints ERROR while the host is healthy" "$status_out"
 
+echo "do_rollback"
+
+# do_rollback is the one path that stops BOTH slots at once, so it is the one
+# place where "validate everything, then act" has to hold rather than being
+# merely advisable. A refusal after the stop loop costs the site; the same
+# refusal before it costs a message. Nothing here touches supervisor, the port
+# or a real deployment -- supervisor and the readiness probe are stubbed, so the
+# assertions are about call ORDER and about what ends up in the slot configs.
+RB_CALLS="$WORK/rollback.calls"
+# Captured BEFORE the stubs below, so this is the real definition and not the
+# `:` no-op that replaces it two lines down.
+RB_REAL_APPLY="$(declare -f apply_supervisor_conf)"
+sup() { printf 'sup %s\n' "$*" >>"$RB_CALLS"; return 0; }
+need_root() { :; }
+apply_supervisor_conf() { :; }
+wait_ready() { return 0; }
+verify_frontend_served() { return 0; }
+slot_pid() { echo 4242; }
+
+# A backup as do_backup leaves it, plus one artifact that can answer --version.
+rb_setup() {
+  rm -rf "$WORK/rb"; mkdir -p "$WORK/rb/backup" "$SUPERVISOR_CONF_DIR" "$BIN_DIR"
+  # source_environment reads the legacy config first, and earlier cases in this
+  # file leave one behind. Remove it so the environment line under test is the
+  # one rb_setup wrote rather than whichever fixture happened to run last.
+  rm -f "$SUPERVISOR_CONF_DIR/$LEGACY_PROGRAM.conf"
+  cat >"$WORK/rb/backup/new-api.prev" <<'PREV'
+#!/usr/bin/env bash
+[[ ${1:-} == --version ]] && { printf 'v29.36+0c6da1c8fdbaf4a1f31bf98c1c7ad04a740fde2d\n'; exit 0; }
+exit 1
+PREV
+  chmod +x "$WORK/rb/backup/new-api.prev"
+  # What deploy.sh writes: the version this deploy was moving TO. This is the
+  # string that must never end up labelling a restored binary.
+  printf 'v29.36+721b25c3cd81ded8422186e11552fd855e8caac9' \
+    >"$WORK/rb/backup/deploy-state.version"
+  printf 'apihub-green' >"$WORK/rb/backup/deploy-state.slot"
+  printf 'binary-being-replaced\n' >"$BIN_DIR/new-api"
+  printf '%s' "$WORK/rb/backup" >"$WORK/rb/state"
+  STATE_FILE="$WORK/rb/state"
+  cat >"$SUPERVISOR_CONF_DIR/apihub-green.conf" <<'CONF'
+[program:apihub-green]
+environment=SESSION_SECRET="s3cr3t-value",PORT=3000
+CONF
+  : >"$RB_CALLS"
+}
+
+# 1. Order. A backup with no binary in it must be refused before anything is
+#    stopped. Under the old order both slots went down first and the refusal
+#    arrived afterwards, which is the 2026-10-09 outage shape exactly.
+rb_setup
+rm -f "$WORK/rb/backup/new-api.prev"
+( do_rollback ) >/dev/null 2>&1
+rc=$?
+check "refuses a backup with no binary" "$rc" "1"
+if grep -q 'sup stop' "$RB_CALLS"; then
+  bad "refuses BEFORE stopping any slot" "$(tr '\n' ';' <"$RB_CALLS")"
+else
+  ok "refuses BEFORE stopping any slot"
+fi
+
+# 2. Order, again, for the metadata the old code required. It is now derived
+#    from the binary, so a backup without it is still usable -- which is what
+#    makes the bootstrap path (which never wrote it) recoverable.
+rb_setup
+rm -f "$WORK/rb/backup/deploy-state.version"
+out="$( ( do_rollback ) 2>&1 )"
+rc=$?
+check "a backup without deploy-state.version is still usable" "$rc" "0"
+if grep -q 'sup stop' "$RB_CALLS"; then
+  ok "and it reached the point of stopping the slots"
+else
+  bad "and it reached the point of stopping the slots" "$out"
+fi
+
+# 3. The version a rollback stamps comes from the binary it restored, not from
+#    the file deploy.sh wrote about the version it was rolling back FROM.
+#    VERSION is an environment override, so trusting that file labelled the old
+#    code with the new name -- and made wait_ready's version check compare a
+#    string with itself, on the one path where a wrong binary is likeliest.
+rb_setup
+( do_rollback ) >/dev/null 2>&1
+green_env="$(env_line_of apihub-green)"
+if grep -q 'VERSION="v29.36+0c6da1c8fdbaf4a1f31bf98c1c7ad04a740fde2d"' <<<"$green_env"; then
+  ok "stamps the restored slot with the version the binary reports"
+else
+  bad "stamps the restored slot with the version the binary reports" "$green_env"
+fi
+if grep -q 'VERSION="v29.36+721b25c3cd81ded8422186e11552fd855e8caac9"' <<<"$green_env"; then
+  bad "never stamps the restored slot with the version it rolled back FROM" "$green_env"
+else
+  ok "never stamps the restored slot with the version it rolled back FROM"
+fi
+head -1 "$BIN_DIR/new-api" | grep -q '^#!' \
+  && ok "the previous binary is what ends up installed" \
+  || bad "the previous binary is what ends up installed" "$(head -1 "$BIN_DIR/new-api")"
+
+# 4. Rollback is one-way unless the outgoing binary is kept. It exists nowhere
+#    else afterwards -- CI deletes the upload -- so without this a second
+#    rollback has nothing to roll back to.
+if grep -q 'binary-being-replaced' "$WORK/rb/backup/new-api.rolled-back-from" 2>/dev/null; then
+  ok "keeps the binary it rolled back FROM"
+else
+  bad "keeps the binary it rolled back FROM" "$(ls -1 "$WORK/rb/backup")"
+fi
+
+echo "apply_supervisor_conf"
+
+# A failed reload and "the config was already correct" must not look alike. The
+# only other check that would notice is the frontend fingerprint, which does not
+# run until after the serving slot has been retired.
+eval "$RB_REAL_APPLY"
+# A real executable on PATH, so need_cmd still has to pass for the right reason
+# -- this machine has no supervisorctl of its own.
+mkdir -p "$WORK/fakebin"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/fakebin/supervisorctl"
+chmod +x "$WORK/fakebin/supervisorctl"
+PATH="$WORK/fakebin:$PATH"
+
+UPDATE_OUT="apihub-green: updated process group"
+UPDATE_RC=0
+sup() {
+  case "${1:-}" in
+    status) echo "apihub-green RUNNING pid 1, uptime 0:01:00"; return 0 ;;
+    update) [[ -n $UPDATE_OUT ]] && printf '%s\n' "$UPDATE_OUT"; return "$UPDATE_RC" ;;
+    *)      return 0 ;;
+  esac
+}
+UPDATE_RC=1
+out="$( ( apply_supervisor_conf ) 2>&1 )"; rc=$?
+check "reports a failed supervisorctl update" "$rc" "1"
+[[ $out == *updated* ]] \
+  && ok "and repeats what update said" \
+  || bad "and repeats what update said" "$out"
+UPDATE_RC=0
+out="$( ( apply_supervisor_conf ) 2>&1 )"; rc=$?
+check "a successful update is not an error" "$rc" "0"
+
+echo "install_slot_guard"
+
+# The guard is installed and registered by deploy.sh, not armed by hand. A
+# hand-armed guard was correct code with no lifecycle: gone after the next
+# reboot, while the runbook described it as a standing protection.
+GUARD_PATH="$APP_ROOT/slot-watchdog.sh"
+GUARD_CONF="$SUPERVISOR_CONF_DIR/apihub-slot-guard.conf"
+WATCHDOG_SRC="$SCRIPT_DIR/slot-watchdog.sh"
+rm -f "$GUARD_PATH" "$GUARD_CONF"
+install_slot_guard >/dev/null 2>&1
+[[ -x $GUARD_PATH ]] && ok "installs the guard as an executable under the deployment root" \
+  || bad "installs the guard as an executable under the deployment root" "$GUARD_PATH"
+grep -q "command=$GUARD_PATH " "$GUARD_CONF" \
+  && ok "the supervisor program runs the installed copy, not the upload" \
+  || bad "the supervisor program runs the installed copy, not the upload" "$(grep '^command=' "$GUARD_CONF")"
+cmp -s "$GUARD_PATH" "$WATCHDOG_SRC" \
+  && ok "the installed guard matches the reviewed source" \
+  || bad "the installed guard matches the reviewed source" "differs"
+
+# supervisorctl update only restarts a program whose CONFIG changed, so a fixed
+# config would keep running old code forever. The digest is what ties the two
+# together; without it, editing the guard would silently do nothing.
+guard_conf_before="$(cat "$GUARD_CONF")"
+cp -a "$WATCHDOG_SRC" "$WORK/watchdog.src.bak"
+printf '\n# touched\n' >>"$WATCHDOG_SRC"
+install_slot_guard >/dev/null 2>&1
+[[ $(cat "$GUARD_CONF") != "$guard_conf_before" ]] \
+  && ok "a changed guard produces a changed config, so update restarts it" \
+  || bad "a changed guard produces a changed config, so update restarts it" "identical"
+cp -a "$WORK/watchdog.src.bak" "$WATCHDOG_SRC"
+
+# A manual run from an old checkout has no guard to upload. That must skip, not
+# fail: the guard is a protection, not a precondition for deploying.
+WATCHDOG_SRC="$WORK/not-here.sh"
+guard_before="$(cat "$GUARD_PATH")"
+out="$( ( install_slot_guard ) 2>&1 )"; rc=$?
+check "a missing guard source is not a deploy failure" "$rc" "0"
+[[ $(cat "$GUARD_PATH") == "$guard_before" ]] \
+  && ok "and leaves the installed guard alone" \
+  || bad "and leaves the installed guard alone" "the installed guard was replaced"
+[[ $out == *no\ slot\ guard* ]] \
+  && ok "and says why it skipped" \
+  || bad "and says why it skipped" "$out"
+rm -f "$WATCHDOG_SRC.bak"
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1
