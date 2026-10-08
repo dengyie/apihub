@@ -63,6 +63,16 @@ DATA_DIR="${DATA_DIR:-$APP_ROOT/data}"
 WEB_ROOT="${WEB_ROOT:-$APP_ROOT/web}"
 WEB_LINK="${WEB_LINK:-$WEB_ROOT/current}"
 WEB_KEEP="${WEB_KEEP:-3}"
+# Whether SUPERVISOR_CONF_DIR was named by the caller rather than defaulted.
+# Captured BEFORE the assignment above -- after it, the variable is set on every
+# path and the test would always answer "yes".
+#
+# guard_conf_dir has to ask this question, because the value alone cannot answer
+# it: a deliberate root move legitimately keeps writing to /etc/supervisor/conf.d
+# -- that is where the live slot configs are -- so comparing the value would
+# refuse every real relocation while passing a rehearsal that happened to set it
+# to the same string. Intent is the thing being checked, so record intent.
+SUPERVISOR_CONF_DIR_EXPLICIT="${SUPERVISOR_CONF_DIR+x}"
 SUPERVISOR_CONF_DIR="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"
 BACKUP_DIR="${BACKUP_DIR:-$APP_ROOT/backups}"
 LOG_DIR="${LOG_DIR:-$APP_ROOT/logs}"
@@ -165,9 +175,17 @@ verify_binary_version() {
 # production configs while the script backs up and probes a sandbox. That is not
 # hypothetical: a rehearsal of this script once did exactly that, and the
 # production slot configs had to be restored from the backup it had taken.
+#
+# The test is whether SUPERVISOR_CONF_DIR was NAMED, not what it was set to. A
+# deliberate relocation of APP_ROOT is supposed to keep writing to
+# /etc/supervisor/conf.d -- the live apihub-blue/green configs live there, and
+# moving the root is not a reason to stop managing them. Comparing values refused
+# every real relocation while passing a rehearsal that happened to spell the
+# same string. Naming the directory is the assertion that the caller knows where
+# the slot configs are, which is the whole risk.
 guard_conf_dir() {
-  if [[ $APP_ROOT != /tmp/mnt/new-api && $SUPERVISOR_CONF_DIR == /etc/supervisor/conf.d ]]; then
-    die "APP_ROOT is '$APP_ROOT' but SUPERVISOR_CONF_DIR is still /etc/supervisor/conf.d.
+  if [[ $APP_ROOT != /tmp/mnt/new-api && -z $SUPERVISOR_CONF_DIR_EXPLICIT ]]; then
+    die "APP_ROOT is '$APP_ROOT' but SUPERVISOR_CONF_DIR was not named (it defaults to $SUPERVISOR_CONF_DIR).
        The two are independent, so this run would overwrite the production
        apihub-blue/green configs. Set SUPERVISOR_CONF_DIR explicitly if the
        override really is intended."

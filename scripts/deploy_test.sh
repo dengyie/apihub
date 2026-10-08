@@ -409,20 +409,36 @@ bundles="$(ls -1 "$WORK" 2>/dev/null | grep -v '^\.staging\.' | tr '\n' ' ')"
 [[ $bundles == *somefile* ]] && ok "bundle listing works on this platform" || bad "bundle listing works on this platform" "$bundles"
 
 # The APP_ROOT / SUPERVISOR_CONF_DIR coupling guard. A rehearsal that overrides
-# APP_ROOT but not SUPERVISOR_CONF_DIR would otherwise write the live
+# APP_ROOT but never names SUPERVISOR_CONF_DIR would otherwise write the live
 # production slot configs, which is exactly what happened once.
-saved_root="$APP_ROOT"; saved_conf="$SUPERVISOR_CONF_DIR"
-APP_ROOT=/tmp/sandbox-only; SUPERVISOR_CONF_DIR=/etc/supervisor/conf.d
+#
+# The guard tests whether the variable was NAMED, so these cases set
+# SUPERVISOR_CONF_DIR_EXPLICIT directly -- that is the value the guard reads, and
+# setting only SUPERVISOR_CONF_DIR would leave the flag saying "not named".
+saved_root="$APP_ROOT"; saved_conf="$SUPERVISOR_CONF_DIR"; saved_explicit="$SUPERVISOR_CONF_DIR_EXPLICIT"
+
+APP_ROOT=/tmp/sandbox-only
+SUPERVISOR_CONF_DIR=/etc/supervisor/conf.d; SUPERVISOR_CONF_DIR_EXPLICIT=""
 out="$( ( guard_conf_dir ) 2>&1 )"
-check "refuses to run against a sandbox APP_ROOT with the production conf dir" "$?" "1"
+check "refuses a sandbox APP_ROOT when the conf dir was not named" "$?" "1"
 grep -q 'overwrite the production' <<<"$out" \
   && ok "the guard says what would be overwritten" || bad "the guard says what would be overwritten" "$out"
-SUPERVISOR_CONF_DIR=/tmp/sandbox-conf
+
+# The case that made the value-based version unusable: relocating the root on
+# purpose, while still managing the live slot configs where they already are.
+SUPERVISOR_CONF_DIR_EXPLICIT="x"
+( guard_conf_dir ) >/dev/null 2>&1 \
+  && ok "allows a deliberate relocation that names the production conf dir" \
+  || bad "allows a deliberate relocation that names the production conf dir"
+
+SUPERVISOR_CONF_DIR=/tmp/sandbox-conf; SUPERVISOR_CONF_DIR_EXPLICIT="x"
 ( guard_conf_dir ) >/dev/null 2>&1 && ok "allows an explicit sandbox conf dir" || bad "allows an explicit sandbox conf dir"
-APP_ROOT=/tmp/mnt/new-api
+
+APP_ROOT=/tmp/mnt/new-api; SUPERVISOR_CONF_DIR_EXPLICIT=""
 out="$( ( guard_conf_dir ) 2>&1 )"
 check "allows the production defaults" "$?" "0"
-APP_ROOT="$saved_root"; SUPERVISOR_CONF_DIR="$saved_conf"
+
+APP_ROOT="$saved_root"; SUPERVISOR_CONF_DIR="$saved_conf"; SUPERVISOR_CONF_DIR_EXPLICIT="$saved_explicit"
 
 echo "prune_web_dirs"
 for n in v1 v2 v3 v4 v5; do make_bundle "$WEB_ROOT/$n" "$n"; sleep 0.05; done
