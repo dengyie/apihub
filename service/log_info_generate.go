@@ -162,15 +162,18 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther)
 	if !ss.IsNormalEnd() || ss.HasErrors() || ss.ResponseFailed() {
 		status = "error"
 	}
+	// One read for both: two separate locked reads could straddle a write and
+	// record an end_error that belongs to a different end_reason.
+	endReason, endError := ss.EndState()
 	streamInfo := map[string]any{
 		"status":     status,
-		"end_reason": string(ss.EndReason),
+		"end_reason": string(endReason),
 	}
 	if outcome := ss.ResponseOutcome(); outcome != "" {
 		streamInfo["response_status"] = outcome
 	}
-	if ss.EndError != nil {
-		streamInfo["end_error"] = ss.EndError.Error()
+	if endError != nil {
+		streamInfo["end_error"] = endError.Error()
 	}
 	if ss.ErrorCount > 0 {
 		streamInfo["error_count"] = ss.ErrorCount

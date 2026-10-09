@@ -420,8 +420,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 只要客户端 context 已取消或记录了 context canceled，最终原因应纠正为 ClientGone。
 	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
-	} else if info.StreamStatus.EndError != nil && (errors.Is(info.StreamStatus.EndError, context.Canceled) || strings.Contains(info.StreamStatus.EndError.Error(), "context canceled")) {
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndError)
+	} else if _, recordedErr := info.StreamStatus.EndState(); recordedErr != nil && (errors.Is(recordedErr, context.Canceled) || strings.Contains(recordedErr.Error(), "context canceled")) {
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, recordedErr)
 	}
 
 	cleanup()
@@ -475,7 +475,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		if !info.StreamStatus.IsNormalEnd() {
 			// scanner 错误、超时、panic 等异常中断
 			streamBroken = true
-		} else if info.StreamStatus.EndReason == relaycommon.StreamEndReasonHandlerStop && info.StreamStatus.EndError != nil {
+		} else if endReason, endErr := info.StreamStatus.EndState(); endReason == relaycommon.StreamEndReasonHandlerStop && endErr != nil {
 			// handler 主动停止且携带错误
 			streamBroken = true
 		} else if info.ReceivedResponseCount == 0 && info.StreamStatus.HasErrors() {
@@ -500,7 +500,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 // 不是上游传输故障，读错误只是关闭 body 的必然反应。
 func teardownOwnedByUs(c *gin.Context, info *relaycommon.RelayInfo) bool {
 	if info != nil && info.StreamStatus != nil {
-		switch info.StreamStatus.EndReason {
+		switch info.StreamStatus.EndReasonValue() {
 		case relaycommon.StreamEndReasonClientGone,
 			relaycommon.StreamEndReasonTimeout,
 			relaycommon.StreamEndReasonHandlerStop,

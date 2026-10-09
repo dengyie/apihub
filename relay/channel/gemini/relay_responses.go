@@ -157,7 +157,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return usage, streamAPIError
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
-		if info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
+		if info.StreamStatus.EndReasonValue() != relaycommon.StreamEndReasonClientGone {
 			failResponsesStream(fmt.Errorf("gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))
 		}
 		return usage, nil

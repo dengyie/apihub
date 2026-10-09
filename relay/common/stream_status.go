@@ -62,7 +62,12 @@ type StreamStatus struct {
 // StreamOutcome holds classification facts only; upstream messages never
 // enter it because they may contain credentials or request content.
 type StreamOutcome struct {
-	EndReason        StreamEndReason
+	EndReason StreamEndReason
+	// EndError is the error that arrived with EndReason. It belongs in the
+	// snapshot rather than in a separate read because callers need the two
+	// together: classifying a stream as client-abandoned is only correct if the
+	// reason and the error come from the same write.
+	EndError         error
 	HasErrors        bool
 	ExpectsTerminal  bool
 	Response         ResponseOutcome
@@ -86,6 +91,37 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 		s.EndReason = reason
 		s.EndError = err
 	})
+}
+
+// EndReasonValue reads the recorded reason under the lock.
+//
+// EndReason and EndError are written by SetEndReason, which runs on whichever
+// goroutine first ends the stream -- the client-disconnect watcher, the
+// first-token timeout, or the data handler. Readers on other goroutines must
+// go through here rather than touching the fields directly, which the compiler
+// permits and the race detector flags. EndError is an interface (two words), so
+// an unsynchronised read can tear and leave a caller holding half a value.
+//
+// Read the pair with EndState when both are needed: two separate locked reads
+// can straddle a write and disagree with each other.
+func (s *StreamStatus) EndReasonValue() StreamEndReason {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.EndReason
+}
+
+// EndState returns the recorded reason and error from a single critical
+// section, so a caller that needs both always sees them as of one write.
+func (s *StreamStatus) EndState() (StreamEndReason, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.EndReason, s.EndError
 }
 
 func (s *StreamStatus) RecordError(msg string) {
@@ -191,6 +227,7 @@ func (s *StreamStatus) OutcomeSnapshot() StreamOutcome {
 	defer s.mu.Unlock()
 	return StreamOutcome{
 		EndReason:        s.EndReason,
+		EndError:         s.EndError,
 		HasErrors:        s.hasErrorsLocked(),
 		ExpectsTerminal:  s.expectsTerminal,
 		Response:         s.response,

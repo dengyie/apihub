@@ -39,7 +39,12 @@ func ClassifyRelayOutcome(ctx context.Context, info *relaycommon.RelayInfo, apiE
 		local := root.GetErrorType() == types.ErrorTypeNewAPIError
 		return classifyFailure(local, string(root.GetErrorCode()), root.ToOpenAIError().Type, root.StatusCode)
 	}
-	deadlineExceeded := info.StreamStatus != nil && errors.Is(info.StreamStatus.EndError, context.DeadlineExceeded)
+	// stream.EndError comes out of the same critical section as stream.EndReason.
+	// Reading the field directly would race with SetEndReason and could disagree
+	// with the reason on the very branch that pairs them: a deadline-exceeded
+	// stream must be counted as a failure even though ClientGone would otherwise
+	// make it ignored.
+	deadlineExceeded := errors.Is(stream.EndError, context.DeadlineExceeded)
 	if stream.Response == relaycommon.ResponseOutcomeCancelled || stream.EndReason == relaycommon.StreamEndReasonPingFail {
 		return OutcomeIgnored
 	}

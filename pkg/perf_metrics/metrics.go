@@ -16,6 +16,7 @@ import (
 	"github.com/dengyie/apihub/setting/perf_metrics_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/go-redis/redis/v8"
 )
 
 var hotBuckets sync.Map
@@ -118,8 +119,21 @@ func Record(sample Sample) {
 	}
 	actual, _ := hotBuckets.LoadOrStore(key, &atomicBucket{})
 	actual.(*atomicBucket).add(sample)
+	// Capture the Redis handle on the calling goroutine instead of letting the
+	// worker look it up. common.RedisEnabled and common.RDB are package globals
+	// that production writes once during startup, but the worker runs later and
+	// asynchronously, so reading them there is a data race against anything
+	// that reassigns them -- which is exactly what the tests do when they swap
+	// in an isolated database. Deciding here is also the correct semantics: the
+	// question is whether this sample should be mirrored to Redis, and that is a
+	// property of the moment it was recorded, not of whenever the pool gets
+	// round to running it.
+	rdb := common.RDB
+	if !common.RedisEnabled {
+		rdb = nil
+	}
 	gopool.Go(func() {
-		recordRedis(key, sample)
+		recordRedis(rdb, key, sample)
 	})
 }
 
@@ -485,15 +499,18 @@ func avgTps(value counters) float64 {
 	return float64(value.outputTokens) / (float64(value.generationMs) / 1000)
 }
 
-func recordRedis(key bucketKey, sample Sample) {
-	if !common.RedisEnabled || common.RDB == nil {
+// recordRedis mirrors one sample into Redis. The handle arrives from Record
+// rather than being read from the globals here, so this runs on a pool worker
+// without touching configuration that may have been reassigned since.
+func recordRedis(rdb *redis.Client, key bucketKey, sample Sample) {
+	if rdb == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	redisKey := redisBucketKey(key)
-	pipe := common.RDB.TxPipeline()
+	pipe := rdb.TxPipeline()
 	pipe.HIncrBy(ctx, redisKey, "req", 1)
 	if sample.Success {
 		pipe.HIncrBy(ctx, redisKey, "ok", 1)
