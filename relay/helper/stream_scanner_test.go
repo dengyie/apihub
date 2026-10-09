@@ -800,3 +800,21 @@ func TestStreamScannerHandler_ContextDeadlineExceededNotClientAbort(t *testing.T
 	assert.Equal(t, relaycommon.StreamEndReasonTimeout, endReason, "DeadlineExceeded 应当归因于超时")
 }
 
+func TestStreamScannerHandler_SSEKeepAliveCommentsIgnored(t *testing.T) {
+	t.Parallel()
+
+	// 模拟上游发送心跳注释，随后发送真正的 data 块与 [DONE]
+	body := ": keep-alive\n\n: ping\n\ndata: {\"text\":\"hi\"}\n\ndata: [DONE]\n\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	var receivedData []string
+	_ = StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		receivedData = append(receivedData, data)
+	})
+
+	assert.Equal(t, 1, info.ReceivedResponseCount, "心跳注释帧不得计入有效响应块数")
+	assert.Equal(t, []string{"{\"text\":\"hi\"}"}, receivedData, "心跳注释帧不得分发给业务 handler")
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+}
+
+

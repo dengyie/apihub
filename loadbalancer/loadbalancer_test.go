@@ -1246,3 +1246,17 @@ func TestEndCancelledPreservesConsecutiveFailures(t *testing.T) {
 	assert.Equal(t, int32(2), stats.consecutiveFailures.Load(), "EndCancelled 绝不能将坏渠道的历史失败清零")
 }
 
+func TestStreamBrokenError_UnwrapPreservesUnderlyingTTFT(t *testing.T) {
+	ttftErr := &TTFTTimeoutError{ChannelID: 101, TimeoutMs: 25000}
+	brokenErr := &StreamBrokenError{
+		ChannelID: 101,
+		Reason:    "stream ended prematurely",
+		Err:       ttftErr,
+	}
+
+	assert.True(t, IsStreamBroken(brokenErr))
+	assert.True(t, IsTTFTTimeout(brokenErr), "StreamBrokenError 必须能正确 Unwrap 并被 IsTTFTTimeout 解包识别")
+	assert.Equal(t, ttftErr, errors.Unwrap(brokenErr))
+}
+
+
