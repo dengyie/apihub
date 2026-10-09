@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -25,10 +29,13 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { DirectionProvider } from '@/context/direction-provider'
+import { ThemeProvider } from '@/context/theme-provider'
+import { STATUS_QUERY_KEY } from '@/lib/status-query'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { AstryxAppShell } from '../astryx-app-shell'
 
@@ -36,33 +43,44 @@ describe('AstryxAppShell and Navigation', () => {
   let queryClient: QueryClient
 
   beforeEach(() => {
+    useSystemConfigStore
+      .getState()
+      .setConfig({ systemName: 'Gateway workspace' })
+    useSystemConfigStore.getState().setLoading(false)
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
       },
     })
+    queryClient.setQueryData(STATUS_QUERY_KEY, {})
   })
 
   afterEach(() => {
     cleanup()
     queryClient.clear()
+    useSystemConfigStore.getState().setConfig({ systemName: 'New API' })
   })
 
-  function renderWithRouter(initialEntry: string) {
+  function renderWithRouter(
+    initialEntry: string,
+    Page = () => <div data-testid='dashboard-content'>Dashboard</div>
+  ) {
     const rootRoute = createRootRoute({
       component: () => (
-        <DirectionProvider>
-          <AstryxAppShell>
-            <Outlet />
-          </AstryxAppShell>
-        </DirectionProvider>
+        <ThemeProvider>
+          <DirectionProvider>
+            <AstryxAppShell>
+              <Outlet />
+            </AstryxAppShell>
+          </DirectionProvider>
+        </ThemeProvider>
       ),
     })
 
     const dashboardRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: '/dashboard',
-      component: () => <div data-testid='dashboard-content'>Dashboard</div>,
+      component: Page,
     })
 
     const systemSettingsRoute = createRoute({
@@ -92,8 +110,95 @@ describe('AstryxAppShell and Navigation', () => {
     expect(await screen.findByTestId('dashboard-content')).toBeInTheDocument()
 
     // AstryxNavigation should contain links with valid href
-    const logoLink = screen.getAllByRole('link', { name: /SnowAPI/i })[0]
+    const logoLink = screen.getAllByRole('link', {
+      name: 'Gateway workspace',
+    })[0]
     expect(logoLink).toHaveAttribute('href', '/dashboard')
+  })
+
+  it('keeps account and appearance controls reachable from the sidebar', async () => {
+    renderWithRouter('/dashboard')
+    expect(await screen.findByTestId('dashboard-content')).toBeVisible()
+    expect(
+      screen.getAllByRole('button', { name: 'Toggle theme' }).length
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByRole('button', { name: 'Change language' }).length
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByRole('button', { name: 'Sign out' })[0]
+    ).toHaveAttribute('aria-label', 'Sign out')
+  })
+
+  it('shows the page skeleton only until an observed query has initial data', async () => {
+    let finish = (_value: string) => {}
+    const response = new Promise<string>((resolve) => {
+      finish = resolve
+    })
+    function Page() {
+      const query = useQuery({
+        queryKey: ['first-page'],
+        queryFn: () => response,
+      })
+      return <p>{query.data ?? 'Waiting for page data'}</p>
+    }
+    renderWithRouter('/dashboard', Page)
+    expect(
+      await screen.findByRole('status', { name: 'Loading page' })
+    ).toBeVisible()
+    await act(async () => {
+      finish('Page data ready')
+    })
+    expect(await screen.findByText('Page data ready')).toBeVisible()
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('status', { name: 'Loading page' })
+      ).not.toBeInTheDocument()
+    )
+  })
+
+  it('keeps existing content visible during an observed background refetch', async () => {
+    let finish = (_value: string) => {}
+    const response = new Promise<string>((resolve) => {
+      finish = resolve
+    })
+    queryClient.setQueryData(['cached-page'], 'Previously loaded data')
+    function Page() {
+      const query = useQuery({
+        queryKey: ['cached-page'],
+        queryFn: () => response,
+      })
+      return <p>{query.data}</p>
+    }
+    renderWithRouter('/dashboard', Page)
+    expect(await screen.findByText('Previously loaded data')).toBeVisible()
+    expect(
+      screen.queryByRole('status', { name: 'Loading page' })
+    ).not.toBeInTheDocument()
+    await act(async () => {
+      finish('Fresh page data')
+    })
+    expect(await screen.findByText('Fresh page data')).toBeVisible()
+  })
+
+  it('does not cover the page for an inactive prefetch without data', async () => {
+    let finish = (_value: string) => {}
+    const response = new Promise<string>((resolve) => {
+      finish = resolve
+    })
+    const prefetch = queryClient.prefetchQuery({
+      queryKey: ['prefetch'],
+      queryFn: () => response,
+    })
+    renderWithRouter('/dashboard')
+    expect(await screen.findByTestId('dashboard-content')).toBeVisible()
+    expect(
+      screen.queryByRole('status', { name: 'Loading page' })
+    ).not.toBeInTheDocument()
+    await act(async () => {
+      finish('Prefetched data')
+      await prefetch
+    })
   })
 
   it('renders subview topContent with parent link and ArrowLeft icon', async () => {
@@ -118,11 +223,13 @@ describe('AstryxAppShell and Navigation', () => {
   it('renders authenticated error route cleanly without crashing on missing layout providers', async () => {
     const rootRoute = createRootRoute({
       component: () => (
-        <DirectionProvider>
-          <AstryxAppShell>
-            <Outlet />
-          </AstryxAppShell>
-        </DirectionProvider>
+        <ThemeProvider>
+          <DirectionProvider>
+            <AstryxAppShell>
+              <Outlet />
+            </AstryxAppShell>
+          </DirectionProvider>
+        </ThemeProvider>
       ),
     })
 

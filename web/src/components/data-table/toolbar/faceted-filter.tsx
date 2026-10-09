@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type Column } from '@tanstack/react-table'
+import type { Column } from '@tanstack/react-table'
 import { Check as CheckIcon, PlusCircle as PlusCircledIcon } from 'lucide-react'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -147,7 +147,8 @@ function DataTableFacetedFilterInner<TData, TValue>({
                       <span className='text-muted-foreground flex size-4 items-center justify-center'>
                         {option.iconNode}
                       </span>
-                    ) : option.icon ? (
+                    ) : null}
+                    {!option.iconNode && option.icon ? (
                       <option.icon className='text-muted-foreground size-4' />
                     ) : null}
                     <span
@@ -160,7 +161,9 @@ function DataTableFacetedFilterInner<TData, TValue>({
                       <span className='text-muted-foreground ms-auto flex h-4 min-w-4 items-center justify-center font-mono text-xs'>
                         {option.count}
                       </span>
-                    ) : facets?.get(option.value) ? (
+                    ) : null}
+                    {typeof option.count !== 'number' &&
+                    facets?.get(option.value) ? (
                       <span className='ms-auto flex h-4 w-4 items-center justify-center font-mono text-xs'>
                         {facets.get(option.value)}
                       </span>
@@ -209,5 +212,5 @@ function getNextSelectedValues(
     nextSelectedValues.add(optionValue)
   }
 
-  return Array.from(nextSelectedValues)
+  return [...nextSelectedValues]
 }

@@ -33,6 +33,7 @@ import type {
   NavLink,
 } from '@/components/layout/types'
 import { useSidebarView } from '@/hooks/use-sidebar-view'
+import { useSystemConfig } from '@/hooks/use-system-config'
 import { DEFAULT_LOGO } from '@/lib/constants'
 
 import { checkIsActive } from '../lib/url-utils'
@@ -111,11 +112,21 @@ function NavigationItem(props: { item: NavItem; currentHref: string }) {
 
 export function AstryxNavigation(props: { logo: string; footer?: ReactNode }) {
   const { t } = useTranslation()
+  const { systemName } = useSystemConfig()
   const currentHref = useLocation({ select: (location) => location.href })
   const { key, view, navGroups } = useSidebarView()
+  const visibleGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) =>
+          item.type !== 'chat-presets' && (!item.items || item.items.length > 0)
+      ),
+    }))
+    .filter((group) => group.items.length > 0)
   const [isCollapsed, setIsCollapsed] = useState(false)
   const sideNavStyle = {
-    '--snowapi-side-nav-width': isCollapsed ? '3rem' : '15rem',
+    '--snowapi-side-nav-width': isCollapsed ? '4.25rem' : '16rem',
   } as CSSProperties
 
   return (
@@ -134,7 +145,7 @@ export function AstryxNavigation(props: { logo: string; footer?: ReactNode }) {
           <Link
             to='/dashboard'
             className='snowapi-astryx-logo-link'
-            aria-label='SnowAPI'
+            aria-label={systemName}
           >
             <img
               src={props.logo || DEFAULT_LOGO}
@@ -146,6 +157,7 @@ export function AstryxNavigation(props: { logo: string; footer?: ReactNode }) {
                 event.currentTarget.src = DEFAULT_LOGO
               }}
             />
+            <span className='snowapi-brand-name'>{systemName}</span>
           </Link>
           <SideNavCollapseButton className='snowapi-astryx-collapse-button' />
         </div>
@@ -162,11 +174,11 @@ export function AstryxNavigation(props: { logo: string; footer?: ReactNode }) {
       footer={props.footer}
     >
       <div key={key} className='snowapi-astryx-side-nav-content'>
-        {navGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <SideNavSection
             key={group.id || group.title}
             title={group.title}
-            isHeaderHidden
+            isHeaderHidden={isCollapsed || !group.title}
           >
             {group.items.map((item) => (
               <NavigationItem

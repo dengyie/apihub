@@ -17,47 +17,74 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
+import { ArrowUpRight, Pause, Play } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { LanguageSwitcher } from '@/components/language-switcher'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ShaderArtwork } from '@/components/visuals/shader-artwork'
 import { useSystemConfig } from '@/hooks/use-system-config'
 
-type AuthLayoutProps = {
-  children: React.ReactNode
-}
+type AuthLayoutProps = { children: React.ReactNode }
 
-export function AuthLayout({ children }: AuthLayoutProps) {
+export function AuthLayout(props: AuthLayoutProps) {
   const { t } = useTranslation()
   const { systemName, logo, loading } = useSystemConfig()
+  const [paused, setPaused] = useState(false)
 
   return (
-    <div className='relative grid h-svh max-w-none'>
-      <Link
-        to='/'
-        className='absolute top-4 left-4 z-10 flex items-center gap-2 transition-opacity hover:opacity-80 sm:top-8 sm:left-8'
-      >
-        <div className='relative h-8 w-8'>
+    <div className='auth-shell'>
+      <header className='auth-header'>
+        <Link to='/' className='auth-brand'>
           {loading ? (
-            <Skeleton className='absolute inset-0 rounded-full' />
+            <Skeleton className='size-8 rounded-lg' />
           ) : (
-            <img
-              src={logo}
-              alt={t('Logo')}
-              className='h-8 w-8 rounded-full object-cover'
-            />
+            <img src={logo} alt='' width={32} height={32} />
           )}
+          {loading ? (
+            <Skeleton className='h-6 w-24' />
+          ) : (
+            <span>{systemName}</span>
+          )}
+        </Link>
+        <div className='auth-header-actions'>
+          <LanguageSwitcher />
+          <Link to='/'>
+            {t('Back to home')}
+            <ArrowUpRight size={14} />
+          </Link>
         </div>
-        {loading ? (
-          <Skeleton className='h-6 w-24' />
-        ) : (
-          <h1 className='text-xl font-medium'>{systemName}</h1>
-        )}
-      </Link>
-      <div className='container flex items-center pt-16 sm:pt-0'>
-        <div className='mx-auto flex w-full flex-col justify-center space-y-2 px-4 py-8 sm:w-[480px] sm:p-8'>
-          {children}
+      </header>
+      <main className='auth-stage'>
+        <div className='auth-art-panel'>
+          <div className='auth-artwork'>
+            <ShaderArtwork variant='metal' paused={paused} />
+          </div>
+          <div className='auth-art-copy'>
+            <p>{t('Your workspace, connected.')}</p>
+            <span>{t('One key. A world of possibilities.')}</span>
+          </div>
+          <Button
+            variant='ghost'
+            size='icon'
+            className='auth-motion-toggle'
+            aria-label={paused ? t('Play animation') : t('Pause animation')}
+            aria-pressed={paused}
+            onClick={() => setPaused((value) => !value)}
+          >
+            {paused ? <Play /> : <Pause />}
+          </Button>
         </div>
-      </div>
+        <div className='auth-form-panel'>
+          <div className='auth-form-content'>{props.children}</div>
+        </div>
+      </main>
+      <footer className='auth-bottom'>
+        <span>{systemName}</span>
+        <span>{t('An open gateway to AI')}</span>
+      </footer>
     </div>
   )
 }

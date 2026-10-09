@@ -137,10 +137,7 @@ export function UsageLogsMobileList<TData>({
               tintClass
             )}
           >
-            <CommonLogMobileCard
-              log={row.original as UsageLog}
-              cells={cells}
-            />
+            <CommonLogMobileCard log={row.original as UsageLog} cells={cells} />
           </div>
         )
       })}

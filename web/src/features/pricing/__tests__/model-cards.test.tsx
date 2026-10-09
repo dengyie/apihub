@@ -38,6 +38,7 @@ import {
 import { CachedPriceCell } from '../components/cached-price-cell'
 import { ModelCard } from '../components/model-card'
 import { ModelCardGrid } from '../components/model-card-grid'
+import { PricingTable } from '../components/pricing-table'
 import type { PricingModel } from '../types'
 
 function pricingModel(overrides: Partial<PricingModel> = {}): PricingModel {
@@ -88,6 +89,36 @@ afterEach(() => {
 })
 
 describe('model cards', () => {
+  it('shows funding capsules only for explicit operator tags', () => {
+    render(
+      <ModelCard
+        model={pricingModel({ tags: 'Sponsored,open-source,自建,free,fast' })}
+        onClick={vi.fn()}
+      />
+    )
+    const funding = within(screen.getByRole('group', { name: 'Model funding' }))
+    expect(funding.getByText('Sponsored')).toBeVisible()
+    expect(funding.getByText('Open source')).toBeVisible()
+    expect(funding.getByText('Self-hosted')).toBeVisible()
+    expect(funding.getByText('Free')).toBeVisible()
+    expect(funding.queryByText('fast')).not.toBeInTheDocument()
+  })
+
+  it('does not infer model funding from its name or zero price', () => {
+    render(
+      <ModelCard
+        model={pricingModel({
+          model_name: 'free-sponsored-open-source',
+          model_ratio: 0,
+        })}
+        onClick={vi.fn()}
+      />
+    )
+    expect(
+      screen.queryByRole('group', { name: 'Model funding' })
+    ).not.toBeInTheDocument()
+  })
+
   it('shows separate generic and image cache prices including a free image cache', () => {
     render(
       <CachedPriceCell
@@ -166,8 +197,8 @@ describe('model cards', () => {
     expect(within(metrics).getByText('—t/s')).toBeVisible()
     expect(within(metrics).queryByText(/100/)).not.toBeInTheDocument()
     expect(
-      within(metrics).getByRole('img', {
-        name: 'Recent success-rate samples; gray bars indicate missing data.',
+      within(metrics).getByRole('group', {
+        name: 'Hourly model health',
       })
     ).toBeVisible()
     expect(screen.getByText('No description available.')).toBeVisible()
@@ -176,8 +207,8 @@ describe('model cards', () => {
 
   it('uses fixed spacing between hourly status bars', () => {
     render(<ModelCard model={pricingModel()} onClick={vi.fn()} />)
-    const statusStrip = screen.getByRole('img', {
-      name: 'Recent success-rate samples; gray bars indicate missing data.',
+    const statusStrip = screen.getByRole('group', {
+      name: 'Hourly model health',
     })
     expect(statusStrip).toHaveClass('gap-px')
     expect(statusStrip).not.toHaveClass('justify-between')
@@ -263,7 +294,9 @@ describe('model cards', () => {
         'Performance metrics for the last 24 hours'
       )
       expect(within(metrics).getByText(expected)).toBeVisible()
-      expect(within(metrics).getByText('Status')).toBeVisible()
+      expect(
+        within(metrics).getByText('Success rate').parentElement
+      ).toBeVisible()
       expect(within(metrics).getByText('1.20s')).toBeVisible()
       expect(within(metrics).getByText('42.0t/s')).toBeVisible()
     }
@@ -438,6 +471,10 @@ describe('model cards', () => {
       params: { hours: 24 },
     })
     expect(
+      await screen.findByText('Failed to load performance data')
+    ).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    expect(
       within(
         screen.getByLabelText('Performance metrics for the last 24 hours')
       ).getAllByText(/^—/)
@@ -446,6 +483,44 @@ describe('model cards', () => {
     await user.click(screen.getByRole('button', { name: 'Details' }))
     expect(onModelClick).toHaveBeenCalledWith('example-model')
   })
+
+  it.each([
+    { name: 'cards', Component: ModelCardGrid },
+    { name: 'table', Component: PricingTable },
+  ])(
+    'marks cached $name metrics as stale when the next refresh fails',
+    async ({ Component }) => {
+      queryClient.setQueryData(['perf-metrics-summary', 24], {
+        success: true,
+        data: {
+          models: [
+            {
+              model_name: 'example-model',
+              success_rate: 99.9,
+              avg_latency_ms: 1000,
+              avg_tps: 42,
+            },
+          ],
+        },
+      })
+      vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('Offline'))
+      render(
+        <QueryClientProvider client={queryClient}>
+          <Component models={[pricingModel()]} onModelClick={vi.fn()} />
+        </QueryClientProvider>
+      )
+      await act(async () => {
+        await queryClient.refetchQueries({
+          queryKey: ['perf-metrics-summary', 24],
+        })
+      })
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Refresh failed. Showing the last successful snapshot.'
+      )
+      expect(screen.getByText('99.90%')).toBeVisible()
+      expect(screen.getByText('example-model')).toBeVisible()
+    }
+  )
 
   it('paginates the model cards and disables navigation at both boundaries', async () => {
     queryClient.setQueryData(['perf-metrics-summary', 24], {
@@ -512,17 +587,17 @@ describe('model cards', () => {
     )
 
     const spans = [
-      ...screen.getByRole('img', {
-        name: 'Recent success-rate samples; gray bars indicate missing data.',
+      ...screen.getByRole('group', {
+        name: 'Hourly model health',
       }).children,
     ]
     expect(spans).toHaveLength(24)
     spans.forEach((slot, index) => {
       if (index === 18 || index === 23) {
-        expect(slot.classList.contains('bg-muted-foreground/15')).toBe(false)
+        expect(slot.getAttribute('data-level') === 'unknown').toBe(false)
         return
       }
-      expect(slot.classList.contains('bg-muted-foreground/15')).toBe(true)
+      expect(slot.getAttribute('data-level') === 'unknown').toBe(true)
     })
     vi.useRealTimers()
   })
@@ -549,13 +624,13 @@ describe('model cards', () => {
     )
 
     const spans = [
-      ...screen.getByRole('img', {
-        name: 'Recent success-rate samples; gray bars indicate missing data.',
+      ...screen.getByRole('group', {
+        name: 'Hourly model health',
       }).children,
     ]
     expect(spans).toHaveLength(24)
     spans.forEach((slot) => {
-      expect(slot.classList.contains('bg-muted-foreground/15')).toBe(true)
+      expect(slot.getAttribute('data-level') === 'unknown').toBe(true)
     })
     vi.useRealTimers()
   })
@@ -570,13 +645,13 @@ describe('model cards', () => {
     )
 
     const spans = [
-      ...screen.getByRole('img', {
-        name: 'Recent success-rate samples; gray bars indicate missing data.',
+      ...screen.getByRole('group', {
+        name: 'Hourly model health',
       }).children,
     ]
     expect(spans).toHaveLength(24)
     spans.forEach((slot) => {
-      expect(slot.classList.contains('bg-muted-foreground/15')).toBe(true)
+      expect(slot.getAttribute('data-level') === 'unknown').toBe(true)
     })
   })
 
@@ -602,17 +677,17 @@ describe('model cards', () => {
     )
 
     const spans = [
-      ...screen.getByRole('img', {
-        name: 'Recent success-rate samples; gray bars indicate missing data.',
+      ...screen.getByRole('group', {
+        name: 'Hourly model health',
       }).children,
     ]
     expect(spans).toHaveLength(24)
     spans.forEach((slot, index) => {
       if (index === 18) {
-        expect(slot.classList.contains('bg-muted-foreground/15')).toBe(false)
+        expect(slot.getAttribute('data-level') === 'unknown').toBe(false)
         return
       }
-      expect(slot.classList.contains('bg-muted-foreground/15')).toBe(true)
+      expect(slot.getAttribute('data-level') === 'unknown').toBe(true)
     })
     vi.useRealTimers()
   })

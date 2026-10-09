@@ -18,11 +18,36 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
-export function ContentLoading(props: { className?: string }) {
+export function ContentLoading(props: {
+  className?: string
+  variant?: 'spinner' | 'page'
+}) {
   const { t } = useTranslation()
+
+  if (props.variant === 'page') {
+    return (
+      <div
+        className={props.className}
+        role='status'
+        aria-label={t('Loading page')}
+      >
+        <span className='sr-only'>{t('Loading page')}</span>
+        <div aria-hidden='true' className='space-y-6 p-6 sm:p-8'>
+          <Skeleton className='h-7 w-40' />
+          <div className='grid grid-cols-2 gap-4 lg:grid-cols-4'>
+            {['balance', 'requests', 'tokens', 'latency'].map((key) => (
+              <Skeleton key={key} className='h-28 rounded-xl' />
+            ))}
+          </div>
+          <Skeleton className='h-64 w-full rounded-xl' />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div

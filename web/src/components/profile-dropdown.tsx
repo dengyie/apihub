@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useNavigate } from '@tanstack/react-router'
-import { User, Wallet, LogOut, Settings, ShieldCheck } from 'lucide-react'
+import {
+  User,
+  Wallet,
+  LogOut,
+  Settings,
+  ShieldCheck,
+  ChevronsUpDown,
+} from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -40,7 +47,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 const avatarFallbackClassName = 'font-semibold text-white'
 
-export function ProfileDropdown() {
+export function ProfileDropdown(props: { presentation?: 'icon' | 'sidebar' }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [open, setOpen] = useDialogState()
@@ -60,7 +67,17 @@ export function ProfileDropdown() {
     <>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger
-          render={<Button variant='ghost' className='relative size-6 p-0' />}
+          render={
+            <Button
+              variant='ghost'
+              aria-label={t('Account menu')}
+              className={
+                props.presentation === 'sidebar'
+                  ? 'snowapi-sidebar-account'
+                  : 'relative size-8 p-0'
+              }
+            />
+          }
         >
           <Avatar className='size-6'>
             <AvatarFallback
@@ -70,6 +87,18 @@ export function ProfileDropdown() {
               {avatarFallback}
             </AvatarFallback>
           </Avatar>
+          {props.presentation === 'sidebar' && (
+            <>
+              <span className='snowapi-sidebar-account-name'>
+                <span>{displayName}</span>
+                <small>{roleLabel}</small>
+              </span>
+              <ChevronsUpDown
+                className='snowapi-sidebar-account-chevron size-3.5 shrink-0'
+                aria-hidden='true'
+              />
+            </>
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end' sideOffset={8} className='w-56'>
           <div className='flex items-center gap-2 px-1.5 py-1.5'>

@@ -49,6 +49,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getPerfMetrics } from '@/features/performance-metrics/api'
+import { PerformanceDataNotice } from '@/features/performance-metrics/components/performance-data-notice'
 import {
   formatLatency,
   formatThroughput,
@@ -268,10 +269,13 @@ function OverviewMetric(props: {
 function OverviewSummaryGrid(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const metricsQuery = useQuery({
-    queryKey: ['perf-metrics', props.model.model_name],
+    queryKey: ['perf-metrics', props.model.model_name, 24],
     queryFn: async () =>
       requireServerSuccess(await getPerfMetrics(props.model.model_name, 24)),
     staleTime: 60 * 1000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    retry: false,
   })
 
   const summary = metricsQuery.data?.data.summary
@@ -280,23 +284,30 @@ function OverviewSummaryGrid(props: { model: PricingModel }) {
   const avgLatency = summary?.avg_latency_ms ?? 0
 
   return (
-    <div className='bg-muted/20 grid overflow-hidden rounded-lg border sm:grid-cols-3 sm:divide-x'>
-      <OverviewMetric
-        icon={Timer}
-        label='TPS'
-        value={formatThroughput(avgTps)}
+    <div className='space-y-3'>
+      <PerformanceDataNotice
+        error={metricsQuery.error}
+        updatedAt={metricsQuery.dataUpdatedAt}
+        onRetry={metricsQuery.refetch}
       />
-      <OverviewMetric
-        icon={Timer}
-        label={t('Average latency')}
-        value={formatLatency(avgLatency)}
-      />
-      <OverviewMetric
-        icon={HeartPulse}
-        label={t('Success rate')}
-        value={formatUptimePct(successRate)}
-        valueClassName={getSuccessRateTextClass(successRate)}
-      />
+      <div className='bg-muted/20 grid overflow-hidden rounded-lg border sm:grid-cols-3 sm:divide-x'>
+        <OverviewMetric
+          icon={Timer}
+          label='TPS'
+          value={formatThroughput(avgTps)}
+        />
+        <OverviewMetric
+          icon={Timer}
+          label={t('Average latency')}
+          value={formatLatency(avgLatency)}
+        />
+        <OverviewMetric
+          icon={HeartPulse}
+          label={t('Success rate')}
+          value={formatUptimePct(successRate)}
+          valueClassName={getSuccessRateTextClass(successRate)}
+        />
+      </div>
     </div>
   )
 }

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link, createFileRoute, redirect } from '@tanstack/react-router'
-import { Loader2, MessageCircleWarning } from 'lucide-react'
+import { ExternalLink, Loader2, MessageCircleWarning } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,6 +27,7 @@ import { useActiveChatKey } from '@/features/chat/hooks/use-active-chat-key'
 import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
 import {
   chatLinkRequiresApiKey,
+  getChatFrameSandbox,
   resolveChatUrl,
 } from '@/features/chat/lib/chat-links'
 
@@ -154,12 +155,28 @@ function ChatRouteComponent() {
   }
 
   return (
-    <iframe
-      src={iframeSrc}
-      key={iframeSrc}
-      className='h-full w-full border-0'
-      allow='camera; microphone'
-      title={`Chat preset: ${preset.name}`}
-    />
+    <div className='flex h-full min-h-0 flex-col'>
+      <div className='flex items-center justify-between gap-3 border-b px-4 py-2'>
+        <span className='truncate text-sm font-medium'>{preset.name}</span>
+        <Button
+          variant='ghost'
+          size='sm'
+          render={
+            <a href={iframeSrc} target='_blank' rel='noopener noreferrer' />
+          }
+        >
+          {t('Open in new tab')}
+          <ExternalLink className='size-3.5' aria-hidden='true' />
+        </Button>
+      </div>
+      <iframe
+        src={iframeSrc}
+        sandbox={getChatFrameSandbox(iframeSrc, window.location.origin)}
+        key={iframeSrc}
+        className='min-h-0 w-full flex-1 border-0'
+        allow='camera; microphone'
+        title={preset.name}
+      />
+    </div>
   )
 }

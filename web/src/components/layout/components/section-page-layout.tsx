@@ -81,7 +81,10 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
   return (
     <PageFooterProvider container={footerContainer}>
       <Main>
-        <div className='shrink-0 px-3 pt-3 pb-2.5 sm:px-4 sm:pt-5 sm:pb-3'>
+        <header
+          data-slot='page-header'
+          className='shrink-0 px-4 pt-5 pb-4 sm:px-7 sm:pt-7 sm:pb-5'
+        >
           {breadcrumb != null && (
             <div className='mb-2 sm:mb-3'>{breadcrumb}</div>
           )}
@@ -93,9 +96,9 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
                   : 'min-w-0 flex-1'
               }
             >
-              <h2 className='truncate text-base font-bold tracking-tight sm:text-lg'>
+              <h1 className='text-xl font-medium tracking-tight break-words sm:text-2xl'>
                 {title}
-              </h2>
+              </h1>
             </div>
             {actions != null && (
               <div className='flex shrink-0 flex-wrap items-center justify-end gap-2 sm:gap-x-4'>
@@ -103,21 +106,23 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
               </div>
             )}
           </div>
-        </div>
+        </header>
 
         <div
+          data-slot='page-content'
           className={
             props.fixedContent
-              ? 'min-h-0 flex-1 overflow-hidden px-3 pt-1 pb-3 sm:px-4 sm:pt-1.5 sm:pb-4'
-              : 'min-h-0 flex-1 overflow-auto px-3 pt-1 pb-3 sm:px-4 sm:pt-1.5 sm:pb-4'
+              ? 'min-h-0 flex-1 overflow-hidden px-4 pt-1 pb-4 sm:px-7 sm:pt-1.5 sm:pb-6'
+              : 'min-h-0 flex-1 overflow-auto px-4 pt-1 pb-4 sm:px-7 sm:pt-1.5 sm:pb-6'
           }
         >
           {content}
         </div>
 
         <div
+          data-slot='page-footer'
           ref={setFooterContainer}
-          className='bg-background shrink-0 border-t px-3 py-2.5 empty:hidden sm:px-4 sm:py-3'
+          className='bg-background shrink-0 border-t px-4 py-3 empty:hidden sm:px-7'
         />
       </Main>
     </PageFooterProvider>

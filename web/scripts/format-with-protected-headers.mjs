@@ -40,11 +40,13 @@ const excludedDirs = new Set([
 ])
 const headerExtensions = new Set([
   '.cjs',
+  '.css',
   '.cts',
   '.js',
   '.jsx',
   '.mjs',
   '.mts',
+  '.scss',
   '.ts',
   '.tsx',
 ])

@@ -47,6 +47,24 @@ export type ActiveApiKey = {
 
 const HTTP_REGEX = /^https?:\/\//i
 
+/** Keep external chat storage working without giving a same-origin frame
+ * both script execution and access to its embedding document. */
+export function getChatFrameSandbox(src: string, parentOrigin: string): string {
+  const permissions = 'allow-scripts allow-forms allow-popups allow-downloads'
+  try {
+    const url = new URL(src, parentOrigin)
+    if (
+      (url.protocol === 'https:' || url.protocol === 'http:') &&
+      url.origin !== new URL(parentOrigin).origin
+    ) {
+      return `${permissions} allow-same-origin`
+    }
+  } catch {
+    // Invalid and non-web destinations retain an opaque sandbox origin.
+  }
+  return permissions
+}
+
 function toBase64(value: string) {
   if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
     return window.btoa(value)

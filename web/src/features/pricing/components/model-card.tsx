@@ -42,6 +42,7 @@ import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskPriceLabel, taskUsageUnitLabel } from '../lib/task-price-display'
 import type { PricingModel, PriceType, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
+import { ModelFundingBadges } from './model-funding-badges'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
 
 export interface ModelCardProps {
@@ -254,7 +255,10 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   }
 
   return (
-    <Card className='hover:ring-foreground/20 h-full min-w-0 gap-3 transition-colors'>
+    <Card
+      className='catalog-model-card h-full min-w-0 gap-4'
+      data-card-hover='false'
+    >
       <CardHeader className='flex flex-row items-start gap-3'>
         <div
           aria-hidden
@@ -290,6 +294,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         />
       </CardHeader>
       <CardContent className='flex flex-1 flex-col gap-3'>
+        <ModelFundingBadges tags={tags} />
         <div className='flex min-w-0 flex-col gap-1.5'>
           <p className='text-muted-foreground line-clamp-2 text-[13px] leading-5 break-words'>
             {props.model.description || t('No description available.')}

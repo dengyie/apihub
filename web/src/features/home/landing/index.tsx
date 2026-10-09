@@ -28,7 +28,7 @@ import { LandingSections } from './components/landing-sections'
 
 export function LandingPage() {
   const { t } = useTranslation()
-  const { systemName } = useSystemConfig()
+  const { systemName, logo } = useSystemConfig()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
   const brand = systemName || 'APIHub'
@@ -40,7 +40,11 @@ export function LandingPage() {
       </a>
 
       <div className='landing-shell'>
-        <LandingHeader brand={brand} isAuthenticated={isAuthenticated} />
+        <LandingHeader
+          logo={logo}
+          brand={brand}
+          isAuthenticated={isAuthenticated}
+        />
 
         <main id='landing-content' className='landing-main'>
           <LandingHero brand={brand} isAuthenticated={isAuthenticated} />

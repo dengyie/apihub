@@ -1,14 +1,24 @@
 # new-api 对标 SnowAPI UI 深度重构开发设计规范与实施方案
 
-> **文档性质**：前端工程架构与系统级设计规范（Architecture & Implementation Specification）  
-> **更新时间**：2026-10-06  
-> **状态**：规范草案 / 指导实施（Canonical Design Document）  
-> **对标参考仓**：`Ooxygen7/SnowAPI` (`/private/tmp/snowapi-ref`)  
-> **目标工程**：`dengyie/new-api` (`/Users/mango/newapi-test`)
+> **文档性质**：前端工程架构与系统级设计规范（Architecture & Implementation Specification）
+>
+> **更新时间**：2026-10-09
+>
+> **状态**：前端已实施并完成本地验收；未发布（验收证据见第 10 节）
+>
+> **对标参考仓**：`Ooxygen7/SnowAPI` (`/private/tmp/snowapi-ref`)
+>
+> **目标工程**：`dengyie/apihub`（原 `dengyie/new-api`）
+>
+> **实施工作区**：`/Users/mango/project/apihub-ui-overhaul`，分支 `codex/apihub-ui-overhaul`
+>
+> **起点**：2026-10-09 核验的 GitHub main `837700e1db0b434b0f939bf4bb2beea51faa0ddc`（v29.37）。主工作区 `/Users/mango/newapi-test` 的既有改动保留给原任务。
 
 ---
 
 ## 1. 深度逆向诊断：差距的本质是什么？
+
+本节保留 2026-10-06 的初始诊断，作为设计依据；当前实施情况与验证边界以第 10 节为准。
 
 在初期的快速改造中，我们通过增加暖纸色背景、将控制台主色调锁为墨黑单色、以及给部分按钮补充药丸形状（`border-radius: 999px`），在表面色阶上实现了初步对齐。但在整体视觉感受与交互质感上，依然无法达到上游参考项目 `SnowAPI` 的水准。
 
@@ -95,16 +105,18 @@ SnowAPI Astryx 结构：
 ```tsx
 const initialQueryFetches = useIsFetching({
   predicate: (query) =>
+    query.getObserversCount() > 0 &&
     query.state.fetchStatus === 'fetching' && query.state.data === undefined,
 })
 
-<div className="snowapi-astryx-content @container/content">
+<div data-slot="console-content" className="snowapi-astryx-content @container/content">
   <div
     className="snowapi-console-content-state"
+    aria-busy={initialQueryFetches > 0}
     data-loading={initialQueryFetches > 0 || undefined}
   >
     {initialQueryFetches > 0 ? (
-      <ContentLoading className="snowapi-console-loading-indicator absolute inset-0 z-10 min-h-0" />
+      <ContentLoading variant="page" className="snowapi-console-loading-indicator" />
     ) : null}
     <div className="snowapi-console-loaded-content flex min-h-0 flex-1 flex-col">
       <AnimatedOutlet />
@@ -113,7 +125,7 @@ const initialQueryFetches = useIsFetching({
 </div>
 ```
 
-此机制保证了在后台路由切换或初始加载时，整个内容区呈现出优雅的半透明骨架屏，而非生硬的 DOM 闪烁。
+仅当存在已订阅、正在请求且没有缓存数据的 Query 时显示页面骨架。已有内容的后台刷新及未订阅的预取均不遮挡页面，保留操作上下文。
 
 ---
 
@@ -122,13 +134,13 @@ const initialQueryFetches = useIsFetching({
 ### 4.1 核心动效组件解剖
 
 1. **CardSwap (3D 层叠悬浮翻转)**:
-   - 位置：`features/home/components/card-swap.tsx`
-   - 机制：利用 `motion/react` 的 3D 透视（`perspective: 1200px`），维护一个 3 张卡片的循环堆叠栈。每隔固定周期，顶层卡片沿 Y 轴与 Z 轴向后翻转平移，底层卡片前推，伴随平滑景深模糊。
+   - 位置：`features/home/landing/components/card-swap.tsx`
+   - 机制：GSAP 时间线驱动 3D 卡片层叠、位移与景深变化，复用可见性时钟推进播放时间；GSAP 全局 ticker 休眠，避免另起常驻帧循环。
 2. **ShuffleText (字符解码解码打乱)**:
-   - 位置：`features/home/components/shuffle-text.tsx`
+   - 位置：`features/home/landing/components/shuffle-text.tsx`
    - 机制：基于预设字形字符集（英文大写/数字/特殊字符），在文字进入视口时执行逐字随机打乱动画，由左向右依次锁定正确字符，呈现极客数字解码质感。
 3. **ThreadsBackground (WebGL 纤维流体线条)**:
-   - 位置：`features/home/components/threads-background.tsx`
+   - 位置：`components/visuals/shader-artwork.tsx` 与按需加载的 `shader-scene.ts`
    - 机制：使用轻量级 `ogl` 编写基于顶点与片元着色器的流体曲线，通过鼠标指针交互或自动缓动正弦波，生成平滑流动的背景网格线条。
 4. **StripedWordmark (条纹自适应字标)**:
    - 机制：恒定 viewBox `1120×210`，基于字符数动态缩放字号并严密建模 `-0.07em` tracking；包含 36 条斜向扫描横纹，在视口内触发时执行单次扫光，非视口下保持沉静斜纹。
@@ -232,7 +244,7 @@ Phase 4: 特化单页与视觉精细化打磨
 每次交付必须严格通过以下流水线门禁：
 1. **类型检查**：`bun run typecheck` (tsgo -b，0 错误)；
 2. **代码风格与规范**：`bun run lint` (oxlint) 与 `bun run format:check` (oxfmt) 100% 通过；
-3. **单元与集成测试**：`bun test` (vitest 全量测试通过，覆盖率不降低)；
+3. **单元与集成测试**：`bun run test --maxWorkers=2`（调用项目 Vitest 脚本；覆盖率需独立采集，不由测试数量推断）；
 4. **未用导出检查**：`bun run knip` 保证死代码不膨胀；
 5. **生产打包构建**：`bun run build` 产出完整静态资源，断言 `web/dist/index.html` > 1000 字节，杜绝白屏二进制事故；
 6. **实机浏览器验证**：在 1440px / 1024px / 768px / 390px 四档视口下完成登录态与公开态的功能及渲染核验。
@@ -263,3 +275,89 @@ Phase 4: 特化单页与视觉精细化打磨
    - 彻底删除 9 个无调用死代码文件：`logo.tsx`、`app-header.tsx`、`app-sidebar.tsx`、`nav-group.tsx`、`sidebar-view-header.tsx`、`chat-presets-item.tsx`、`header.tsx`、`layout-provider.tsx`、`config-drawer.tsx`。
    - 清理 `components/layout/index.ts` 废弃导出，保持公开模块接口紧凑整洁。
 
+---
+
+## 10. 本轮完整前端实施与验收记录（2026-10-09）
+
+### 10.1 已落地范围
+
+| 范围 | 实施结果 |
+|---|---|
+| 全局外壳与主题 | 将样式边界绑定到真实的 `[data-slot='console-content']`；贯穿全高的 Astryx 侧栏使用完整动态品牌、分组导航、账户与余额入口、语言/主题/退出控制。展开宽度 16rem，折叠宽度 4.25rem；移动端使用右侧 Sheet。修复旧单色覆写误伤成功/警告语义色的问题。 |
+| 页面结构与加载 | `SectionPageLayout` 提供统一标题、内容及页脚区域；复用 `ContentLoading variant='page'`，只覆盖有观察者且无缓存的初始请求。后台刷新与预取不遮挡已展示的页面。 |
+| 首页 | 暖纸色与墨黑排版，Public Sans/Lora 字体，GSAP CardSwap、Unicode 安全的有限 ShuffleText、OGL 流体线条和已有条纹字标。接入地址取运营配置，Python/JavaScript/cURL 示例可复制；路由终端明确标为示例。 |
+| 认证页 | 纯黑双栏、程序化金属环、动态品牌及返回入口；移动端静态插画与自然滚动。保留密码加密、OAuth、二次验证、同意条款与路由守卫，补齐密码管理器 autocomplete 和显示/隐藏密码文案。 |
+| 模型广场 | 重构目录标题、数量、筛选工具区、卡片、密集表格与详情抽屉；沿用分组、权限、价格单位及原计费表达式。接入统一小时健康条和显式元数据驱动的资助标签。 |
+| 公开导航及管理页面 | 首页与公共头部共享 `PublicNavLinks` 和既有路由/登录提示逻辑，遵守运营配置。渠道、密钥、模型管理、设置等继续使用原业务组件，统一外壳、表单、菜单和表格视觉。 |
+
+基础交互复用已有 `Button`、`Sheet`、`Tabs`、`CopyButton`、`Tooltip`、`Skeleton`、`StatusBadge`、账户/语言/主题及退出确认组件。新增的 `ShaderArtwork`、`CardSwap`、`ShuffleText` 属于现有组件库未提供的程序化视觉；新增 `ModelHealthBar` 将原来分散的领域展示统一供模型目录、详情及控制台复用。没有引入第二套基础组件系统，仅补充 GSAP 3.13.0 与 OGL 1.0.11 两个缺失依赖。
+
+动效复用 `useVisibleMotion` 时钟，限制为 30fps，并钳制时间步长；隐藏标签页、离开视口、手动暂停与减弱动态偏好均停止对应动画。WebGL 按需加载，DPR 上限 1.5，画布最大尺寸 1800；不支持 GPU、上下文丢失及移动端金属画布均有静态回退。浏览器验收发现的画布生命周期缺陷已修复：降级时卸载画布，再次启用 GPU 时创建新画布，避免复用已主动丢失的 WebGL 上下文；移动端限制插画范围与指针事件，保持页头入口可点击。生产构建实测 1440 → 390 → 1440 为 WebGL → 静态 → WebGL，无需刷新页面。
+
+用户追加的芒果猫 Logo 已统一接入站点品牌源：保留 PNG 透明背景，生成多分辨率 favicon；页头、登录和控制台通过已有系统配置共享同一资源，默认 Logo 由构建器生成内容哈希 URL，避免升级后沿用旧缓存。
+
+### 10.2 指标与业务契约
+
+- 健康条固定 24 个小时槽，以服务器窗口为准，使用 99/95/90 四档阈值。缺失、无效和真实 0% 分开处理；键盘方向键、Home/End 可切换小时并阅读提示。
+- 汇总数据前台每 60 秒刷新，控制台使用服务端汇总成功率；不对小时成功率做无权重平均。单模型概览与性能面板共享 `['perf-metrics', model, 24]` 缓存键。
+- 请求失败、初始加载、空数据和重试各有明确状态。缓存刷新失败时保留最后成功的指标，并持续显示失败原因类别、最后更新时间和重试入口；卡片、表格、两种控制台视图及详情共用指标领域提示，组合已有 `ErrorState` / `Alert` / `Button`。
+- 健康条显示服务端窗口的实际日期与时间，未知小时仅标“暂无数据”，不推断为“没有请求”。详情曲线仅接收实测成功率，不再把未采集的事故数、停机时长伪造为 0，也不展示虚构限流数值。
+- 删除无运行入口的应用排名页与随机种子工具，移除模拟性能/排名生成器、旧类型、废弃导出和无调用图表。仍在使用的参数说明移至 `parameter-examples.ts`，明确其为常见示例，实际支持取决于上游模型。
+- 免费、赞助、开源、自建胶囊仅识别运营元数据中的显式标签（含英文、简繁中文别名），不根据模型名称或零价格猜测；卡片与表格共享组件。
+- 后端、认证协议、支付与计费计算均未改动。界面验证覆盖本地模拟登录及受保护路由展示，不等同于真实生产登录、支付端到端验证或完整安全审计。
+- 为满足已有 lint 门禁，附带修正前端类型导入、字符串方法、稳定 key、依赖循环等既有问题，没有放宽规则。附件转换失败保留输入；聊天嵌入区分同源/跨源 HTTP(S) 沙箱权限，并提供新标签页入口。
+
+### 10.3 自动化验证结果
+
+命令均在本轮独立 worktree 的 `web/` 下执行。以下为最终运行结果，非推测：
+
+| 检查 | 结果与证据 |
+|---|---|
+| `bun run typecheck` | 退出 0；`release-typecheck-logo.log`。 |
+| `bun run lint` | 退出 0，0 error、17 个已有 warning；`release-lint-logo.log`。 |
+| `bun run format:check` | 退出 0；`review-format-check-final.log`。 |
+| `bun run test --maxWorkers=2` | 183 个文件、2,263 个测试全部通过，耗时 144.66 秒；`release-test-logo.log`。未单独采集覆盖率百分比。 |
+| `bun run build` | 退出 0，生产构建完成；`release-build-logo.log`。 |
+| 入口与许可证资源 | `dist/index.html` 为 1,212 字节，全部入口引用资源均存在，品牌 PNG 的内容哈希产物与源文件逐字节一致，保留 40 个第三方许可证文件；`release-build-integrity-logo.json`。 |
+| 国际化 | 检查 78 个新增字面量/资助标签键，七种语言均无遗漏；`i18n-audit.json`。 |
+| Git 差异与编码 | `git diff --check` 通过；修改与新增文本采用 UTF-8，无 BOM，保留上游版权信息。 |
+
+`knip` 在基线和本轮都因历史未使用项退出 1，不能记为零问题通过。基线使用相同依赖、独立归档的 `837700e1d` 前端运行，并未改动主工作区。对报告中的行号、空白和唯一可识别的截断路径归一化后，本轮没有新增问题：
+
+| knip 项目 | 基线 | 本轮 |
+|---|---:|---:|
+| 未使用文件 | 76 | 75 |
+| 未使用依赖 | 12 | 12 |
+| 未使用开发依赖 | 2 | 2 |
+| 未使用导出 | 310 | 300 |
+| 未使用导出类型 | 123 | 120 |
+| 重复导出 | 1 | 1 |
+
+格式检查脚本会临时改写并恢复源码，必须独占执行；发布复核已在该脚本结束后运行，未将并行读写导致的 lint 假失败算作生产缺陷。原保护扩展漏掉 CSS/SCSS，导致版权工具与格式化器对同一文件空行产生反复变更；已补入既有集合，顺序运行 format、format:check、copyright:check 均退出 0。
+
+原始报告为 `knip-baseline.log`、`release-knip-logo.log`，逐项差异为 `release-knip-comparison.json`；因此满足“死代码不膨胀”，仍保留仓库原有清理债务。
+
+### 10.4 浏览器验收与边界
+
+使用真实生产构建和开发预览，在浏览器内核验如下视口；此矩阵记录实际操作，不代表对每个页面做了所有排列组合：
+
+| 宽度 | 已核验场景 |
+|---|---|
+| 1440px | 首页、模型广场、控制台；侧栏展开/折叠、卡片/表格切换、搜索和模型详情。 |
+| 1024px | 首页、登录、模型管理、系统设置；浅色/深色、折叠侧栏内的返回入口。 |
+| 768px | 首页与平板布局；渠道供应商选择器、键盘 Enter 选择与配置表单。 |
+| 390px | 首页、模型列表、登录、控制台、密钥创建抽屉；公开/登录态右侧导航及自然滚动。 |
+
+上述页面未见文档横向溢出；可横滚的密集表格保留内部滚动。验证了 Sheet 的 Escape 关闭、路由后关闭及焦点恢复，健康条键盘操作，首页暂停/离屏停止，登录桌面 WebGL 和手机静态回退。自动化另覆盖 GPU 不可用、减弱动态偏好与渲染回退。
+
+目录无结果、真实空列表、目录错误后重试、健康数据失败/恢复、初始加载骨架、详情性能空态均经过本地场景验证。生产公开接口通过只读代理请求；登录、管理员界面及错误注入使用独立本地 fixture。fixture 模式在验收后已恢复 `healthy`，截图中的账户、余额和管理指标均是测试数据，已在品牌或图注中标明。
+
+### 10.5 本地交付位置
+
+- 源码：`/Users/mango/project/apihub-ui-overhaul`，分支 `codex/apihub-ui-overhaul`。
+- 公开页面生产构建预览：`http://127.0.0.1:4176/`，只转发公开 GET/HEAD 请求；此入口用于界面浏览，不提交真实登录凭据。
+- 控制台生产构建预览：`http://127.0.0.1:17412/dashboard`，使用本地测试账户与数据。若会话已过期，可用测试用户名 `ui-preview`、密码 `preview-only` 登录此本地入口。
+- 截图及最终验证日志：`/Users/mango/project/apihub-ui-review-20261009/`，其中 `ui-overview.png` 汇总首页、登录、模型广场与本地控制台的真实浏览器截图。
+- 完整工作记录与预览脚本：`/tmp/apihub-ui-review-20261009/`。预览依赖本机运行进程，仅绑定 `127.0.0.1`。
+
+本轮发布版本为 `v29.38`，按用户授权走 GitHub `main` 的 CI → 构建 → 蓝绿部署门禁；实际提交 SHA、流水线链接及生产验收结果以既有 `new-api 部署与运维` 权威记录为准。保护主工作区 `/Users/mango/newapi-test` 的原有改动。

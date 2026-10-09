@@ -23,10 +23,8 @@ For commercial licensing, please contact support@quantumnous.com
  * than restyling components — is what lets every page change at once: no page
  * component has to be touched for the paper look to reach it.
  *
- * The landing page (features/home/landing) does NOT read these tokens. It owns
- * an equivalent warm palette scoped to `.landing-root`, because the marketing
- * surface is allowed a wider gap between surface and rule than the console.
- * The two palettes are deliberately the same family so they read as one site.
+ * Public pages and the console share these tokens; layout and artwork
+ * remain scoped to their respective page styles.
  */
 
 /* Light: paper reads as warm off-white, ink as near-black. The three surface
@@ -58,13 +56,15 @@ html.dark[data-site-design='paper'] {
  * body-scoped rule loses to a body-scoped rule regardless of layer order —
  * so the console needs the bridge applied to its own selector too.
  *
- * `--primary` is intentionally left alone here. The console locks it to
- * near-black; the public pages keep the operator's theme colour so branding
- * still shows through the marketing surface. */
+ * Paper uses the same ink actions on public and authenticated surfaces.
+ * Semantic status colors and provider marks retain their own colors. */
 html[data-site-design='paper'] body,
 html[data-site-design='paper'] body[data-design-layer='console'] {
   --background: var(--site-paper);
   --foreground: var(--site-ink);
+  --primary: var(--site-ink);
+  --primary-foreground: var(--site-paper);
+  --ring: var(--site-ink);
   --card: var(--site-surface);
   --card-foreground: var(--site-ink);
   --popover: var(--site-surface);

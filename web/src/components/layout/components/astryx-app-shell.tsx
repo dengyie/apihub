@@ -50,6 +50,7 @@ type AstryxAppShellProps = {
 
 type SnowMobileNavigationProps = {
   logo: string
+  brand: string
 }
 
 const TanStackLinkAdapter = forwardRef<
@@ -66,7 +67,7 @@ const TanStackLinkAdapter = forwardRef<
 })
 TanStackLinkAdapter.displayName = 'TanStackLinkAdapter'
 
-function SnowMobileNavigation({ logo }: SnowMobileNavigationProps) {
+function SnowMobileNavigation({ logo, brand }: SnowMobileNavigationProps) {
   const { t } = useTranslation()
   const { isMobileNavOpen, closeMobileNav, mobileNavId } = useAppShellMobile()
 
@@ -93,9 +94,10 @@ function SnowMobileNavigation({ logo }: SnowMobileNavigationProps) {
           <Link
             to='/dashboard'
             className='snowapi-astryx-logo-link'
-            aria-label='SnowAPI'
+            aria-label={brand}
           >
             <img src={logo || DEFAULT_LOGO} alt='' width={24} height={24} />
+            <span className='snowapi-brand-name'>{brand}</span>
           </Link>
           <SheetClose
             render={
@@ -129,10 +131,12 @@ function SnowMobileNavigation({ logo }: SnowMobileNavigationProps) {
 export function AstryxAppShell(props: AstryxAppShellProps) {
   const { i18n, t } = useTranslation()
   const { dir } = useDirection()
-  const { logo } = useSystemConfig()
+  const { logo, systemName } = useSystemConfig()
   const initialQueryFetches = useIsFetching({
     predicate: (query) =>
-      query.state.fetchStatus === 'fetching' && query.state.data === undefined,
+      query.getObserversCount() > 0 &&
+      query.state.fetchStatus === 'fetching' &&
+      query.state.data === undefined,
   })
   const shellRef = useRef<HTMLDivElement>(null)
   const locale = toIntlLocale(i18n.resolvedLanguage ?? i18n.language) ?? 'en'
@@ -177,7 +181,7 @@ export function AstryxAppShell(props: AstryxAppShellProps) {
           contentPadding={0}
           mobileNav={{
             breakpoint: 'md',
-            content: <SnowMobileNavigation logo={logo} />,
+            content: <SnowMobileNavigation logo={logo} brand={systemName} />,
           }}
           sideNav={
             <AstryxNavigation logo={logo} footer={<SidebarSignOutButton />} />
@@ -185,14 +189,19 @@ export function AstryxAppShell(props: AstryxAppShellProps) {
         >
           <div
             data-visual-region='content-frame'
+            data-slot='console-content'
             className='snowapi-astryx-content @container/content'
           >
             <div
               className='snowapi-console-content-state'
+              aria-busy={initialQueryFetches > 0}
               data-loading={initialQueryFetches > 0 || undefined}
             >
               {initialQueryFetches > 0 ? (
-                <ContentLoading className='snowapi-console-loading-indicator absolute inset-0 z-10 min-h-0' />
+                <ContentLoading
+                  variant='page'
+                  className='snowapi-console-loading-indicator'
+                />
               ) : null}
               <div className='snowapi-console-loaded-content flex min-h-0 flex-1 flex-col'>
                 {props.children ?? <AnimatedOutlet />}

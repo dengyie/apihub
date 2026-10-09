@@ -132,7 +132,7 @@ export function TableStaggerContainer(props: StaggerContainerProps) {
   const shouldReduce = useReducedMotion()
 
   if (shouldReduce) {
-    return <>{props.children}</>
+    return <tbody className={props.className}>{props.children}</tbody>
   }
 
   return (

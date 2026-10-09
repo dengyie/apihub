@@ -1,0 +1,289 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/* Auth and its portalled dialogs share a black palette, irrespective of the
+   saved site theme. :has releases the palette as soon as the route unmounts. */
+body:has(.auth-shell),
+html[data-site-design='paper'] body:has(.auth-shell),
+.auth-shell {
+  --background: #000;
+  --foreground: #f4f3ef;
+  --card: #101010;
+  --card-foreground: #f4f3ef;
+  --popover: #151515;
+  --popover-foreground: #f4f3ef;
+  --primary: #f4f3ef;
+  --primary-foreground: #080808;
+  --secondary: #1a1a1a;
+  --secondary-foreground: #f4f3ef;
+  --muted: #1a1a1a;
+  --muted-foreground: #a09f9b;
+  --accent: #202020;
+  --accent-foreground: #f4f3ef;
+  --border: #282828;
+  --input: #363636;
+  --ring: #deddd7;
+  --destructive: #ff8a8a;
+  --skeleton-base: #161616;
+  --skeleton-highlight: #242424;
+  color: var(--foreground);
+  background: #000;
+}
+.auth-shell {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  font-family: var(--font-sans);
+}
+.auth-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px clamp(24px, 4.5vw, 64px);
+}
+.auth-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 21px;
+  font-weight: 550;
+  letter-spacing: -0.04em;
+}
+.auth-brand img {
+  border-radius: 10px;
+  object-fit: contain;
+}
+.auth-brand span {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.auth-header-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-stage {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  width: 100%;
+  max-width: 1320px;
+  flex: 1;
+  margin: 0 auto;
+  padding: 30px 52px 60px;
+  align-items: center;
+}
+.auth-art-panel {
+  position: relative;
+  min-height: 590px;
+}
+.auth-artwork {
+  position: absolute;
+  inset: -5% 0 15%;
+}
+.auth-art-copy {
+  position: absolute;
+  bottom: 15px;
+  width: 100%;
+  text-align: center;
+}
+.auth-art-copy p {
+  font-family: var(--font-serif);
+  font-size: clamp(24px, 2.3vw, 34px);
+  line-height: 1.4;
+  letter-spacing: -0.045em;
+}
+.auth-art-copy > span {
+  display: block;
+  font-size: 12px;
+  margin-top: 14px;
+  color: #898984;
+}
+.auth-motion-toggle {
+  position: absolute;
+  right: 12%;
+  bottom: 120px;
+  width: 28px;
+  height: 28px;
+  color: #858580;
+  border-radius: 50%;
+}
+.auth-motion-toggle svg {
+  width: 12px;
+  height: 12px;
+}
+.auth-form-panel {
+  min-width: 0;
+  padding-inline: clamp(32px, 4vw, 70px) 0;
+}
+.auth-form-content {
+  width: 100%;
+  max-width: 380px;
+  margin-inline: auto;
+  padding-block: 26px;
+}
+.auth-title {
+  font-size: 34px;
+  line-height: 1.2;
+  font-weight: 450;
+  letter-spacing: -0.045em;
+}
+.auth-eyebrow {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+}
+.auth-form-content input:not([type='checkbox']):not([type='radio']) {
+  height: 44px;
+  background: #0b0b0b;
+  border-radius: 9px;
+  padding-inline-start: 13px;
+  box-shadow: none;
+}
+.auth-form-content
+  input:not([type='checkbox']):not([type='radio']):focus-visible {
+  border-color: #c4c3bd;
+  box-shadow: 0 0 0 1px #c4c3bd;
+}
+.auth-form-content [data-slot='form-label'] {
+  font-size: 12px;
+  font-weight: 400;
+}
+.auth-form-content [data-slot='button'][type='submit'] {
+  height: 44px;
+  border-radius: 999px;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.auth-form-content [data-slot='button'][data-variant='outline'] {
+  min-height: 40px;
+  background: #0b0b0b;
+  border-color: #303030;
+}
+.auth-form-content [data-slot='button']:hover {
+  box-shadow: none;
+}
+.auth-form-content a {
+  transition: color 160ms;
+}
+.auth-form-content a:hover {
+  color: #fff;
+}
+.auth-form-content [data-slot='card'] {
+  box-shadow: none;
+}
+.auth-bottom {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px clamp(24px, 4.5vw, 64px);
+  border-top: 1px solid #1a1a1a;
+  color: #83837f;
+  font-size: 10px;
+}
+@media (max-width: 1023px) {
+  .auth-stage {
+    padding-inline: 24px;
+    grid-template-columns: 0.9fr 1fr;
+  }
+  .auth-art-panel {
+    min-height: 480px;
+  }
+  .auth-form-panel {
+    padding-inline-start: 24px;
+  }
+  .auth-art-copy p {
+    font-size: 24px;
+  }
+}
+@media (max-width: 767px) {
+  .auth-header {
+    padding: 22px 24px;
+  }
+  .auth-brand {
+    font-size: 18px;
+  }
+  .auth-brand span {
+    max-width: 150px;
+  }
+  .auth-header-actions {
+    gap: 10px;
+  }
+  .auth-header-actions a {
+    font-size: 0;
+    gap: 0;
+  }
+  .auth-header-actions a svg {
+    width: 18px;
+    height: 18px;
+  }
+  .auth-stage {
+    display: flex;
+    flex-direction: column;
+    padding: 0 24px 48px;
+    align-items: stretch;
+  }
+  .auth-art-panel {
+    min-height: 190px;
+    max-width: 360px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .auth-artwork {
+    inset: 0;
+    pointer-events: none;
+  }
+  .auth-artwork .shader-metal-ring {
+    width: 48%;
+    left: 26%;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .auth-art-copy,
+  .auth-motion-toggle {
+    display: none;
+  }
+  .auth-form-panel {
+    padding: 0;
+  }
+  .auth-form-content {
+    padding-top: 0;
+  }
+  .auth-title {
+    font-size: 30px;
+  }
+  .auth-bottom {
+    font-size: 9px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-motion-toggle {
+    display: none;
+  }
+}

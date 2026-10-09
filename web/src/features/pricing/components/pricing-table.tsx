@@ -26,6 +26,8 @@ import {
   DataTableView,
   useDataTable,
 } from '@/components/data-table'
+import { PerformanceDataNotice } from '@/features/performance-metrics/components/performance-data-notice'
+import { useModelHealth } from '@/features/performance-metrics/hooks/use-model-health'
 
 import { DEFAULT_PRICING_PAGE_SIZE, DEFAULT_TOKEN_UNIT } from '../constants'
 import type { PricingModel, TokenUnit } from '../types'
@@ -60,7 +62,10 @@ export function PricingTable(props: PricingTableProps) {
     pageSize: DEFAULT_PRICING_PAGE_SIZE,
   })
 
+  const health = useModelHealth()
   const columns = usePricingColumns({
+    perfMap: health.models,
+    onModelClick,
     tokenUnit,
     priceRate,
     usdExchangeRate,
@@ -89,6 +94,11 @@ export function PricingTable(props: PricingTableProps) {
 
   return (
     <div className='space-y-4'>
+      <PerformanceDataNotice
+        error={health.error}
+        updatedAt={health.updatedAt}
+        onRetry={health.refetch}
+      />
       <DataTableView
         table={table}
         isLoading={isLoading}

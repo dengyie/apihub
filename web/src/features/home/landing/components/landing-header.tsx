@@ -18,120 +18,118 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
 import { ArrowUpRight, Menu, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { AuthPromptDialog } from '@/components/layout/components/auth-prompt'
+import { PublicNavLinks } from '@/components/layout/components/public-nav-links'
 import type { TopNavLink } from '@/components/layout/types'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { Button } from '@/components/ui/button'
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet'
 import { useAuthPrompt } from '@/hooks/use-auth-prompt'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
-import { cn } from '@/lib/utils'
 
-export function LandingHeader({
-  brand,
-  isAuthenticated,
-}: {
+export function LandingHeader(props: {
   brand: string
   isAuthenticated: boolean
+  logo?: string
 }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
-  // `useTopNavLinks` already honours 运营设置 → 导航配置: a module the
-  // operator turned off is simply absent from the list, so there is nothing
-  // to fall back to. Fabricating links here would render entries the
-  // operator disabled.
+  const compact = useMediaQuery('(max-width: 1023px)')
   const links = useTopNavLinks()
   const authPrompt = useAuthPrompt()
-  const close = () => setOpen(false)
-
-  const handleLinkClick = (
+  useEffect(() => {
+    if (!compact) setOpen(false)
+  }, [compact])
+  const onLinkClick = (
     event: React.MouseEvent<HTMLAnchorElement>,
     link: TopNavLink
   ) => {
-    // A disabled or sign-in-gated link must not dismiss the panel: the user
-    // has to stay on the page to deal with the prompt.
     if (authPrompt.interceptLinkClick(event, link)) return
-    close()
+    setOpen(false)
   }
+  const destination = props.isAuthenticated ? '/dashboard' : '/sign-in'
+  const cta = props.isAuthenticated ? t('Go to Dashboard') : t('Sign in')
 
   return (
     <>
-      <header
-        className='landing-header'
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') close()
-        }}
-      >
-        <Link to='/' className='landing-brand'>
-          <span>{brand}</span>
-        </Link>
-
-        <button
-          type='button'
-          className='landing-menu-toggle'
-          aria-expanded={open}
-          aria-controls='landing-nav'
-          onClick={() => setOpen((value) => !value)}
-        >
-          {t('Menu')}
-          {open ? <X size={16} /> : <Menu size={16} />}
-        </button>
-
-        <nav
-          id='landing-nav'
-          className='landing-nav'
-          data-open={open}
-          aria-label={t('Navigation')}
-        >
-          <div className='landing-nav-links'>
-            {links.map((link) =>
-              link.external ? (
-                <a
-                  key={`${link.title}:${link.href}`}
-                  href={link.href}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  className={cn(link.disabled && 'opacity-50')}
-                  aria-disabled={link.disabled}
-                  tabIndex={link.disabled ? -1 : undefined}
-                  onClick={(event) => handleLinkClick(event, link)}
-                >
-                  {link.title}
-                </a>
-              ) : (
-                <Link
-                  key={`${link.title}:${link.href}`}
-                  to={link.href}
-                  disabled={link.disabled}
-                  className={cn(link.disabled && 'opacity-50')}
-                  aria-disabled={link.disabled}
-                  tabIndex={link.disabled ? -1 : undefined}
-                  onClick={(event) => handleLinkClick(event, link)}
-                >
-                  {link.title}
-                </Link>
-              )
-            )}
-          </div>
-
-          <div className='landing-preferences'>
-            <ThemeSwitch />
-            <LanguageSwitcher />
-          </div>
-
-          <Link
-            to={isAuthenticated ? '/dashboard' : '/sign-in'}
-            className='landing-button landing-button-primary'
-            onClick={close}
-          >
-            {isAuthenticated ? t('Go to Dashboard') : t('Sign in')}
-            <ArrowUpRight size={14} aria-hidden='true' />
+      <Sheet open={open} onOpenChange={setOpen}>
+        <header className='landing-header'>
+          <Link to='/' className='landing-brand'>
+            {props.logo && <img src={props.logo} alt='' />}
+            <span>{props.brand}</span>
           </Link>
-        </nav>
-      </header>
-
+          <nav className='landing-nav' aria-label={t('Navigation')}>
+            <div className='landing-nav-links'>
+              <PublicNavLinks links={links} onLinkClick={onLinkClick} />
+            </div>
+            <div className='landing-preferences'>
+              <ThemeSwitch />
+              <LanguageSwitcher />
+            </div>
+            <Link
+              to={destination}
+              className='landing-button landing-button-primary'
+            >
+              {cta}
+              <ArrowUpRight size={14} aria-hidden='true' />
+            </Link>
+          </nav>
+          <SheetTrigger className='landing-menu-toggle'>
+            {t('Menu')}
+            <Menu size={16} />
+          </SheetTrigger>
+        </header>
+        <SheetContent
+          side='right'
+          showCloseButton={false}
+          className='public-mobile-sheet'
+        >
+          <SheetHeader>
+            <SheetTitle>{props.brand}</SheetTitle>
+            <SheetClose
+              render={
+                <Button
+                  variant='ghost'
+                  size='icon'
+                  className='absolute top-5 right-5'
+                  aria-label={t('Close')}
+                />
+              }
+            >
+              <X size={18} />
+            </SheetClose>
+          </SheetHeader>
+          <nav className='public-mobile-nav' aria-label={t('Navigation')}>
+            <PublicNavLinks links={links} onLinkClick={onLinkClick} />
+          </nav>
+          <SheetFooter>
+            <div className='landing-preferences'>
+              <ThemeSwitch />
+              <LanguageSwitcher />
+            </div>
+            <Button
+              className='rounded-full'
+              render={<Link to={destination} onClick={() => setOpen(false)} />}
+            >
+              {cta}
+              <ArrowUpRight size={16} />
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
       <AuthPromptDialog prompt={authPrompt} />
     </>
   )

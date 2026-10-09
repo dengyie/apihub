@@ -17,58 +17,108 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
-import { ArrowUpRight } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Pause, Play } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { AuthPromptDialog } from '@/components/layout/components/auth-prompt'
+import { Button } from '@/components/ui/button'
+import { useAuthPrompt } from '@/hooks/use-auth-prompt'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
-import { HeroTerminalDemo } from './hero-terminal-demo'
+import { HeroGateway } from './hero-gateway'
+import { ShuffleText } from './shuffle-text'
 
-export function LandingHero({
-  brand,
-  isAuthenticated,
-}: {
+export function LandingHero(props: {
   brand: string
   isAuthenticated: boolean
 }) {
   const { t } = useTranslation()
-  // Same source as the header: a module the operator disabled in 导航配置 is
-  // absent from the list, so the CTA is hidden rather than left to bounce off
-  // the `/pricing` guard back to the landing page.
-  const showPricing = useTopNavLinks().some((link) => link.href === '/pricing')
+  const [paused, setPaused] = useState(false)
+  const pricingLink = useTopNavLinks().find((link) => link.href === '/pricing')
+  const authPrompt = useAuthPrompt()
 
   return (
-    <section className='landing-hero'>
-      <h1>
-        <span className='landing-chip'>{brand}</span>
-        {t('One gateway for every model you run.')}
-      </h1>
-
-      <p className='landing-hero-sub'>
-        {t(
-          'Point a single OpenAI-compatible key at your own deployment and route it to any upstream channel. Cost, latency and failures stay visible per model, not per guess.'
-        )}
-      </p>
-
-      <div className='landing-hero-actions'>
-        <Link
-          to={isAuthenticated ? '/dashboard' : '/sign-in'}
-          className='landing-button landing-button-primary'
-        >
-          {isAuthenticated ? t('Go to Dashboard') : t('Get started')}
-          <ArrowUpRight size={14} aria-hidden='true' />
-        </Link>
-        {showPricing ? (
-          <Link to='/pricing' className='landing-button'>
-            {t('Model pricing')}
-          </Link>
-        ) : null}
+    <>
+      <section className='landing-hero'>
+        <div className='landing-hero-copy'>
+          <p className='landing-eyebrow'>
+            <span className='landing-eyebrow-dot' />
+            <ShuffleText text={t('An open gateway to AI')} />
+          </p>
+          <h1>
+            {t('Your models.')}
+            <em>{t('One gateway.')}</em>
+          </h1>
+          <p className='landing-hero-sub'>
+            {t(
+              'Connect OpenAI, Claude, Gemini and more through one compatible API. Manage keys, costs and routing from a single workspace.'
+            )}
+          </p>
+          <div className='landing-hero-actions'>
+            <Button
+              size='lg'
+              className='landing-primary'
+              render={
+                <Link to={props.isAuthenticated ? '/dashboard' : '/sign-in'} />
+              }
+            >
+              {props.isAuthenticated ? t('Go to Dashboard') : t('Get started')}
+              <ArrowUpRight size={17} />
+            </Button>
+            {pricingLink && (
+              <Button
+                size='lg'
+                variant='ghost'
+                className='landing-secondary'
+                disabled={pricingLink.disabled}
+                render={
+                  <Link
+                    to='/pricing'
+                    onClick={(event) =>
+                      authPrompt.interceptLinkClick(event, pricingLink)
+                    }
+                  />
+                }
+              >
+                {t('Explore models')}
+                <ArrowRight size={16} />
+              </Button>
+            )}
+          </div>
+          <div className='landing-hero-note'>
+            <span>01 /</span>
+            {t('Keep your SDK. Change your base URL.')}
+          </div>
+        </div>
+        <div className='landing-hero-visual'>
+          <HeroGateway brand={props.brand} paused={paused} />
+          <Button
+            variant='ghost'
+            size='icon'
+            className='landing-motion-toggle'
+            aria-label={paused ? t('Play animation') : t('Pause animation')}
+            aria-pressed={paused}
+            onClick={() => setPaused((value) => !value)}
+          >
+            {paused ? <Play /> : <Pause />}
+          </Button>
+        </div>
+      </section>
+      <div
+        className='landing-providers'
+        aria-label={t('Supported API providers')}
+      >
+        <p>{t('Made for the models you already use')}</p>
+        <div>
+          <span className='provider-openai'>OpenAI</span>
+          <span className='provider-claude'>Anthropic</span>
+          <span className='provider-gemini'>Gemini</span>
+          <span className='provider-deepseek'>deepseek</span>
+          <span className='provider-qwen'>Qwen</span>
+        </div>
       </div>
-
-      <div className='landing-showcase'>
-        <div className='landing-grain' aria-hidden='true' />
-        <HeroTerminalDemo />
-      </div>
-    </section>
+      <AuthPromptDialog prompt={authPrompt} />
+    </>
   )
 }

@@ -42,6 +42,9 @@ For commercial licensing, please contact support@quantumnous.com
 @import './console-skin.css';
 @import './public-shell.css';
 @import './landing.css';
+@import './visuals.css';
+@import './auth.css';
+@import './model-catalog.css';
 
 @layer base {
   :root {

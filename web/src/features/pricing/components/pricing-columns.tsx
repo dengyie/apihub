@@ -26,19 +26,32 @@ import {
 } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
+import { Button } from '@/components/ui/button'
+import { ModelHealthBar } from '@/features/performance-metrics/components/model-health-bar'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
 import type { PricingModel } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
+import { ModelFundingBadges } from './model-funding-badges'
 import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 
 // ----------------------------------------------------------------------------
 // Pricing Table Columns
 // ----------------------------------------------------------------------------
 
-export type PricingColumnsOptions = ModelPriceCellOptions
+export type PricingColumnsOptions = ModelPriceCellOptions & {
+  perfMap?: ReadonlyMap<
+    string,
+    {
+      success_rate: number
+      window_start?: number
+      recent_success_series?: { ts: number; success_rate: number }[]
+    }
+  >
+  onModelClick?: (modelName: string) => void
+}
 
 export function usePricingColumns(
   options: PricingColumnsOptions = {}
@@ -59,11 +72,24 @@ export function usePricingColumns(
         const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 14) : null
 
         return (
-          <div className='flex max-w-full min-w-0 items-center gap-2'>
-            {modelIcon}
-            <span className='truncate font-mono text-sm font-medium'>
-              {model.model_name}
-            </span>
+          <div className='flex max-w-full min-w-0 flex-col items-start gap-1'>
+            <div className='flex max-w-full min-w-0 items-center gap-2'>
+              {modelIcon}
+              <Button
+                variant='link'
+                className='h-auto min-w-0 justify-start p-0 text-left font-mono text-sm'
+                onClick={(event) => {
+                  event.stopPropagation()
+                  options.onModelClick?.(model.model_name)
+                }}
+                aria-label={t('View {{model}} details', {
+                  model: model.model_name,
+                })}
+              >
+                <span className='truncate'>{model.model_name}</span>
+              </Button>
+            </div>
+            <ModelFundingBadges tags={parseTags(model.tags)} />
           </div>
         )
       },
@@ -104,6 +130,24 @@ export function usePricingColumns(
       ),
       size: 110,
       enableSorting: false,
+    },
+
+    {
+      id: 'health',
+      header: t('Hourly model health'),
+      size: 190,
+      enableSorting: false,
+      cell: ({ row }) => {
+        const perf = options.perfMap?.get(row.original.model_name)
+        return (
+          <ModelHealthBar
+            compact
+            successRate={perf?.success_rate}
+            windowStart={perf?.window_start}
+            points={perf?.recent_success_series}
+          />
+        )
+      },
     },
 
     // Vendor column

@@ -16,7 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-:root {
+.snowapi-astryx-shell,
+.snowapi-mobile-sheet {
   --color-background-surface: var(--card);
   --color-background-body: var(--background);
   --color-background-card: var(--card);
@@ -77,21 +78,12 @@ For commercial licensing, please contact support@quantumnous.com
   height: 100dvh;
   background: var(--background);
   color: var(--foreground);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    'PingFang SC',
-    'Hiragino Sans GB',
-    'Microsoft YaHei',
-    sans-serif;
+  font-family: var(--font-sans);
 }
 
 .snowapi-astryx-side-nav {
-  width: var(--snowapi-side-nav-width, 15rem) !important;
-  min-width: var(--snowapi-side-nav-width, 15rem);
+  width: var(--snowapi-side-nav-width, 16rem) !important;
+  min-width: var(--snowapi-side-nav-width, 16rem);
   border-inline-end: 0;
   background: color-mix(in oklab, var(--foreground) 0.6%, var(--background));
   transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -103,7 +95,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 .snowapi-astryx-brand-row {
   display: flex;
-  height: 3.5rem;
+  height: 4.75rem;
   align-items: center;
   justify-content: space-between;
   padding-inline: 1.125rem 0.75rem;
@@ -111,10 +103,11 @@ For commercial licensing, please contact support@quantumnous.com
 
 .snowapi-astryx-logo-link {
   display: inline-flex;
-  width: 2rem;
-  height: 2rem;
+  min-width: 0;
+  height: 2.5rem;
+  gap: 0.625rem;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   border-radius: 0.5rem;
 }
 
@@ -132,11 +125,7 @@ For commercial licensing, please contact support@quantumnous.com
   width: 1.5rem;
   height: 1.5rem;
   object-fit: contain;
-  filter: brightness(0);
-}
-
-.dark .snowapi-astryx-logo-link img {
-  filter: brightness(0) invert(1);
+  flex-shrink: 0;
 }
 
 .snowapi-astryx-collapse-button {
@@ -151,7 +140,7 @@ For commercial licensing, please contact support@quantumnous.com
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 1.5rem 0.5rem;
+  padding: 0.75rem 0.75rem;
 }
 
 .snowapi-astryx-side-nav-content > .astryx-side-nav-section {
@@ -163,17 +152,17 @@ For commercial licensing, please contact support@quantumnous.com
 .snowapi-astryx-side-nav-content
   > .astryx-side-nav-section
   + .astryx-side-nav-section {
-  margin-top: 0.125rem !important;
+  margin-top: 1.5rem !important;
 }
 
 .snowapi-astryx-side-nav .astryx-side-nav-item {
-  min-height: 2rem !important;
-  height: 2rem !important;
+  min-height: 2.5rem !important;
+  height: auto !important;
   gap: 0.625rem !important;
   border-radius: 0.5rem !important;
   padding: 0 0.625rem !important;
-  color: color-mix(in oklab, var(--foreground) 58%, transparent) !important;
-  font-size: 0.75rem !important;
+  color: var(--muted-foreground) !important;
+  font-size: 0.8125rem !important;
   line-height: 1rem !important;
   font-weight: 400 !important;
 }
@@ -290,6 +279,10 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .snowapi-console-loading-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
   background: color-mix(in oklab, var(--background) 80%, transparent);
   backdrop-filter: blur(2px);
   transition: opacity 220ms ease;
@@ -403,5 +396,132 @@ For commercial licensing, please contact support@quantumnous.com
   .snowapi-console-loaded-content {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* The real Astryx content boundary owns the design system, including portals. */
+.snowapi-brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+
+.snowapi-astryx-side-nav .astryx-side-nav-section-header {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  padding: 0 0.625rem 0.5rem;
+}
+
+.snowapi-astryx-footer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: 0.875rem;
+  border-top: 1px solid var(--border);
+}
+
+.snowapi-sidebar-account {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  justify-content: flex-start;
+  gap: 0.65rem;
+  padding: 0.5rem;
+  border-radius: 0.625rem;
+}
+
+.snowapi-sidebar-account-name {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 0.15rem;
+  text-align: start;
+  line-height: 1.3;
+}
+
+.snowapi-sidebar-account-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.snowapi-sidebar-account-name small {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+.snowapi-sidebar-balance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.625rem;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+}
+
+.snowapi-sidebar-balance strong {
+  color: var(--foreground);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.snowapi-sidebar-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+.snowapi-sidebar-tools .snowapi-sidebar-sign-out {
+  width: 2.25rem;
+  height: 2.25rem;
+  justify-content: center;
+  padding: 0;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true'] .snowapi-astryx-footer {
+  padding: 0.75rem 0.5rem;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  :is(
+    .snowapi-sidebar-account-name,
+    .snowapi-sidebar-account-chevron,
+    .snowapi-sidebar-balance
+  ) {
+  display: none;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true'] .snowapi-sidebar-tools {
+  flex-direction: column;
+}
+
+.snowapi-astryx-side-nav[data-snowapi-collapsed='true']
+  .snowapi-sidebar-account {
+  justify-content: center;
+}
+
+.snowapi-console-loaded-content {
+  transition: opacity 200ms ease;
+}
+
+.snowapi-console-content-state[data-loading='true']
+  > .snowapi-console-loaded-content {
+  opacity: 0.3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .snowapi-console-loaded-content {
+    transition: none;
   }
 }

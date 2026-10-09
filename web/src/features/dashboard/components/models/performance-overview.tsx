@@ -16,14 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
 import { Gauge, HeartPulse, Timer } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
-import { getPerfMetricsSummary } from '@/features/performance-metrics/api'
+import { PerformanceDataNotice } from '@/features/performance-metrics/components/performance-data-notice'
+import { useModelHealth } from '@/features/performance-metrics/hooks/use-model-health'
 import {
   formatLatency,
   formatThroughput,
@@ -32,34 +32,31 @@ import {
   getSuccessRateTextClass,
 } from '@/features/performance-metrics/lib/format'
 import type { PerfModelSummary } from '@/features/performance-metrics/types'
-import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-const PERFORMANCE_WINDOW_HOURS = 24
 const TOP_MODEL_LIMIT = 6
 
 export function PerformanceOverview() {
   const { t } = useTranslation()
-  const metricsQuery = useQuery({
-    queryKey: ['perf-metrics-summary', PERFORMANCE_WINDOW_HOURS],
-    queryFn: async () =>
-      requireServerSuccess(
-        await getPerfMetricsSummary(PERFORMANCE_WINDOW_HOURS)
-      ),
-    staleTime: 60 * 1000,
-    retry: false,
-  })
-
+  const metricsQuery = useModelHealth()
   const models = useMemo(
-    () => metricsQuery.data?.data.models ?? [],
-    [metricsQuery.data]
+    () => [...metricsQuery.models.values()],
+    [metricsQuery.models]
   )
-  const summary = metricsQuery.data?.data.summary
+  const summary = metricsQuery.summary
   const topModels = useMemo(() => models.slice(0, TOP_MODEL_LIMIT), [models])
   const loading = metricsQuery.isLoading
   const hasData = models.length > 0
+  const notice = (
+    <PerformanceDataNotice
+      error={metricsQuery.error}
+      updatedAt={metricsQuery.updatedAt}
+      onRetry={metricsQuery.refetch}
+    />
+  )
 
   if (!loading && !hasData) {
+    if (metricsQuery.error) return notice
     return (
       <div className='text-muted-foreground overflow-hidden rounded-lg border px-4 py-3 text-center text-xs'>
         {t('No performance data available')}
@@ -69,6 +66,7 @@ export function PerformanceOverview() {
 
   return (
     <div className='overflow-hidden rounded-lg border'>
+      {notice}
       <div className='flex flex-wrap items-center gap-x-5 gap-y-2.5 px-4 py-2.5 sm:px-5 sm:py-3'>
         {/* Title */}
         <div className='flex items-center gap-1.5'>

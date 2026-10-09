@@ -1,0 +1,335 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+.model-catalog {
+  position: relative;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 132px clamp(24px, 4vw, 64px) 64px;
+  font-family: var(--font-sans);
+}
+.catalog-header {
+  margin-bottom: 34px;
+}
+.catalog-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 40px;
+  margin-bottom: 36px;
+}
+.catalog-eyebrow {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  margin-bottom: 14px;
+}
+.catalog-intro h1,
+.catalog-error h1 {
+  font-size: clamp(32px, 3.6vw, 49px);
+  font-weight: 450;
+  line-height: 1.2;
+  letter-spacing: -0.045em;
+}
+.catalog-description {
+  max-width: 680px;
+  margin-top: 16px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.9;
+}
+.catalog-count {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  padding-bottom: 4px;
+  flex-shrink: 0;
+}
+.catalog-count strong {
+  font-family: var(--font-serif);
+  font-size: 56px;
+  line-height: 1;
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.05em;
+}
+.catalog-count span {
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.catalog-search-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding-block: 20px;
+  border-block: 1px solid var(--border);
+}
+.catalog-search {
+  flex: 1;
+  max-width: 580px;
+}
+.catalog-search [data-slot='input'] {
+  min-height: 44px;
+  background: var(--card);
+  border-color: var(--border);
+  border-radius: 999px;
+  box-shadow: none;
+}
+.catalog-health-legend {
+  margin-inline-start: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  font-size: 9px;
+  color: var(--muted-foreground);
+}
+.catalog-health-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.catalog-health-legend > span:first-child {
+  width: 100%;
+  justify-content: flex-end;
+  margin-bottom: 3px;
+}
+.catalog-health-legend i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.catalog-sidebar {
+  border: 0;
+  border-radius: 0;
+  padding: 0 16px 0 0;
+  background: transparent;
+}
+.catalog-sidebar [data-slot='button'] {
+  border-radius: 7px;
+  border-color: var(--border);
+  font-weight: 400;
+}
+.catalog-sidebar [data-slot='button'][aria-pressed='true'] {
+  background: var(--foreground);
+  color: var(--background);
+}
+.catalog-sidebar [data-slot='button'][aria-pressed='true'] > span:last-child {
+  color: inherit;
+  background: transparent;
+}
+.catalog-sidebar [data-slot='collapsible-trigger'] {
+  font-size: 12px;
+}
+.catalog-results [data-slot='button'] {
+  border-radius: 999px;
+}
+.catalog-results [data-slot='table'] {
+  font-size: 12px;
+}
+.catalog-model-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: none;
+  padding-block: 22px 16px;
+  transition: border-color 180ms;
+}
+.catalog-model-card:hover {
+  border-color: var(--site-emphasis, var(--input));
+  transform: none;
+  box-shadow: none;
+}
+.catalog-model-card [data-slot='card-header'],
+.catalog-model-card [data-slot='card-content'],
+.catalog-model-card [data-slot='card-footer'] {
+  padding-inline: 20px;
+}
+.catalog-model-card [data-slot='card-header'] h3 {
+  font-size: 14px;
+  font-weight: 550;
+}
+.model-perf-badge {
+  width: 100%;
+  min-width: 0;
+  padding-top: 14px;
+}
+.model-health {
+  width: 100%;
+  min-width: 0;
+}
+.model-health-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.model-health-heading > span:last-child {
+  font-family: var(--font-mono);
+}
+.model-health-period {
+  margin-inline-start: 4px;
+  opacity: 0.6;
+  font-family: var(--font-mono);
+}
+.model-health-bars {
+  display: flex;
+  height: 22px;
+  margin-top: 5px;
+  gap: 3px;
+  align-items: center;
+}
+.model-health-hour {
+  position: relative;
+  height: 14px;
+  border-radius: 2px;
+  min-width: 0;
+  flex: 1;
+  transition:
+    height 120ms ease,
+    opacity 120ms ease;
+}
+.model-health-hour:hover,
+.model-health-hour:focus-visible {
+  height: 20px;
+  outline: 1px solid var(--foreground);
+  outline-offset: 2px;
+}
+.model-health-hour::before {
+  content: '';
+  position: absolute;
+  inset: -4px -1px;
+}
+.model-health-hour[data-level='excellent'],
+.catalog-health-legend i[data-level='excellent'] {
+  background: #059669;
+}
+.model-health-hour[data-level='good'],
+.catalog-health-legend i[data-level='good'] {
+  background: #65b88a;
+}
+.model-health-hour[data-level='warning'],
+.catalog-health-legend i[data-level='warning'] {
+  background: #d69a24;
+}
+.model-health-hour[data-level='critical'],
+.catalog-health-legend i[data-level='critical'] {
+  background: #e06675;
+}
+.model-health-hour[data-level='unknown'],
+.catalog-health-legend i[data-level='unknown'] {
+  background: color-mix(in oklab, var(--muted-foreground) 20%, transparent);
+}
+.model-health-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+.model-health-compact {
+  min-width: 145px;
+  max-width: 190px;
+}
+.model-health-compact .model-health-bars {
+  gap: 2px;
+}
+.model-perf-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+.model-perf-details dl {
+  display: flex;
+  gap: 18px;
+  font-size: 10px;
+}
+.model-perf-details dt {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  margin-bottom: 3px;
+}
+.model-perf-details dd {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.model-perf-details > [data-slot='button'] {
+  font-size: 10px;
+  height: 28px;
+  padding-inline: 10px;
+}
+.catalog-error {
+  max-width: 680px;
+  min-height: 70vh;
+}
+.catalog-error > p:not(.catalog-eyebrow) {
+  margin-block: 20px;
+  color: var(--muted-foreground);
+}
+@media (max-width: 767px) {
+  .model-catalog {
+    padding-top: 108px;
+  }
+  .catalog-intro {
+    gap: 20px;
+    margin-bottom: 24px;
+    align-items: flex-start;
+  }
+  .catalog-description {
+    font-size: 12px;
+  }
+  .catalog-count strong {
+    font-size: 36px;
+  }
+  .catalog-count {
+    padding-top: 30px;
+  }
+  .catalog-count span {
+    max-width: 64px;
+    text-align: right;
+    line-height: 1.6;
+  }
+  .catalog-search-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+  .catalog-health-legend {
+    margin: 0;
+    justify-content: flex-start;
+    font-size: 9px;
+  }
+  .catalog-health-legend > span:first-child {
+    width: auto;
+    margin: 0 2px 0 0;
+  }
+  .catalog-search {
+    max-width: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-health-hour {
+    transition: none;
+  }
+}

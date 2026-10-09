@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import {
   useVisibleAnimationFrame,
@@ -39,13 +40,14 @@ import {
  * one session, played once, on a three-colour palette.
  */
 export function HeroTerminalDemo() {
+  const { t } = useTranslation()
   const { ref, playing, reducedMotion } = useVisibleMotion<HTMLDivElement>()
   const outputRef = useRef<HTMLDivElement>(null)
   const [frame, setFrame] = useState<TerminalFrame>(() =>
     getTerminalFrame(0, reducedMotion)
   )
 
-  useVisibleAnimationFrame(playing, (elapsed) => {
+  useVisibleAnimationFrame(playing && !frame.complete, (elapsed) => {
     const next = getTerminalFrame(elapsed)
     // The clock runs at 30fps but the frame only changes a few times a second;
     // without this guard every intermediate frame re-renders the whole line
@@ -77,7 +79,7 @@ export function HeroTerminalDemo() {
           ref={outputRef}
           className='landing-terminal-output'
           role='region'
-          aria-label='Scripted terminal demonstration'
+          aria-label={t('Scripted terminal demonstration')}
           tabIndex={0}
         >
           {current.submitted ? (
@@ -100,7 +102,7 @@ export function HeroTerminalDemo() {
                 <i />
                 <i />
               </span>
-              Working… ({current.seconds}s)
+              {t('Working… ({{seconds}}s)', { seconds: current.seconds })}
             </p>
           ) : null}
         </div>

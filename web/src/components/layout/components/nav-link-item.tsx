@@ -25,18 +25,37 @@ import type { TopNavLink } from '../types'
 interface NavLinkItemProps {
   link: TopNavLink
   className?: string
+  pathname?: string
+  onLinkClick?: (
+    event: React.MouseEvent<HTMLAnchorElement>,
+    link: TopNavLink
+  ) => void
 }
 
 /**
  * Renders a single navigation link (internal or external)
  * Handles routing and proper link attributes
  */
-export function NavLinkItem({ link, className }: NavLinkItemProps) {
+export function NavLinkItem({
+  link,
+  className,
+  pathname,
+  onLinkClick,
+}: NavLinkItemProps) {
   const linkClassName = cn(
     'text-muted-foreground hover:text-foreground transition-colors',
     link.disabled && 'pointer-events-none opacity-50',
     className
   )
+  const linkProps = {
+    className: linkClassName,
+    'aria-disabled': link.disabled,
+    tabIndex: link.disabled ? -1 : undefined,
+    onClick: (event: React.MouseEvent<HTMLAnchorElement>) => {
+      if (link.disabled) event.preventDefault()
+      else onLinkClick?.(event, link)
+    },
+  }
 
   if (link.external) {
     return (
@@ -44,8 +63,7 @@ export function NavLinkItem({ link, className }: NavLinkItemProps) {
         href={link.href}
         target='_blank'
         rel='noopener noreferrer'
-        className={linkClassName}
-        aria-disabled={link.disabled}
+        {...linkProps}
       >
         {link.title}
       </a>
@@ -53,7 +71,12 @@ export function NavLinkItem({ link, className }: NavLinkItemProps) {
   }
 
   return (
-    <Link to={link.href} className={linkClassName} disabled={link.disabled}>
+    <Link
+      to={link.href}
+      disabled={link.disabled}
+      aria-current={pathname === link.href ? 'page' : undefined}
+      {...linkProps}
+    >
       {link.title}
     </Link>
   )
@@ -63,6 +86,8 @@ interface NavLinkListProps {
   links: TopNavLink[]
   className?: string
   itemClassName?: string
+  pathname?: string
+  onLinkClick?: NavLinkItemProps['onLinkClick']
 }
 
 /**
@@ -73,14 +98,18 @@ export function NavLinkList({
   links,
   className,
   itemClassName,
+  pathname,
+  onLinkClick,
 }: NavLinkListProps) {
   return (
     <>
-      {links.map((link, index) => (
+      {links.map((link) => (
         <NavLinkItem
-          key={index}
+          key={`${link.href}:${link.title}`}
           link={link}
           className={cn(className, itemClassName)}
+          pathname={pathname}
+          onLinkClick={onLinkClick}
         />
       ))}
     </>

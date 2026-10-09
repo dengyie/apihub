@@ -17,16 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, HeartPulse, Timer } from 'lucide-react'
+import { HeartPulse, Timer } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ContentLoading } from '@/components/content-loading'
 import {
   StaticDataTable,
   staticDataTableClassNames as tableStyles,
 } from '@/components/data-table'
+import { EmptyState } from '@/components/empty-state'
 import { GroupBadge } from '@/components/group-badge'
 import { getPerfMetrics } from '@/features/performance-metrics/api'
+import { PerformanceDataNotice } from '@/features/performance-metrics/components/performance-data-notice'
 import {
   formatLatency,
   formatThroughput,
@@ -40,7 +43,7 @@ import type {
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-import type { UptimeDayPoint } from '../lib/mock-stats'
+import type { SuccessRateTimePoint } from '../lib/performance-chart-types'
 import type { PricingModel } from '../types'
 import { LatencyTrendChart, UptimeTrendChart } from './model-details-charts'
 import { UptimeSparkline } from './model-details-uptime-sparkline'
@@ -85,9 +88,8 @@ type PerformanceRow = {
 }
 
 function toUptimePct(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  const clamped = Math.min(100, Math.max(0, value))
-  return Math.round(clamped * 100) / 100
+  if (!Number.isFinite(value) || value < 0 || value > 100) return Number.NaN
+  return Math.round(value * 100) / 100
 }
 
 function toLatencySeries(series: PerformanceSeriesPoint[]) {
@@ -100,23 +102,21 @@ function toLatencySeries(series: PerformanceSeriesPoint[]) {
     }))
 }
 
-function toUptimeSeries(series: PerformanceSeriesPoint[]): UptimeDayPoint[] {
+function toUptimeSeries(
+  series: PerformanceSeriesPoint[]
+): SuccessRateTimePoint[] {
   return series.map((point) => ({
     date: new Date(point.ts * 1000).toISOString(),
-    uptime_pct: toUptimePct(point.success_rate),
-    incidents: point.success_rate < 100 ? 1 : 0,
-    outage_minutes: 0,
+    success_rate: toUptimePct(point.success_rate),
   }))
 }
 
-function toGroupUptimeSeries(group: PerformanceGroup): UptimeDayPoint[] {
+function toGroupUptimeSeries(group: PerformanceGroup): SuccessRateTimePoint[] {
   return group.series.map((point) => {
     const successRate = toUptimePct(point.success_rate)
     return {
       date: new Date(point.ts * 1000).toISOString(),
-      uptime_pct: successRate,
-      incidents: successRate < 100 ? 1 : 0,
-      outage_minutes: 0,
+      success_rate: successRate,
     }
   })
 }
@@ -124,10 +124,13 @@ function toGroupUptimeSeries(group: PerformanceGroup): UptimeDayPoint[] {
 export function ModelDetailsPerformance(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const metricsQuery = useQuery({
-    queryKey: ['perf-metrics', props.model.model_name],
+    queryKey: ['perf-metrics', props.model.model_name, 24],
     queryFn: async () =>
       requireServerSuccess(await getPerfMetrics(props.model.model_name, 24)),
     staleTime: 60 * 1000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    retry: false,
   })
   const groups = useMemo(
     () => metricsQuery.data?.data.groups ?? [],
@@ -151,29 +154,39 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
   )
   const latencySeries = useMemo(() => toLatencySeries(series), [series])
   const uptimeSeries = useMemo(() => toUptimeSeries(series), [series])
-  const uptimeByGroup = useMemo<Record<string, UptimeDayPoint[]>>(() => {
-    const map: Record<string, UptimeDayPoint[]> = {}
+  const uptimeByGroup = useMemo<Record<string, SuccessRateTimePoint[]>>(() => {
+    const map: Record<string, SuccessRateTimePoint[]> = {}
     for (const group of groups) {
       map[group.group] = toGroupUptimeSeries(group)
     }
     return map
   }, [groups])
 
-  if (metricsQuery.isLoading || performances.length === 0) {
+  if (metricsQuery.isLoading) return <ContentLoading />
+  const notice = (
+    <PerformanceDataNotice
+      error={metricsQuery.error}
+      updatedAt={metricsQuery.dataUpdatedAt}
+      onRetry={metricsQuery.refetch}
+    />
+  )
+  if (metricsQuery.isError && !metricsQuery.data) return notice
+  if (performances.length === 0 && series.length === 0 && !summary) {
+    if (metricsQuery.isError) return notice
     return (
-      <div className='text-muted-foreground rounded-lg border p-6 text-center text-sm'>
-        {t('Performance data is not yet available for this model.')}
-      </div>
+      <EmptyState
+        title={t('Performance data is not yet available for this model.')}
+      />
     )
   }
 
   const avgTps = summary?.avg_tps ?? 0
   const avgLatency = summary?.avg_latency_ms ?? 0
   const successRate = summary?.success_rate ?? Number.NaN
-  const incidentCount = uptimeSeries.reduce((s, p) => s + p.incidents, 0)
 
   return (
     <div className='flex flex-col gap-4'>
+      {notice}
       <div className='grid grid-cols-1 gap-2 sm:grid-cols-3'>
         <StatCard
           icon={Timer}
@@ -190,13 +203,7 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
           icon={HeartPulse}
           label={t('Success rate')}
           value={formatUptimePct(successRate)}
-          hint={
-            incidentCount > 0
-              ? t('{{count}} incidents in the last 24 hours', {
-                  count: incidentCount,
-                })
-              : t('No incidents in the last 24 hours')
-          }
+          hint={t('Measured from requests in the last 24 hours')}
           valueClassName={getSuccessRateTextClass(successRate)}
         />
       </div>
@@ -250,6 +257,7 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
               cell: (perf) => (
                 <UptimeSparkline
                   size='sm'
+                  windowStart={metricsQuery.data?.data.window_start}
                   series={uptimeByGroup[perf.group] ?? []}
                   overallSuccessRate={perf.success_rate}
                 />
@@ -275,16 +283,6 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
           description={t(
             'Success rate excludes business rejections and includes the current partial hour.'
           )}
-          accent={
-            incidentCount > 0 ? (
-              <span className='inline-flex items-center gap-1 text-amber-600 dark:text-amber-400'>
-                <AlertTriangle className='size-3.5' />
-                {t('{{count}} incidents', {
-                  count: incidentCount,
-                })}
-              </span>
-            ) : null
-          }
         />
         <UptimeTrendChart series={uptimeSeries} />
       </section>

@@ -48,9 +48,7 @@ body[data-design-layer='console'] {
 
   /* Semantic hues drop to neutral steps so a status still reads as "different"
    * without shouting. Only `--destructive` keeps a hue. */
-  --success: var(--site-muted);
-  --warning: var(--site-muted);
-  --info: var(--site-muted);
+  /* Status colors remain semantic; only decorative accents are neutral. */
 
   /* Stat-card sparkline fills are decoration, not identity: three arbitrary
    * tones for three tiles. They collapse onto the neutral ladder. */
@@ -77,7 +75,7 @@ html.dark body[data-design-layer='console'] {
 
 body[data-design-layer='console']
   :is(
-    [data-slot='sidebar-inset'],
+    [data-slot='console-content'],
     [data-slot='dialog-content'],
     [data-slot='sheet-content'],
     [data-slot='drawer-content'],
@@ -103,19 +101,19 @@ body[data-design-layer='console']
  * from stretching to 2560px, while still letting wide tables use the room.
  * ------------------------------------------------------------------------ */
 
-body[data-design-layer='console'] [data-slot='sidebar-inset'] {
+body[data-design-layer='console'] [data-slot='console-content'] {
   min-width: 0;
   overflow-x: hidden;
 }
 
-body[data-design-layer='console'] [data-slot='sidebar-inset'] main {
+body[data-design-layer='console'] [data-slot='console-content'] main {
   min-width: 0;
-  max-width: 86rem;
+  max-width: 96rem;
   margin-inline: auto;
   width: 100%;
 }
 
-body[data-design-layer='console'] [data-slot='sidebar-inset'] main > div {
+body[data-design-layer='console'] [data-slot='console-content'] main > div {
   min-width: 0;
   max-width: 100%;
 }
@@ -124,9 +122,9 @@ body[data-design-layer='console'] [data-slot='sidebar-inset'] main > div {
  * component ships `font-bold` at `text-lg`, which is heavier than anything
  * else the console renders. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   main
-  h2:first-child {
+  h1:first-child {
   font-size: 1.25rem;
   line-height: 1.65rem;
   font-weight: 500;
@@ -135,7 +133,7 @@ body[data-design-layer='console']
 /* The sticky page footer sits on a hairline; the divider token keeps it
  * consistent with card and table rules. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   main
   > div.border-t {
   border-color: var(--ui-divider);
@@ -146,7 +144,7 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card'] {
   border: 0;
   border-radius: 0.75rem;
@@ -156,33 +154,33 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is([data-slot='card-header'], [data-slot='card-footer']) {
   border-color: transparent;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card-header'] {
   padding-inline: 1.125rem;
   padding-top: 0.75rem;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card-content'] {
   padding-inline: 1.125rem;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card-footer'] {
   border: 0;
   background: var(--ui-surface-strong);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card-title'] {
   font-size: 0.875rem;
   line-height: 1.25rem;
@@ -190,7 +188,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='card-description'] {
   color: var(--muted-foreground);
   font-size: 0.75rem;
@@ -198,7 +196,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='icon-badge'] {
   background: var(--ui-surface-strong);
   color: var(--muted-foreground);
@@ -214,21 +212,21 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button'] {
   box-shadow: none;
   font-weight: 500;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button'][data-variant='default']:not([data-size^='icon']) {
   border-radius: 999px;
   padding-inline: 0.875rem;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button'][data-variant='default'] {
   border-color: var(--foreground);
   background: var(--foreground);
@@ -236,7 +234,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button']:is(
     [data-variant='secondary'],
     [data-variant='outline']
@@ -247,7 +245,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button'][data-variant='ghost'] {
   background: transparent;
   color: var(--muted-foreground);
@@ -256,13 +254,13 @@ body[data-design-layer='console']
 /* Primary hovers by dimming rather than by recolouring: a recolour would need
  * a second hue, which the console does not have. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button'][data-variant='default']:hover {
   opacity: 0.82;
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button']:is(
     [data-variant='secondary'],
     [data-variant='outline'],
@@ -275,7 +273,7 @@ body[data-design-layer='console']
 /* `active:translate-y-px` in the component fights the click target's layout on
  * every press; a press should not move the row the user is aiming at. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='button']:active,
 body[data-design-layer='console']
   [data-slot='dialog-content']
@@ -298,9 +296,11 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is(
     [data-slot='input'],
+    input[data-slot='form-control']:not([type='checkbox']):not([type='radio']),
+    textarea[data-slot='form-control'],
     [data-slot='select-trigger'],
     [data-slot='native-select'],
     textarea
@@ -313,9 +313,11 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is(
     [data-slot='input'],
+    input[data-slot='form-control']:not([type='checkbox']):not([type='radio']),
+    textarea[data-slot='form-control'],
     [data-slot='select-trigger'],
     [data-slot='native-select'],
     textarea
@@ -329,7 +331,7 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-container'] {
   --table-header: var(--ui-surface-strong);
   --table-header-hover: var(--ui-surface-strong);
@@ -338,7 +340,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-header'] {
   background: var(--ui-surface-strong);
 }
@@ -347,7 +349,7 @@ body[data-design-layer='console']
  * `text-transform: uppercase` at 11px costs legibility in the Latin glyphs
  * while adding nothing in the CJK ones. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-head'] {
   height: 2.25rem;
   color: var(--muted-foreground);
@@ -358,7 +360,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-row'] {
   border-color: var(--ui-divider);
 }
@@ -366,7 +368,7 @@ body[data-design-layer='console']
 /* `index.css` staggers rows in with a slide; on a table that reflows while the
  * operator is reading it, the stagger reads as flicker. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table']
   tbody
   tr {
@@ -376,7 +378,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-cell'] {
   color: var(--foreground);
   font-size: 0.75rem;
@@ -385,14 +387,14 @@ body[data-design-layer='console']
 /* The empty-state row is not a data row; hovering it should not suggest it
  * is selectable. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='table-row'][data-empty='true']:hover {
   background: transparent;
 }
 
 @media (min-width: 768px) {
   body[data-design-layer='console']
-    [data-slot='sidebar-inset']
+    [data-slot='console-content']
     [data-slot='table-container'] {
     scrollbar-width: thin;
     scrollbar-color: color-mix(
@@ -405,14 +407,14 @@ body[data-design-layer='console']
   }
 
   body[data-design-layer='console']
-    [data-slot='sidebar-inset']
+    [data-slot='console-content']
     [data-slot='table-container']::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
 
   body[data-design-layer='console']
-    [data-slot='sidebar-inset']
+    [data-slot='console-content']
     [data-slot='table-container']::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 999px;
@@ -426,7 +428,7 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='tabs-list'] {
   border: 0;
   border-radius: 0.625rem;
@@ -435,7 +437,7 @@ body[data-design-layer='console']
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='tabs-trigger'] {
   border: 0;
   border-radius: 0.4375rem;
@@ -448,14 +450,14 @@ body[data-design-layer='console']
 /* `TabsTrigger` carries an `after:` underline that only the `line` variant
  * shows. Left in place it draws a second indicator under a segmented control. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='tabs-trigger']::after {
   display: none;
 }
 
 /* Base UI marks the selected tab `data-active`, not `[data-selected]`. */
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='tabs-trigger'][data-active] {
   background: var(--ui-surface-inset);
   color: var(--foreground);
@@ -463,94 +465,70 @@ body[data-design-layer='console']
 }
 
 /* ---------------------------------------------------------------------------
- * Forced monochrome
+ * Monochrome decorative accents
  *
- * Feature code reaches for Tailwind palette utilities directly (`bg-emerald-500
- * text-green-600`), so locking the tokens is not enough. Matching the class
- * prefix catches those without having to touch ~3800 call sites.
- *
- * Two families are deliberately absent from those lists — `red-` and `rose-`.
- * Every one of their console call sites is an error signal: the error rows in
- * the log tables (`LOG_TYPE_ENUM.ERROR` is `bg-rose-50/40`), the error detail
- * dialog, and the critical-quota cell (`text-rose-500` at 10% or below).
- * `--destructive` is likewise untouched, for the same reason: a grey error is
- * worse than the colour it replaces. `--chart-*` survives in the chart
- * components, which are where the console spends its colour budget — the
- * `icon-badge` rule below flattens only the small decorative chips.
+ * Keep semantic success, warning and error palette classes intact. Their
+ * colors carry meaning in model health, quota, forms and status badges.
  * -------------------------------------------------------------------------- */
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is(
-    [class*='bg-emerald-'],
-    [class*='bg-green-'],
     [class*='bg-blue-'],
     [class*='bg-sky-'],
     [class*='bg-cyan-'],
     [class*='bg-violet-'],
-    [class*='bg-purple-'],
-    [class*='bg-amber-'],
-    [class*='bg-yellow-'],
-    [class*='bg-orange-']
+    [class*='bg-purple-']
   ) {
   background-color: var(--ui-surface-strong);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is(
-    [class*='border-emerald-'],
-    [class*='border-green-'],
     [class*='border-blue-'],
     [class*='border-sky-'],
     [class*='border-cyan-'],
     [class*='border-violet-'],
-    [class*='border-purple-'],
-    [class*='border-amber-']
+    [class*='border-purple-']
   ) {
   border-color: var(--ui-divider);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is(
-    [class*='text-emerald-'],
-    [class*='text-green-'],
     [class*='text-blue-'],
     [class*='text-sky-'],
     [class*='text-cyan-'],
     [class*='text-violet-'],
-    [class*='text-purple-'],
-    [class*='text-amber-'],
-    [class*='text-yellow-'],
-    [class*='text-orange-']
+    [class*='text-purple-']
   ) {
   color: var(--foreground);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   :is([data-slot='badge'], [data-slot='status-badge']) {
   transform: none;
   box-shadow: none;
-  color: var(--foreground);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='badge'][data-variant='default'] {
   background-color: var(--primary);
   color: var(--primary-foreground);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='progress-indicator'] {
   background: var(--foreground);
 }
 
 body[data-design-layer='console']
-  [data-slot='sidebar-inset']
+  [data-slot='console-content']
   [data-slot='avatar-fallback'] {
   background: var(--foreground);
   color: var(--background);
@@ -652,7 +630,7 @@ body[data-design-layer='console']
  * ------------------------------------------------------------------------ */
 
 @media (prefers-reduced-motion: reduce) {
-  body[data-design-layer='console'] [data-slot='sidebar-inset'] *,
+  body[data-design-layer='console'] [data-slot='console-content'] *,
   body[data-design-layer='console'] [data-slot='dialog-content'],
   body[data-design-layer='console'] [data-slot='sheet-content'],
   body[data-design-layer='console'] [data-slot='drawer-content'] {

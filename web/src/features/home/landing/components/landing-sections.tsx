@@ -16,63 +16,71 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Activity, ArrowUpRight, GitBranch, Wallet } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-type LandingCard = {
-  title: string
-  body: string
-}
+import { HeroTerminalDemo } from './hero-terminal-demo'
+import { LandingIntegration } from './landing-integration'
 
-const CARDS: LandingCard[] = [
+const features = [
   {
+    icon: GitBranch,
     title: 'Routing you can reason about',
-    body: 'Per-model weights, priorities and sticky sessions, so failover is a decision you made instead of a mystery you debug.',
+    body: 'Choose channels, set priorities and define fallback behavior. Your routing decisions stay in your control.',
   },
   {
-    title: 'Spend limits that bite early',
-    body: 'Set quotas per token, per model or per group. The gateway refuses the request before your upstream invoice does.',
+    icon: Wallet,
+    title: 'Know where your budget goes',
+    body: 'Track usage, manage token quotas and review request costs in one place.',
   },
   {
+    icon: Activity,
     title: 'Health you can act on',
-    body: 'Latency, error rate and success ratio per channel, with a shadow-mode audit that logs before it ever disables.',
+    body: 'See model success rates, response times and hourly history based on real requests.',
   },
 ]
 
 export function LandingSections() {
   const { t } = useTranslation()
-
   return (
-    <section className='landing-section'>
-      <h2>
-        {t('A gateway you can read at a glance.')}{' '}
-        <span>
-          {t(
-            'Routing, quotas and channel health on one screen instead of four.'
-          )}
-        </span>
-      </h2>
-
-      <div className='landing-grid'>
-        {/* The lead card carries the section's main claim, so it spans the
-            full grid and gets the large type. It used to pair this copy with a
-            gradient artwork block; the artwork was decoration that added a
-            second accent to the page for no information. */}
-        <article className='landing-card landing-card-lead'>
-          <h3>{t('Every channel lands in one ledger.')}</h3>
+    <>
+      <LandingIntegration />
+      <section
+        className='landing-section landing-features'
+        aria-labelledby='features-title'
+      >
+        <div className='landing-section-heading'>
+          <p className='landing-eyebrow'>{t('Clarity at every layer')}</p>
+          <h2 id='features-title'>
+            {t('Less friction.')}
+            <em>{t('More room to build.')}</em>
+          </h2>
+        </div>
+        <div className='landing-feature-grid'>
+          {features.map((feature, index) => (
+            <article className='landing-feature' key={feature.title}>
+              <div className='landing-feature-top'>
+                <feature.icon size={22} strokeWidth={1.4} />
+                <span>0{index + 1}</span>
+              </div>
+              <h3>{t(feature.title)}</h3>
+              <p>{t(feature.body)}</p>
+            </article>
+          ))}
+        </div>
+        <details className='landing-routing-demo'>
+          <summary>
+            {t('Explore a routing example')}
+            <ArrowUpRight size={16} />
+          </summary>
           <p>
-            {t(
-              'Add as many upstreams as you like and they all speak the same dialect: the same request in, the same response out, the same log line afterwards.'
-            )}
+            {t('An illustrative routing session, not live service metrics.')}
           </p>
-        </article>
-
-        {CARDS.map((card) => (
-          <article key={card.title} className='landing-card'>
-            <h3>{t(card.title)}</h3>
-            <p>{t(card.body)}</p>
-          </article>
-        ))}
-      </div>
-    </section>
+          <div className='landing-showcase'>
+            <HeroTerminalDemo />
+          </div>
+        </details>
+      </section>
+    </>
   )
 }

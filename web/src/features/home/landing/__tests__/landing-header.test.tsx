@@ -183,7 +183,7 @@ describe('landing header nav links', () => {
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
 
-    await userEvent.click(toggle)
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -202,13 +202,11 @@ describe('landing header nav links', () => {
     links.push({ title: 'Rankings', href: '/rankings', requiresAuth: true })
     renderHeader()
 
-    await userEvent.click(screen.getByRole('button', { name: /Menu/ }))
+    const toggle = screen.getByRole('button', { name: /Menu/ })
+    await userEvent.click(toggle)
     await userEvent.click(screen.getByRole('link', { name: 'Rankings' }))
 
-    expect(screen.getByRole('button', { name: /Menu/ })).toHaveAttribute(
-      'aria-expanded',
-      'true'
-    )
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
   })
 
   // `useTopNavLinks` localizes before this component sees the link, so calling

@@ -56,9 +56,7 @@ function UsageLogsContent() {
   return (
     <>
       <SectionPageLayout fixedContent>
-        <SectionPageLayout.Title>
-          {t('Common Logs')}
-        </SectionPageLayout.Title>
+        <SectionPageLayout.Title>{t('Common Logs')}</SectionPageLayout.Title>
         <SectionPageLayout.Actions>
           {canManageScope && (
             <Tabs value={viewScope} onValueChange={handleViewScopeChange}>

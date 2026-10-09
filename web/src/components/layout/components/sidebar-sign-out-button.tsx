@@ -20,27 +20,49 @@ import { LogOut } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { LanguageSwitcher } from '@/components/language-switcher'
+import { ProfileDropdown } from '@/components/profile-dropdown'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { ThemeSwitch } from '@/components/theme-switch'
 import { Button } from '@/components/ui/button'
+import { formatQuotaWithCurrency } from '@/lib/currency'
+import { useAuthStore } from '@/stores/auth-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 export function SidebarSignOutButton() {
   const { t } = useTranslation()
   const [dialogOpen, setDialogOpen] = useState(false)
+  const user = useAuthStore((state) => state.auth.user)
+  // Currency formatters read this same store; subscribe so a currency change
+  // updates the balance without waiting for another account request.
+  useSystemConfigStore((state) => state.config.currency)
 
   return (
     <>
       <div className='snowapi-astryx-footer'>
-        <Button
-          type='button'
-          variant='ghost'
-          className='snowapi-sidebar-sign-out'
-          onClick={() => setDialogOpen(true)}
-        >
-          <LogOut className='size-4 shrink-0' aria-hidden='true' />
-          <span>{t('Sign out')}</span>
-        </Button>
+        {user && <ProfileDropdown presentation='sidebar' />}
+        {user?.quota != null && Number.isFinite(user.quota) && (
+          <div className='snowapi-sidebar-balance'>
+            <span>{t('Available balance')}</span>
+            <strong>{formatQuotaWithCurrency(user.quota)}</strong>
+          </div>
+        )}
+        <div className='snowapi-sidebar-tools'>
+          <ThemeSwitch />
+          <LanguageSwitcher />
+          <Button
+            type='button'
+            variant='ghost'
+            className='snowapi-sidebar-sign-out'
+            aria-label={t('Sign out')}
+            title={t('Sign out')}
+            onClick={() => setDialogOpen(true)}
+          >
+            <LogOut className='size-4 shrink-0' aria-hidden='true' />
+            <span className='sr-only'>{t('Sign out')}</span>
+          </Button>
+        </div>
       </div>
-
       <SignOutDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </>
   )

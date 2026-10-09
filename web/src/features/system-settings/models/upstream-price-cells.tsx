@@ -44,7 +44,10 @@ export function SyncPriceCell(props: {
     return <span className='text-muted-foreground'>{t('Unset price')}</span>
   }
   if (kind === 'expression') {
-    const parsed = getSyncExpressionPricing(String(props.values.billing_expr), t)
+    const parsed = getSyncExpressionPricing(
+      String(props.values.billing_expr),
+      t
+    )
     return (
       <div className='min-w-0 flex-1 space-y-1'>
         <div className='flex items-center gap-2'>
@@ -60,8 +63,11 @@ export function SyncPriceCell(props: {
         </div>
         {parsed ? (
           <div className='space-y-2'>
-            {parsed.tiers.map((tier, index) => (
-              <div key={`${tier.label}-${index}`} className='space-y-1'>
+            {parsed.tiers.map((tier) => (
+              <div
+                key={`${tier.label}:${tier.condition}`}
+                className='space-y-1'
+              >
                 {parsed.tiers.length > 1 && (
                   <div className='text-muted-foreground text-xs!'>
                     {tier.condition || tier.label || t('Default')}
@@ -76,7 +82,14 @@ export function SyncPriceCell(props: {
               </div>
             )}
           </div>
-        ) : <code className='block text-xs! leading-relaxed break-all whitespace-pre-wrap'>{highlightExprDiff(String(props.values.billing_expr), props.compareTo?.billing_expr)}</code>}
+        ) : (
+          <code className='block text-xs! leading-relaxed break-all whitespace-pre-wrap'>
+            {highlightExprDiff(
+              String(props.values.billing_expr),
+              props.compareTo?.billing_expr
+            )}
+          </code>
+        )}
       </div>
     )
   }
@@ -101,14 +114,19 @@ function highlightExprDiff(expr: string, base: unknown) {
     word[0] === baseWords[i] ? (
       word[0]
     ) : (
-      <mark key={word.index} className='rounded-sm bg-amber-500/25 text-inherit'>
+      <mark
+        key={word.index}
+        className='rounded-sm bg-amber-500/25 text-inherit'
+      >
         {word[0]}
       </mark>
     )
   )
 }
 
-function SyncPriceMetrics(props: { lines: Array<{ label: string; value: string }> }) {
+function SyncPriceMetrics(props: {
+  lines: Array<{ label: string; value: string }>
+}) {
   return (
     <dl className='flex min-w-0 flex-1 flex-wrap gap-x-4 gap-y-2'>
       {props.lines.map((line) => (

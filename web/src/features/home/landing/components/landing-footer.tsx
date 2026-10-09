@@ -16,12 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
-
 import { LanguageSwitcher } from '@/components/language-switcher'
+import { AuthPromptDialog } from '@/components/layout/components/auth-prompt'
+import { PublicNavLinks } from '@/components/layout/components/public-nav-links'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { useAuthPrompt } from '@/hooks/use-auth-prompt'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
-import { cn } from '@/lib/utils'
 
 import { LandingWordmark } from './landing-wordmark'
 
@@ -29,34 +29,15 @@ export function LandingFooter({ brand }: { brand: string }) {
   // Same source as the header: a module the operator disabled in 导航配置 is
   // absent from the list rather than replaced by a fabricated entry.
   const links = useTopNavLinks()
+  const authPrompt = useAuthPrompt()
 
   return (
     <footer className='landing-footer'>
       <div className='landing-footer-nav'>
-        {links.map((link) =>
-          link.external ? (
-            <a
-              key={`${link.title}:${link.href}`}
-              href={link.href}
-              target='_blank'
-              rel='noopener noreferrer'
-              className={cn(link.disabled && 'opacity-50')}
-              aria-disabled={link.disabled}
-            >
-              {link.title}
-            </a>
-          ) : (
-            <Link
-              key={`${link.title}:${link.href}`}
-              to={link.href}
-              disabled={link.disabled}
-              className={cn(link.disabled && 'opacity-50')}
-              aria-disabled={link.disabled}
-            >
-              {link.title}
-            </Link>
-          )
-        )}
+        <PublicNavLinks
+          links={links}
+          onLinkClick={authPrompt.interceptLinkClick}
+        />
 
         <div className='landing-preferences'>
           <ThemeSwitch />
@@ -65,6 +46,7 @@ export function LandingFooter({ brand }: { brand: string }) {
       </div>
 
       <LandingWordmark brand={brand} />
+      <AuthPromptDialog prompt={authPrompt} />
     </footer>
   )
 }

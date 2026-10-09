@@ -29,7 +29,7 @@ export function formatLatency(ms: number): string {
 }
 
 export function formatUptimePct(pct: number): string {
-  if (!Number.isFinite(pct)) return '—'
+  if (getSuccessRateLevel(pct) === 'unknown') return '—'
   return `${pct.toFixed(2)}%`
 }
 
@@ -40,20 +40,20 @@ export type SuccessRateLevel =
   | 'critical'
   | 'unknown'
 
-const SUCCESS_RATE_EXCELLENT_MIN = 100
-const SUCCESS_RATE_GOOD_MIN = 90
-const SUCCESS_RATE_WARNING_MIN = 70
+const SUCCESS_RATE_EXCELLENT_MIN = 99
+const SUCCESS_RATE_GOOD_MIN = 95
+const SUCCESS_RATE_WARNING_MIN = 90
 
 /**
  * Single source of truth for grading a success rate (0-100).
- * - excellent: 100% (full green)
- * - good: >= 90% (slightly lighter green)
- * - warning: >= 70%
- * - critical: below 70%
- * - unknown: non-finite values
+ * - excellent: >= 99% (emerald)
+ * - good: >= 95% (light green)
+ * - warning: >= 90%
+ * - critical: below 90%
+ * - unknown: missing or invalid values
  */
 export function getSuccessRateLevel(rate: number): SuccessRateLevel {
-  if (!Number.isFinite(rate)) return 'unknown'
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) return 'unknown'
   if (rate >= SUCCESS_RATE_EXCELLENT_MIN) return 'excellent'
   if (rate >= SUCCESS_RATE_GOOD_MIN) return 'good'
   if (rate >= SUCCESS_RATE_WARNING_MIN) return 'warning'
@@ -61,9 +61,9 @@ export function getSuccessRateLevel(rate: number): SuccessRateLevel {
 }
 
 const SUCCESS_RATE_TEXT_CLASS: Record<SuccessRateLevel, string> = {
-  excellent: 'text-emerald-600 dark:text-emerald-400',
-  good: 'text-emerald-500 dark:text-emerald-300',
-  warning: 'text-amber-600 dark:text-amber-400',
+  excellent: 'text-emerald-700 dark:text-emerald-400',
+  good: 'text-green-700 dark:text-emerald-300',
+  warning: 'text-amber-700 dark:text-amber-400',
   critical: 'text-red-600 dark:text-red-400',
   unknown: 'text-muted-foreground',
 }
