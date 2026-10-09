@@ -296,6 +296,8 @@ Phase 4: 特化单页与视觉精细化打磨
 
 用户追加的芒果猫 Logo 已统一接入站点品牌源：保留 PNG 透明背景，生成多分辨率 favicon；页头、登录和控制台通过已有系统配置共享同一资源，默认 Logo 由构建器生成内容哈希 URL，避免升级后沿用旧缓存。
 
+线上首轮验收确认 CDN 仍缓存固定地址 `/favicon.ico` 的旧图标。初始 HTML 的 favicon 也改为按文件内容哈希输出至独立资源路径，首次加载不再依赖 JavaScript 更新图标；复用 Rsbuild 的 favicon 输出目录配置，构建验收检查入口引用的文件与源图标逐字节一致。
+
 ### 10.2 指标与业务契约
 
 - 健康条固定 24 个小时槽，以服务器窗口为准，使用 99/95/90 四档阈值。缺失、无效和真实 0% 分开处理；键盘方向键、Home/End 可切换小时并阅读提示。
@@ -317,8 +319,8 @@ Phase 4: 特化单页与视觉精细化打磨
 | `bun run lint` | 退出 0，0 error、17 个已有 warning；`release-lint-logo.log`。 |
 | `bun run format:check` | 退出 0；`review-format-check-final.log`。 |
 | `bun run test --maxWorkers=2` | 183 个文件、2,263 个测试全部通过，耗时 144.66 秒；`release-test-logo.log`。未单独采集覆盖率百分比。 |
-| `bun run build` | 退出 0，生产构建完成；`release-build-logo.log`。 |
-| 入口与许可证资源 | `dist/index.html` 为 1,212 字节，全部入口引用资源均存在，品牌 PNG 的内容哈希产物与源文件逐字节一致，保留 40 个第三方许可证文件；`release-build-integrity-logo.json`。 |
+| `bun run build` | 退出 0，生产构建完成；`release-build-logo.log`。补充 favicon 内容指纹后重跑 typecheck、lint、format、copyright 和生产构建均退出 0；`favicon-build.log`。 |
+| 入口与许可证资源 | 最终 `dist/index.html` 为 1,237 字节，1,777 个静态资源，全部入口引用资源均存在；品牌 PNG 和初始 favicon 的内容哈希产物与各自源文件逐字节一致，保留 40 个第三方许可证文件；`favicon-build-integrity.json`、`release-build-integrity-logo.json`。 |
 | 国际化 | 检查 78 个新增字面量/资助标签键，七种语言均无遗漏；`i18n-audit.json`。 |
 | Git 差异与编码 | `git diff --check` 通过；修改与新增文本采用 UTF-8，无 BOM，保留上游版权信息。 |
 

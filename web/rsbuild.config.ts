@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,6 +9,10 @@ import { pluginTailwindcss } from '@rsbuild/plugin-tailwindcss'
 import { tanstackRouter } from '@tanstack/router-plugin/rspack'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const faviconHash = createHash('sha256')
+  .update(readFileSync(path.resolve(__dirname, './public/favicon.ico')))
+  .digest('hex')
+  .slice(0, 12)
 
 export default defineConfig(({ envMode }) => {
   const env = loadEnv({ mode: envMode, prefixes: ['VITE_'] })
@@ -77,6 +83,8 @@ export default defineConfig(({ envMode }) => {
       target: 'web',
       distPath: {
         root: 'dist',
+        // The initial HTML must bypass cached icons before runtime branding loads.
+        favicon: `static/icon/${faviconHash}`,
       },
       // Rely on Rsbuild default legalComments ("linked" → per-chunk *.LICENSE.txt) in all modes.
       // Do not set "none" in production: that strips minifier-preserved third-party notices and
