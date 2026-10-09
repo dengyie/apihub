@@ -1223,3 +1223,26 @@ func newTestTracker() *Tracker {
 func statsFor(t *Tracker, id int) *ChannelStats {
 	return t.getBreaker(scopeKey(id, ""))
 }
+
+func TestEndCancelledPreservesConsecutiveFailures(t *testing.T) {
+	tr := newTestTracker()
+	ch := 333
+	testModel := "gpt-4"
+
+	// 模拟上游渠道发生了 2 次真实失败
+	tr.Begin(ch, testModel).End(false, true)
+	tr.Begin(ch, testModel).End(false, true)
+
+	stats := statsFor(tr, ch)
+	require.Equal(t, int32(2), stats.consecutiveFailures.Load(), "前置条件：已累积 2 次失败")
+
+	// 发生前置校验失败或零字节预算耗尽时，调用 EndCancelled()
+	h := tr.Begin(ch, testModel)
+	assert.Equal(t, 1, tr.Inflight(ch))
+	h.EndCancelled()
+
+	// 验证 inflight 正确释放，同时连续失败计数严禁被清零
+	assert.Equal(t, 0, tr.Inflight(ch), "inflight 必须释放")
+	assert.Equal(t, int32(2), stats.consecutiveFailures.Load(), "EndCancelled 绝不能将坏渠道的历史失败清零")
+}
+

@@ -236,13 +236,28 @@ func TestIsClientAbortUpstreamHang(t *testing.T) {
 	loadbalancer.SetPolicy(policy)
 	defer loadbalancer.SetPolicy(nil)
 
-	w6 := httptest.NewRecorder()
-	c6, _ := gin.CreateTestContext(w6)
-	info6 := &relaycommon.RelayInfo{
-		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 88},
+		w6 := httptest.NewRecorder()
+		c6, _ := gin.CreateTestContext(w6)
+		info6 := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 88},
+		}
+		assert.True(t, isClientAbortUpstreamHang(c6, info6, time.Now().Add(-15*time.Second)))
+
+		// 7. 深度思考模型配置大 TTFT 阈值（如 60s）：下游等待 35s 主动取消 -> 处于合法思考窗口内，不得误判为上游死挂
+		policyDeep := loadbalancer.DefaultPolicy()
+		policyDeep.Enabled = true
+		policyDeep.Channels = map[int]loadbalancer.ChannelPolicy{
+			99: {TTFTTimeoutMs: 60000},
+		}
+		loadbalancer.SetPolicy(policyDeep)
+
+		w7 := httptest.NewRecorder()
+		c7, _ := gin.CreateTestContext(w7)
+		info7 := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 99},
+		}
+		assert.False(t, isClientAbortUpstreamHang(c7, info7, time.Now().Add(-35*time.Second)))
 	}
-	assert.True(t, isClientAbortUpstreamHang(c6, info6, time.Now().Add(-15*time.Second)))
-}
 
 func TestRetryLoop_ContextDeadlineExceededDoesNotMarkClientAborted(t *testing.T) {
 	deadlineCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)

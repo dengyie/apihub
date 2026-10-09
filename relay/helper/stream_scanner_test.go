@@ -783,3 +783,20 @@ type errBody struct{ err error }
 
 func (b errBody) Read([]byte) (int, error) { return 0, b.err }
 func (b errBody) Close() error             { return nil }
+
+func TestStreamScannerHandler_ContextDeadlineExceededNotClientAbort(t *testing.T) {
+	t.Parallel()
+
+	c, resp, info := setupStreamTest(t, strings.NewReader("data: {\"test\":1}\n\n"))
+	deadlineCtx, cancel := context.WithTimeout(c.Request.Context(), time.Nanosecond)
+	defer cancel()
+	<-deadlineCtx.Done()
+	c.Request = c.Request.WithContext(deadlineCtx)
+
+	_ = StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	assert.False(t, info.StreamStatus.IsClientAbort(), "网关/请求超时 context.DeadlineExceeded 绝不能判定为客户端主动断开")
+	endReason, _ := info.StreamStatus.EndState()
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, endReason, "DeadlineExceeded 应当归因于超时")
+}
+

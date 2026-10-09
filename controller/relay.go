@@ -235,8 +235,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		defer lbAttempt.End(false, false)
 		service.AppendUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
-			// 计费准备失败发生在请求上游之前，渠道本身无过错
-			lbAttempt.End(false, false)
+			// 计费准备失败发生在请求上游之前，渠道本身无过错，仅释放并发资源，不洗白历史失败
+			lbAttempt.EndCancelled()
 			newAPIError = billingErr
 			break
 		}
@@ -249,8 +249,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			} else {
 				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
-			// 读请求体失败同样发生在请求上游之前
-			lbAttempt.End(false, false)
+			// 读请求体失败同样发生在请求上游之前，仅释放并发资源，不洗白历史失败
+			lbAttempt.EndCancelled()
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -381,7 +381,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 					)
 					relayInfo.LastError = newAPIError
 					logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
-					lbAttempt.End(false, false)
+					lbAttempt.EndCancelled()
 					break
 				}
 			}
@@ -630,10 +630,7 @@ func isClientAbortUpstreamHang(c *gin.Context, relayInfo *relaycommon.RelayInfo,
 		channelID := relayInfo.GetChannelID()
 		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
 		if lbPolicy.TTFTTimeoutMs > 0 {
-			channelThreshold := time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
-			if channelThreshold < hangThreshold {
-				hangThreshold = channelThreshold
-			}
+			hangThreshold = time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
 		}
 	}
 	return time.Since(attemptStartTime) >= hangThreshold

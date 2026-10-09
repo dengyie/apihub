@@ -133,8 +133,8 @@ func reload() error {
 	}
 	policyMtime = fi.ModTime()
 
-	var p Policy
-	if err := yaml.Unmarshal(data, &p); err != nil {
+		p := *DefaultPolicy()
+		if err := yaml.Unmarshal(data, &p); err != nil {
 		policyReloadFailures.Add(1)
 		return err
 	}

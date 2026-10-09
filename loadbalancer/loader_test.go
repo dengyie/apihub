@@ -111,3 +111,22 @@ func TestReloadSuccessResetsFailureCounter(t *testing.T) {
 			"成功一次即清零，计数只用于把失败日志降频")
 	})
 }
+
+func TestReloadOmittedFieldsRetainDefaultPolicyValues(t *testing.T) {
+	restore := MarkPolicyLoadFailedForTest(false)
+	defer restore()
+
+	withPolicyFile(t, "enabled: true\n", func(path string) {
+		require.NoError(t, reload())
+		policy := GetPolicy()
+		require.NotNil(t, policy)
+		assert.True(t, policy.Enabled)
+		// 验证未显式配置的字段保留 DefaultPolicy 的默认值，杜绝 0 值使熔断器静默瘫痪
+		assert.Equal(t, 2, policy.MaxRetries)
+		assert.Equal(t, 50, policy.Default.MaxInflight)
+		assert.Equal(t, int64(15000), policy.Default.TTFTTimeoutMs)
+		assert.Equal(t, 5, policy.Default.Breaker.FailureThreshold)
+		assert.Equal(t, int64(60), policy.Default.Breaker.CooldownSeconds)
+	})
+}
+
