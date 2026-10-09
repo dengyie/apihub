@@ -2,15 +2,15 @@
 
 > **文档性质**：前端工程架构与系统级设计规范（Architecture & Implementation Specification）
 >
-> **更新时间**：2026-10-09
+> **更新时间**：2026-10-10
 >
-> **状态**：前端已实施并完成本地验收；未发布（验收证据见第 10 节）
+> **状态**：MangoApi 品牌、动画字标与概览精简已随 v29.39 发布，最新 v29.40 完整保留并通过验收（见第 11 节）
 >
 > **对标参考仓**：`Ooxygen7/SnowAPI` (`/private/tmp/snowapi-ref`)
 >
 > **目标工程**：`dengyie/apihub`（原 `dengyie/new-api`）
 >
-> **实施工作区**：`/Users/mango/project/apihub-ui-overhaul`，分支 `codex/apihub-ui-overhaul`
+> **发布验收工作区**：`/Users/mango/project/mangoapi-release`，分支 `codex/mangoapi-release`；前期开发位于 `apihub-ui-overhaul`
 >
 > **起点**：2026-10-09 核验的 GitHub main `837700e1db0b434b0f939bf4bb2beea51faa0ddc`（v29.37）。主工作区 `/Users/mango/newapi-test` 的既有改动保留给原任务。
 
@@ -356,13 +356,13 @@ Phase 4: 特化单页与视觉精细化打磨
 
 ### 10.5 本地交付位置
 
-- 源码：`/Users/mango/project/apihub-ui-overhaul`，分支 `codex/apihub-ui-overhaul`。
+- 最终验收源码：`/Users/mango/project/mangoapi-release`，分支 `codex/mangoapi-release`。原 `apihub-ui-overhaul` 工作区随后有其他后端开发，本次收尾在独立工作区进行。
 - 公开页面生产构建预览：`http://127.0.0.1:4176/`，只转发公开 GET/HEAD 请求；此入口用于界面浏览，不提交真实登录凭据。
 - 控制台生产构建预览：`http://127.0.0.1:17412/dashboard`，使用本地测试账户与数据。若会话已过期，可用测试用户名 `ui-preview`、密码 `preview-only` 登录此本地入口。
 - 截图及最终验证日志：`/Users/mango/project/apihub-ui-review-20261009/`，其中 `ui-overview.png` 汇总首页、登录、模型广场与本地控制台的真实浏览器截图。
 - 完整工作记录与预览脚本：`/tmp/apihub-ui-review-20261009/`。预览依赖本机运行进程，仅绑定 `127.0.0.1`。
 
-本轮发布版本为 `v29.38`，按用户授权走 GitHub `main` 的 CI → 构建 → 蓝绿部署门禁；实际提交 SHA、流水线链接及生产验收结果以既有 `new-api 部署与运维` 权威记录为准。保护主工作区 `/Users/mango/newapi-test` 的原有改动。
+第 10 节对应首次发布的 `v29.38`，最新的 `v29.39` 增量见第 11 节。按用户授权走 GitHub `main` 的 CI → 构建 → 蓝绿部署门禁；实际运行提交、槽位及回滚指针以既有 `new-api 部署与运维` 权威记录和现场核验为准。保护主工作区 `/Users/mango/newapi-test` 的原有改动。
 
 
 ## 11. MangoApi 品牌与概览精简（2026-10-10）
@@ -372,5 +372,16 @@ Phase 4: 特化单页与视觉精细化打磨
 - 首页卡片使用从统一 `useSystemConfig` 传入的芒果猫 Logo，替换原独立星号占位；品牌图始终与页头、登录和控制台同源。
 - `/dashboard/overview` 移除 API 信息、公告、FAQ、运行时间四个栏目；接入向导、用量统计和管理员真实性能指标保留。对应弹窗、测速辅助函数、面板包装、类型、客户端 uptime 请求及仅供栏目使用的 Hooks 已移除。API 地址 Hook 收敛为 `use-api-info.ts`，继续服务接入向导和密钥操作；公告仍通过顶部通知展示。
 - FAQ 与运行时间没有其他前端展示入口，相关内容设置入口、表单和专属历史配置转换同步清理；没有新增开关或空壳。后端现有 `/api/status` 和运行时间接口仍有公开契约，未凭前端删除推断外部客户端不存在。
-- 自动化回归先在旧实现复现四个失败：两字标 clip 冲突、暂停标识不生效、普通用户和管理员的旧栏目仍显示。修复后 7 文件 / 106 个受影响测试通过；另外验证接入向导继续使用配置的 API URL、管理员性能面板仍显示。全量测试、最终构建和部署结果在发布后补充。
+- 自动化回归先在旧实现复现四个失败：两字标 clip 冲突、暂停标识不生效、普通用户和管理员的旧栏目仍显示；修复后验证接入向导继续使用配置的 API URL、管理员性能面板仍显示。最终发布提交的 GitHub CI 为 **183 文件 / 2,269 测试全部通过**；常显条纹调整后的独立工作区专项为 5 文件 / 60 测试通过。
 - 生产配置只读核验：SQLite `options` 中没有 `SystemName` 覆盖行，线上旧名称来自后端默认值；随新版本生效即可，无需改写生产数据库。蓝绿部署仍先创建既有一致性备份。
+
+### 11.1 最终验证与发布
+
+- 独立工作区 `bun run typecheck`、`bun run lint`、独占执行的 `bun run format:check`、`bun run copyright:check` 与 `bun run build` 均通过；lint 保留 17 条历史 warning。`GOTOOLCHAIN=local GOPROXY=off go test ./common ./controller` 和根模块构建通过；生产 CI 另完成 root/relaykit 的 vet、build、test 及部署脚本 187 项检查。
+- Knip 对照基线无新增问题，未使用导出由 300 项降至 294 项；既有未使用文件、依赖和类型仍需按实际调用关系逐项判断，未据扫描结果批量删除。
+- 390px 手机及桌面首页、深浅主题、暂停/恢复播放和页脚可见性均经生产构建浏览器检查；主标题始终保留完整 MangoApi，两个字标 clip 独立。控制台桌面/手机只出现概览、用量概览与管理员性能健康，没有页面横向溢出。登录态与旧开关全部启用的场景使用本地 fixture，截图中的余额和指标是测试数据。
+- 发布收尾时另一个开发会话已将本次全部 67 个路径和其后端修复合入 `main` 的 `63518a55d3d41a1212c9db8dd7aafc33f0899705`；逐文件比对确认本次内容完全一致。独立发布分支 rebase 后 Git 自动丢弃已进入上游的重复补丁，保留上游后端提交。
+- 功能发布凭据：[CI](https://github.com/dengyie/apihub/actions/runs/37980204834)、[Build Release](https://github.com/dengyie/apihub/actions/runs/37980204817)、[Deploy](https://github.com/dengyie/apihub/actions/runs/37980204899) 全部成功。Deploy 自身的 CI gate → 构建 → 蓝绿交接完整通过，2026-10-10 03:36（Asia/Shanghai）完成。
+- 后续主干 `3da459ab5b435dc8370a9a5554764937a8102a4d` 为 v29.40 后端修复；其 `web/` 与本次已验收前端完全一致。[v29.40 CI](https://github.com/dengyie/apihub/actions/runs/37983234111)、[构建](https://github.com/dengyie/apihub/actions/runs/37983234088)、[部署](https://github.com/dengyie/apihub/actions/runs/37983234086) 均成功，发布收尾继续基于最新主干。
+- 公网 `/api/status` 返回 `v29.40+3da459ab5b435dc8370a9a5554764937a8102a4d` 和 `system_name=MangoApi`。初始 HTML 标题、7 个入口资源、运行时 Logo 均通过；公网资源摘要与部署的 CI 产物目录一致，Logo/favicon 另与源文件逐字节一致。本地与 Linux CI 的 JavaScript chunk 指纹可不同，不把跨构建环境的文件名当作发布一致性依据。
+- 证据仍集中在 `/Users/mango/project/apihub-ui-review-20261009/`：`production-review.md`、`production-mango-home.png`、`mango-overview-desktop-fixture.png`、`mango-overview-mobile-fixture.png`、`mango-production-public-verification.json`。后续文档收尾提交不改变功能代码；实际运行 SHA、部署链接与回滚指针同步到既有运维手册。
