@@ -524,13 +524,32 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	db := setupManageUserTestDB(t)
 	user := model.User{Username: "concurrent-quota", Quota: 1000}
 	require.NoError(t, db.Create(&user).Error)
+	// The barrier waits for the FIRST adjustment to reach its read, not for
+	// both. It used to wait for both, which was satisfiable only while this
+	// database was opened without _txlock=immediate: with two writers in
+	// overlapping read snapshots, both reached their SELECT and the test
+	// exercised the collision directly. Under the production DSN, which sets
+	// BEGIN IMMEDIATE, the second writer blocks on the write lock before it
+	// issues any query -- it cannot arrive at this callback at all until the
+	// first one commits. A rendezvous on two therefore never completes, and the
+	// test hangs until the package timeout rather than failing.
+	//
+	// That serialisation is the behaviour worth asserting: SQLite writers queue
+	// through the busy timeout instead of losing an update or dying on a stale
+	// snapshot. So both goroutines are still started together, and the
+	// assertions below still require every committed adjustment to chain
+	// exactly from the previous balance -- but the coordination no longer
+	// demands an interleaving the database is built to prevent.
 	var ready sync.WaitGroup
-	ready.Add(2)
+	ready.Add(1)
+	var arrived sync.Once
 	release := make(chan struct{})
 	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:concurrent_quota_start", func(tx *gorm.DB) {
 		if tx.Statement.Table == "users" {
-			ready.Done()
-			<-release
+			arrived.Do(func() {
+				ready.Done()
+				<-release
+			})
 		}
 	}))
 	type result struct {

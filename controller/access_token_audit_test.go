@@ -832,7 +832,26 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 	t.Helper()
 	if kind == "sqlite" {
 		path := t.TempDir() + "/audit.db"
-		db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
+		// The concurrency pragmas are applied, because this database stands in for
+		// the production one and the difference is load-bearing. Opened bare, as
+		// it was, SQLite stays on its default rollback journal with no busy
+		// handler and a deferred (BEGIN DEFERRED) transaction, and under the
+		// parallel load of a full CI run two writers collide: the loser gets
+		// SQLITE_BUSY_SNAPSHOT, which no busy timeout covers, so the caller sees a
+		// database error instead of the conflict it was supposed to see.
+		//
+		// That surfaced as
+		// TestSecurityAccountDeletionConcurrentRequestsHaveOneWinner failing with
+		// 0 winners instead of 1 -- two concurrent account deletions where both
+		// were rejected for the wrong reason. It passed locally and failed on the
+		// runner, because the runner is the only place with enough contention to
+		// lose the race.
+		//
+		// common.SQLiteConcurrencyParams, not common.SQLitePath: the latter is
+		// reassigned by TestAuditDatabaseMatrix to point at the throwaway file
+		// this function returns, and reading it here meant the second call in a
+		// single test got a DSN with no pragmas at all.
+		db, err := gorm.Open(sqlite.Open(path+"?"+common.SQLiteConcurrencyParams), &gorm.Config{})
 		require.NoError(t, err)
 		return db, path
 	}

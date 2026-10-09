@@ -61,4 +61,12 @@ func UsingLogDatabase(databaseType DatabaseType) bool {
 //     front, so writers serialize through the busy timeout instead of dying on
 //     a stale snapshot. Autocommit SELECTs stay concurrent because WAL keeps
 //     readers unlocked.
-var SQLitePath = "one-api.db?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+var SQLitePath = "one-api.db?" + SQLiteConcurrencyParams
+
+// SQLiteConcurrencyParams carries the query parameters described above and
+// nothing else, so a test can build a DSN for a throwaway file that behaves
+// like the production one. It is a separate constant because SQLitePath itself
+// is reassigned at runtime -- tests point it at a temporary database -- and
+// anything derived from it at the point of use silently loses the pragmas the
+// second time it is read.
+const SQLiteConcurrencyParams = "_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_txlock=immediate"
