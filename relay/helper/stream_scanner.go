@@ -485,7 +485,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 的渠道错误」。两者宽窄不同——图片中继会把上游错误事件作为数据帧内联交付后
 	// 正常 EOF 收尾（soft_errors=1, received>0），那是成功路径，不该重试。
 	isClientGone := info.StreamStatus.IsClientAbort() ||
-		(c != nil && c.Request != nil && c.Request.Context().Err() != nil)
+		(c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled))
 
 	streamBroken := false
 	if !isClientGone {
@@ -503,9 +503,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	if streamBroken {
 		endReason := info.StreamStatus.Summary()
+		_, endErr := info.StreamStatus.EndState()
 		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 传输异常中断（%s, 已收块=%d, 字节=%d），触发换渠道重试并熔断",
 			channelID, endReason, info.ReceivedResponseCount, info.ReceivedContentBytes))
-		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason}
+		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason, Err: endErr}
 	}
 	return nil
 }
