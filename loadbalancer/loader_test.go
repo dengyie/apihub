@@ -129,4 +129,3 @@ func TestReloadOmittedFieldsRetainDefaultPolicyValues(t *testing.T) {
 		assert.Equal(t, int64(60), policy.Default.Breaker.CooldownSeconds)
 	})
 }
-
