@@ -851,9 +851,20 @@ func newAuditTestDatabase(t *testing.T, kind, dsn string) (*gorm.DB, string) {
 		// reassigned by TestAuditDatabaseMatrix to point at the throwaway file
 		// this function returns, and reading it here meant the second call in a
 		// single test got a DSN with no pragmas at all.
-		db, err := gorm.Open(sqlite.Open(path+"?"+common.SQLiteConcurrencyParams), &gorm.Config{})
+		//
+		// The returned string is the FULL DSN, pragmas included, not the bare
+		// path. Several callers assign it to common.SQLitePath and then reopen
+		// through InitDB -> chooseDB, which opens sqlite.Open(common.SQLitePath).
+		// Returning the path alone handed the reopened connection a DSN with no
+		// pragmas at all: measured busy_timeout=5000 (SQLite's own default) and
+		// journal_mode=delete, which is the rollback journal and no busy handler
+		// -- exactly the configuration the comment above exists to rule out.
+		// Callers that only need the *gorm.DB ignore this value, and none of
+		// them treat it as a filename.
+		fullDSN := path + "?" + common.SQLiteConcurrencyParams
+		db, err := gorm.Open(sqlite.Open(fullDSN), &gorm.Config{})
 		require.NoError(t, err)
-		return db, path
+		return db, fullDSN
 	}
 	require.NotEmpty(t, dsn)
 	name := fmt.Sprintf("newapi_audit_%d", time.Now().UnixNano())
