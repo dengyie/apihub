@@ -37,6 +37,7 @@ type DataTableHeaderProps<TData> = {
   className?: string
   rowClassName?: string
   getColumnClassName?: DataTableColumnClassName
+  sticky?: boolean
 }
 
 export function DataTableHeader<TData>({
@@ -45,6 +46,7 @@ export function DataTableHeader<TData>({
   className,
   rowClassName,
   getColumnClassName,
+  sticky = false,
 }: DataTableHeaderProps<TData>) {
   const { t } = useTranslation()
 
@@ -59,6 +61,7 @@ export function DataTableHeader<TData>({
               data-column-id={header.column.id}
               className={cn(
                 'relative',
+                sticky && 'sticky top-0 z-10 bg-(--table-header-bg)',
                 getColumnClassName?.(header.column.id, 'header')
               )}
               style={getHeaderSizeStyle(header, applyHeaderSize)}

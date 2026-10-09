@@ -20,7 +20,11 @@ import { cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { LandingWordmark } from '../components/landing-wordmark'
-import { computeWordmarkMetrics, estimateEmWidth } from '../wordmark-metrics'
+import {
+  computeWordmarkMetrics,
+  estimateEmWidth,
+  WORDMARK_DESCENT_RATIO,
+} from '../wordmark-metrics'
 
 describe('estimateEmWidth', () => {
   // Multi-character strings: a single character hits the floor below.
@@ -80,10 +84,13 @@ describe('computeWordmarkMetrics', () => {
 
   test('keeps the baseline inside the viewBox so the mark is not clipped', () => {
     for (const brand of ['MangoApi', '接', 'x'.repeat(40)]) {
-      const { baseline, height } = computeWordmarkMetrics(brand)
+      const { baseline, fontSize, height } = computeWordmarkMetrics(brand)
 
       expect(baseline).toBeGreaterThan(0)
       expect(baseline).toBeLessThan(height)
+      expect(baseline + fontSize * WORDMARK_DESCENT_RATIO).toBeLessThanOrEqual(
+        height
+      )
     }
   })
 

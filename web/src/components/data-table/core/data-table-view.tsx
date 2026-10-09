@@ -154,9 +154,10 @@ function SplitHeaderTableView<TData>({
           <DataTableHeader
             table={props.table}
             applyHeaderSize={props.applyHeaderSize}
-            className={cn('sticky top-0 z-10', props.tableHeaderClassName)}
+            className={props.tableHeaderClassName}
             rowClassName={props.tableHeaderRowClassName}
             getColumnClassName={getColumnClassName}
+            sticky
           />
           {renderTableBody(props, rows, colSpan, getColumnClassName)}
         </Table>

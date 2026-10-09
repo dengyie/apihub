@@ -20,9 +20,11 @@ For commercial licensing, please contact support@quantumnous.com
  *  every brand length, so the footer's height never depends on the operator's
  *  `system_name`. Only the font size inside the box varies. */
 const BAND_WIDTH = 1120
-const BAND_HEIGHT = 210
+const BAND_HEIGHT = 250
 /** Cap height as a fraction of the font size, used to centre the glyphs. */
 const CAP_HEIGHT_RATIO = 0.7
+/** Descender as a fraction of the font size, reserved for glyphs such as `g`. */
+export const WORDMARK_DESCENT_RATIO = 0.22
 /** Tracking in em, mirrored by `letter-spacing` in `landing.css`. Negative
  *  values tighten the mark, as at the 260px reference size where this was
  *  -18px. */
@@ -81,9 +83,11 @@ export function computeWordmarkMetrics(brand: string): WordmarkMetrics {
     fontSize,
     width: BAND_WIDTH,
     height: BAND_HEIGHT,
-    // Centred on the cap box, so the mark stays optically centred in the band
-    // at every size instead of resting on a fixed baseline.
-    baseline: Math.round((BAND_HEIGHT + fontSize * CAP_HEIGHT_RATIO) / 2),
+    // Centre the cap and descender together, so lower-case glyphs such as `g`
+    // stay inside the SVG viewport instead of being clipped at the bottom.
+    baseline: Math.round(
+      (BAND_HEIGHT + fontSize * (CAP_HEIGHT_RATIO - WORDMARK_DESCENT_RATIO)) / 2
+    ),
     rows: Math.ceil(BAND_HEIGHT / STRIPE_STEP),
   }
 }
