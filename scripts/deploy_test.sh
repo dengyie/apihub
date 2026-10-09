@@ -793,41 +793,92 @@ prune_backup_dirs >/dev/null 2>&1 && ok "a missing backup directory is not an er
 BACKUP_DIR="$BD"
 
 # ---------------------------------------------------------------------------
-# BACKUP_KEEP is read into (( )) arithmetic inside prune_backup_dirs, and bash
+# These settings are read into (( )) arithmetic later in the script, and bash
 # resolves a bare non-numeric operand there as an unset VARIABLE NAME, which is
-# 0. "5x" therefore printed an arithmetic complaint to stderr and then compared
-# as "1 <= 0": false, so it deleted every deploy backup except the rollback
-# target. The complaint is not a failure -- the function kept going and pruned.
-# The validation lives at the top level of deploy.sh (it has to, since the
-# variable is consumed long after any argument parsing), so it is exercised in
-# a subprocess rather than by re-sourcing.
+# 0. BACKUP_KEEP="5x" therefore printed an arithmetic complaint to stderr and
+# then compared as "1 <= 0": false, so it deleted every deploy backup except
+# the rollback target. The complaint is not a failure -- the function kept going
+# and pruned.
+#
+# Every setting consumed that way gets the same guard in deploy.sh, so every
+# one of them is checked here. The validation lives at the top level of
+# deploy.sh (it has to, since the variables are consumed long after any argument
+# parsing), so it is exercised in a subprocess rather than by re-sourcing.
 # ---------------------------------------------------------------------------
-echo "BACKUP_KEEP validation"
+echo "numeric configuration validation"
 
-run_with_backup_keep() {
-  BACKUP_KEEP="$1" bash "$SCRIPT_DIR/deploy.sh" --status 2>&1 | head -1
+run_with_config() {
+  env "$1=$2" bash "$SCRIPT_DIR/deploy.sh" --status 2>&1 | head -1
 }
 
-for badv in 5x abc -1 3.5; do
-  out="$(run_with_backup_keep "$badv")"
-  if [[ $out == *"BACKUP_KEEP must be a non-negative integer"* ]]; then
-    ok "rejects a malformed BACKUP_KEEP ($badv) instead of pruning everything"
-  else
-    bad "rejects a malformed BACKUP_KEEP ($badv) instead of pruning everything" "$out"
-  fi
+NUMERIC_VARS="WEB_KEEP BACKUP_KEEP READY_TIMEOUT FINGERPRINT_TIMEOUT MIN_WEB_INDEX_BYTES MIN_WEB_STATIC_FILES"
+
+for v in $NUMERIC_VARS; do
+  for badv in 5x abc -1 3.5 " 5" "5 "; do
+    out="$(run_with_config "$v" "$badv")"
+    if [[ $out == *"$v must be a non-negative integer"* ]]; then
+      ok "rejects a malformed $v ($badv)"
+    else
+      bad "rejects a malformed $v ($badv)" "$out"
+    fi
+  done
 done
 
 # The guard must not fire on the values an operator actually uses, or it would
 # break a working deploy to defend against a typo. Getting past it is visible as
-# the script reaching the next check instead of complaining about BACKUP_KEEP.
-for goodv in 0 1 5 25; do
-  out="$(run_with_backup_keep "$goodv")"
-  if [[ $out != *"BACKUP_KEEP must be"* ]]; then
-    ok "accepts a valid BACKUP_KEEP ($goodv)"
+# the script reaching the next check instead of complaining about the variable.
+for v in $NUMERIC_VARS; do
+  for goodv in 0 1 5 25; do
+    out="$(run_with_config "$v" "$goodv")"
+    if [[ $out != *"must be a non-negative integer"* ]]; then
+      ok "accepts a valid $v ($goodv)"
+    else
+      bad "accepts a valid $v ($goodv)" "$out"
+    fi
+  done
+done
+
+# ${VAR:-default} substitutes on empty as well as unset, so an operator who
+# exports an empty variable must get the shipped default rather than a failure.
+# Tightening these to ${VAR-default} would turn a blank export into a refused
+# deploy, which is a worse trade than the typo the guard exists to catch.
+for v in $NUMERIC_VARS PORT; do
+  out="$(run_with_config "$v" "")"
+  if [[ $out != *"must be a non-negative integer"* && $out != *"must be between"* ]]; then
+    ok "falls back to the default for an empty $v instead of refusing the deploy"
   else
-    bad "accepts a valid BACKUP_KEEP ($goodv)" "$out"
+    bad "falls back to the default for an empty $v instead of refusing the deploy" "$out"
   fi
 done
+
+# PORT reaches printf '%04X' for the listening-socket probe, so an out-of-range
+# value renders as the wrong hex and the reuseport check inspects a socket that
+# does not exist while reporting success.
+for badp in 0 65536 99999 -1 3.5 80x; do
+  out="$(run_with_config PORT "$badp")"
+  if [[ $out == *"PORT must be"* ]]; then
+    ok "rejects an out-of-range PORT ($badp)"
+  else
+    bad "rejects an out-of-range PORT ($badp)" "$out"
+  fi
+done
+
+for goodp in 1 80 3000 65535; do
+  out="$(run_with_config PORT "$goodp")"
+  if [[ $out != *"PORT must be"* ]]; then
+    ok "accepts a valid PORT ($goodp)"
+  else
+    bad "accepts a valid PORT ($goodp)" "$out"
+  fi
+done
+
+# The shipped defaults must survive the guard they now pass through.
+out="$(bash "$SCRIPT_DIR/deploy.sh" --status 2>&1 | head -1)"
+if [[ $out != *"must be a non-negative integer"* && $out != *"PORT must be"* ]]; then
+  ok "the shipped defaults pass numeric validation"
+else
+  bad "the shipped defaults pass numeric validation" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # check-deploy-refs.sh once excluded scripts/deploy.sh from the /tmp/mnt scan,

@@ -128,14 +128,42 @@ log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "$(date '+%F %T')" "$*" >&2; }
 die()  { printf '[%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
-# Validate it here rather than trusting it into arithmetic later. In bash an
-# unquoted non-numeric operand inside (( )) is read as an unset VARIABLE
-# name and evaluates to 0 -- so BACKUP_KEEP="5x" printed an arithmetic
-# complaint to stderr and then compared as "1 <= 0", which is false, which
-# deleted every deploy backup except the rollback target. The complaint is
-# not a failure: the function carried on and pruned. A one-character typo
-# must stop the deploy, not silently empty the rollback history.
-[[ $BACKUP_KEEP =~ ^[0-9]+$ ]] || die "BACKUP_KEEP must be a non-negative integer, got '$BACKUP_KEEP'"
+# Validate them here rather than trusting them into arithmetic later. In bash an
+# unquoted non-numeric operand inside (( )) is read as an unset VARIABLE name
+# and evaluates to 0 -- so BACKUP_KEEP="5x" printed an arithmetic complaint to
+# stderr and then compared as "1 <= 0", which is false, which deleted every
+# deploy backup except the rollback target. The complaint is not a failure: the
+# function carried on and pruned. A one-character typo must stop the deploy, not
+# silently empty the rollback history.
+#
+# Every one of these is consumed the same way, so every one of them gets the
+# same guard:
+#   WEB_KEEP                (( n <= WEB_KEEP ))             prunes web version dirs
+#   BACKUP_KEEP             (( n <= BACKUP_KEEP ))          prunes deploy backups
+#   READY_TIMEOUT           (( now + READY_TIMEOUT ))       handoff readiness deadline
+#   FINGERPRINT_TIMEOUT     (( now + FINGERPRINT_TIMEOUT )) rollback fingerprint deadline
+#   MIN_WEB_INDEX_BYTES     (( bytes < MIN_WEB_INDEX_BYTES ))  web package check
+#   MIN_WEB_STATIC_FILES    (( count < MIN_WEB_STATIC_FILES )) web package check
+# A malformed value in any of them is either a silent prune-everything or a check
+# that never trips, and both are worse than refusing to deploy.
+#
+# Note this deliberately tests each variable by name rather than asserting the
+# value is non-empty. ${VAR:-default} substitutes on empty AND unset, so an
+# operator who exports an empty variable gets the default, not a failure here.
+for _numeric in WEB_KEEP BACKUP_KEEP READY_TIMEOUT FINGERPRINT_TIMEOUT \
+                MIN_WEB_INDEX_BYTES MIN_WEB_STATIC_FILES; do
+  [[ ${!_numeric} =~ ^[0-9]+$ ]] ||
+    die "$_numeric must be a non-negative integer, got '${!_numeric}'"
+done
+unset _numeric
+
+# PORT never reaches (( )), but it is formatted with printf '%04X' to build the
+# listening-socket probe and then interpolated into the slot's environment line.
+# PORT=99999 renders as 1869F and PORT=abc makes printf fail; either way the
+# reuseport check inspects the wrong socket while reporting success.
+[[ $PORT =~ ^[0-9]+$ ]] || die "PORT must be a non-negative integer, got '$PORT'"
+(( PORT >= 1 && PORT <= 65535 )) ||
+  die "PORT must be between 1 and 65535, got '$PORT'"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
