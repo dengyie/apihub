@@ -411,9 +411,6 @@ For commercial licensing, please contact support@quantumnous.com
   font-family: var(--font-serif);
   font-weight: 500 !important;
 }
-.provider-qwen {
-  font-weight: 750 !important;
-}
 .landing-section {
   margin-top: var(--landing-gap);
 }

@@ -116,8 +116,8 @@ export function LandingHero(props: {
           <span className='provider-openai'>OpenAI</span>
           <span className='provider-claude'>Anthropic</span>
           <span className='provider-gemini'>Gemini</span>
-          <span className='provider-deepseek'>deepseek</span>
-          <span className='provider-qwen'>Qwen</span>
+          <span className='provider-grok'>Grok</span>
+          <span className='provider-deepseek'>Deepseek</span>
         </div>
       </div>
       <AuthPromptDialog prompt={authPrompt} />
