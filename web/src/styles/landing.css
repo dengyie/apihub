@@ -158,19 +158,8 @@ For commercial licensing, please contact support@quantumnous.com
   background: currentColor;
 }
 .landing-hero h1 {
+  --wordmark-ink: var(--foreground);
   margin: 0;
-  font-size: clamp(48px, 5.75vw, 83px);
-  font-weight: 450;
-  line-height: 1.1;
-  letter-spacing: -0.062em;
-  text-wrap: balance;
-}
-.landing-hero h1 em {
-  display: block;
-  font-family: var(--font-serif);
-  font-weight: 400;
-  font-style: italic;
-  letter-spacing: -0.065em;
 }
 .landing-hero-sub {
   max-width: 440px;
@@ -290,10 +279,10 @@ For commercial licensing, please contact support@quantumnous.com
   flex-direction: column;
   gap: 4px;
 }
-.gateway-symbol {
-  font-size: 47px;
-  line-height: 1.05;
-  font-weight: 300;
+.gateway-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
 }
 .gateway-card-core strong {
   font-size: 22px;
@@ -701,9 +690,6 @@ For commercial licensing, please contact support@quantumnous.com
     gap: 0;
     padding-block: 50px 26px;
   }
-  .landing-hero h1 {
-    font-size: clamp(44px, 9vw, 64px);
-  }
   .landing-hero-sub {
     max-width: 460px;
     font-size: 14px;
@@ -726,8 +712,9 @@ For commercial licensing, please contact support@quantumnous.com
   .gateway-card-core strong {
     font-size: 20px;
   }
-  .gateway-symbol {
-    font-size: 36px;
+  .gateway-logo {
+    width: 36px;
+    height: 36px;
   }
   .gateway-key {
     font-size: 9px;
@@ -1052,17 +1039,24 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .landing-wordmark rect {
-  fill: #d7d5cb;
+  fill: var(--wordmark-ink, #d7d5cb);
+}
+
+.landing-wordmark-base {
+  opacity: 0.55;
+}
+
+.landing-wordmark-sweep rect {
   animation: landing-stripe 10s linear infinite;
   animation-delay: calc(var(--stripe-row) * -70ms);
   animation-play-state: paused;
 }
 
 .dark .landing-wordmark rect {
-  fill: #514f49;
+  fill: var(--wordmark-ink, #514f49);
 }
 
-.landing-wordmark[data-playing='true'] rect {
+.landing-wordmark[data-playing='true'] .landing-wordmark-sweep rect {
   animation-play-state: running;
 }
 

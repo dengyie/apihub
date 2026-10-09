@@ -12,7 +12,9 @@ import (
 
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
-var SystemName = "New API"
+const DefaultSystemName = "MangoApi"
+
+var SystemName = DefaultSystemName
 var Footer = ""
 var Logo = ""
 var TopUpLink = ""
@@ -125,6 +127,7 @@ var TelegramBotName = ""
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
+
 // ChannelDisableThreshold 测活探针的全时长禁用阈值（秒）。
 //
 // ⚠️ 标定基准是「拟真探针」而非真实流量：探针会真实生成最多 1024 token

@@ -23,7 +23,7 @@ var (
 )
 
 func printHelp() {
-	fmt.Println("APIHub " + Version + " - Production-grade multi-upstream AI gateway")
+	fmt.Println(DefaultSystemName + " " + Version + " - Production-grade multi-upstream AI gateway")
 	fmt.Println("Based on New API by QuantumNous - https://github.com/QuantumNous/new-api")
 	fmt.Println("Originally based on OneAPI by JustSong - https://github.com/songquanpeng/one-api")
 	fmt.Println("Maintainer: dengyie - https://github.com/dengyie/apihub")

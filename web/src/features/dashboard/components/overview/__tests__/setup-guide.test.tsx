@@ -34,10 +34,19 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import { OverviewDashboard } from '../overview-dashboard'
 
 const storageKey = 'dashboard_overview_setup_guide_expanded'
+const animationsDescriptor = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  'getAnimations'
+)
 let client: QueryClient
 let keyLookupError: Error | null
+let legacyPanelsEnabled: boolean
 
 beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, 'getAnimations', {
+    configurable: true,
+    value: () => [],
+  })
   window.localStorage.clear()
   useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
   useAuthStore.getState().auth.setUser({
@@ -52,6 +61,7 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   })
   keyLookupError = null
+  legacyPanelsEnabled = false
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
     switch (url) {
       case '/api/token/?p=1&size=10':
@@ -68,16 +78,31 @@ beforeEach(() => {
         return {
           data: {
             data: {
-              api_info_enabled: false,
-              announcements_enabled: false,
-              faq_enabled: false,
-              uptime_kuma_enabled: false,
+              api_info_enabled: legacyPanelsEnabled,
+              announcements_enabled: legacyPanelsEnabled,
+              faq_enabled: legacyPanelsEnabled,
+              uptime_kuma_enabled: legacyPanelsEnabled,
+              api_info: [
+                {
+                  url: 'https://api.example.com',
+                  route: '/v1',
+                  description: 'Gateway',
+                  color: 'blue',
+                },
+              ],
+              announcements: [{ content: 'Legacy announcement' }],
+              faq: [{ question: 'Legacy question', answer: 'Legacy answer' }],
             },
           },
         }
       case '/api/user/models':
         return { data: { success: true, data: ['gpt-4o-mini'] } }
+      case '/api/data':
       case '/api/data/self':
+        return { data: { success: true, data: [] } }
+      case '/api/perf-metrics/summary':
+        return { data: { success: true, data: { models: [], summary: null } } }
+      case '/api/uptime/status':
         return { data: { success: true, data: [] } }
       default:
         throw new Error(`Unexpected dashboard request: ${url}`)
@@ -87,6 +112,15 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  if (animationsDescriptor) {
+    Object.defineProperty(
+      HTMLElement.prototype,
+      'getAnimations',
+      animationsDescriptor
+    )
+  } else {
+    Reflect.deleteProperty(HTMLElement.prototype, 'getAnimations')
+  }
   client.clear()
   useAuthStore.setState(useAuthStore.getInitialState(), true)
   useSystemConfigStore.setState(useSystemConfigStore.getInitialState(), true)
@@ -237,5 +271,53 @@ describe('overview setup guide', () => {
     expect(
       screen.queryByRole('button', { name: 'Setup guide' })
     ).not.toBeInTheDocument()
+  })
+})
+
+describe('simplified overview', () => {
+  it.each([1, 10])(
+    'omits retired panels and uptime requests even when legacy flags are enabled (role %s)',
+    async (role) => {
+      legacyPanelsEnabled = true
+      useAuthStore.getState().auth.setUser({
+        id: 1,
+        username: 'dashboard-user',
+        role,
+        quota: 1000000,
+        used_quota: 1000,
+        request_count: 1,
+      })
+      await renderOverview()
+      expect(
+        await screen.findByRole('heading', { name: 'Usage at a glance' })
+      ).toBeVisible()
+      await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/status'))
+      for (const name of ['API Info', 'Announcements', 'FAQ', 'Uptime']) {
+        expect(
+          screen.queryByText(name, { exact: true })
+        ).not.toBeInTheDocument()
+      }
+      expect(api.get).not.toHaveBeenCalledWith('/api/uptime/status')
+      if (role === 10) {
+        expect(
+          await screen.findByRole('heading', { name: 'Performance health' })
+        ).toBeVisible()
+      } else {
+        expect(
+          screen.queryByRole('heading', { name: 'Performance health' })
+        ).not.toBeInTheDocument()
+      }
+    }
+  )
+
+  it('still uses the configured API address in the setup request after panel removal', async () => {
+    legacyPanelsEnabled = true
+    window.localStorage.setItem(storageKey, 'expanded')
+    await renderOverview()
+    expect(
+      await screen.findByText('https://api.example.com/v1/chat/completions', {
+        exact: false,
+      })
+    ).toBeVisible()
   })
 })

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -183,6 +184,11 @@ func TestZeroByteRetryableAndStreamDeliveredContent(t *testing.T) {
 		types.ErrorCodeBadResponseBody,
 		http.StatusBadGateway,
 	)))
+	assert.True(t, zeroByteRetryable(types.NewErrorWithStatusCode(
+		&loadbalancer.TTFTTimeoutError{ChannelID: 1, TimeoutMs: 5000},
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadGateway,
+	)))
 	assert.True(t, zeroByteRetryable(types.NewError(errors.New("dial"), types.ErrorCodeDoRequestFailed)))
 	assert.False(t, zeroByteRetryable(types.NewErrorWithStatusCode(
 		errors.New("bad json"),
@@ -236,4 +242,13 @@ func TestIsClientAbortUpstreamHang(t *testing.T) {
 		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 88},
 	}
 	assert.True(t, isClientAbortUpstreamHang(c6, info6, time.Now().Add(-15*time.Second)))
+}
+
+func TestRetryLoop_ContextDeadlineExceededDoesNotMarkClientAborted(t *testing.T) {
+	deadlineCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-deadlineCtx.Done()
+
+	assert.True(t, errors.Is(deadlineCtx.Err(), context.DeadlineExceeded))
+	assert.False(t, errors.Is(deadlineCtx.Err(), context.Canceled))
 }

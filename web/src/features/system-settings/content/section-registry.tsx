@@ -23,8 +23,6 @@ import { ApiInfoSection } from './api-info-section'
 import { ChatSettingsSection } from './chat-settings-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
-import { FAQSection } from './faq-section'
-import { UptimeKumaSection } from './uptime-kuma-section'
 
 /**
  * Validate and coerce DataExportDefaultTime to a safe value
@@ -70,26 +68,6 @@ const CONTENT_SECTIONS = [
       <ApiInfoSection
         enabled={settings['console_setting.api_info_enabled']}
         data={settings['console_setting.api_info']}
-      />
-    ),
-  },
-  {
-    id: 'faq',
-    titleKey: 'FAQ',
-    build: (settings: ContentSettings) => (
-      <FAQSection
-        enabled={settings['console_setting.faq_enabled']}
-        data={settings['console_setting.faq']}
-      />
-    ),
-  },
-  {
-    id: 'uptime-kuma',
-    titleKey: 'Uptime Kuma',
-    build: (settings: ContentSettings) => (
-      <UptimeKumaSection
-        enabled={settings['console_setting.uptime_kuma_enabled']}
-        data={settings['console_setting.uptime_kuma_groups']}
       />
     ),
   },

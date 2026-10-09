@@ -444,7 +444,7 @@ export function AnnouncementsSection({
           editingAnnouncement ? t('Edit Announcement') : t('Add Announcement')
         }
         description={t(
-          'Create or update system announcements for the dashboard'
+          'Create or update system announcements for notifications'
         )}
         contentClassName='max-w-2xl'
         contentHeight='auto'

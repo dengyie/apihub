@@ -23,7 +23,11 @@ import { ShaderArtwork } from '@/components/visuals/shader-artwork'
 
 import { CardSwap } from './card-swap'
 
-export function HeroGateway(props: { brand: string; paused: boolean }) {
+export function HeroGateway(props: {
+  brand: string
+  logo: string
+  paused: boolean
+}) {
   const { t } = useTranslation()
   return (
     <div className='hero-gateway'>
@@ -44,7 +48,13 @@ export function HeroGateway(props: { brand: string; paused: boolean }) {
             <ArrowUpRight size={16} />
           </div>
           <div className='gateway-card-core'>
-            <span className='gateway-symbol'>✳</span>
+            <img
+              src={props.logo}
+              alt=''
+              className='gateway-logo'
+              width={48}
+              height={48}
+            />
             <strong>{props.brand}</strong>
             <span>{t('Your models. One endpoint.')}</span>
           </div>

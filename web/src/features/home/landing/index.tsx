@@ -31,7 +31,7 @@ export function LandingPage() {
   const { systemName, logo } = useSystemConfig()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
-  const brand = systemName || 'APIHub'
+  const brand = systemName
 
   return (
     <div className='landing-root'>
@@ -47,7 +47,11 @@ export function LandingPage() {
         />
 
         <main id='landing-content' className='landing-main'>
-          <LandingHero brand={brand} isAuthenticated={isAuthenticated} />
+          <LandingHero
+            brand={brand}
+            logo={logo}
+            isAuthenticated={isAuthenticated}
+          />
           <LandingSections />
         </main>
 

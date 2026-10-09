@@ -36,7 +36,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
+import { useApiInfo } from '@/features/dashboard/hooks/use-api-info'
 import { useStatus } from '@/hooks/use-status'
 
 import { useApiKeys } from './api-keys-provider'

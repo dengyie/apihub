@@ -27,10 +27,12 @@ import { useAuthPrompt } from '@/hooks/use-auth-prompt'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
 
 import { HeroGateway } from './hero-gateway'
+import { LandingWordmark } from './landing-wordmark'
 import { ShuffleText } from './shuffle-text'
 
 export function LandingHero(props: {
   brand: string
+  logo: string
   isAuthenticated: boolean
 }) {
   const { t } = useTranslation()
@@ -47,8 +49,8 @@ export function LandingHero(props: {
             <ShuffleText text={t('An open gateway to AI')} />
           </p>
           <h1>
-            {t('Your models.')}
-            <em>{t('One gateway.')}</em>
+            <span className='sr-only'>{props.brand}</span>
+            <LandingWordmark brand={props.brand} paused={paused} />
           </h1>
           <p className='landing-hero-sub'>
             {t(
@@ -92,7 +94,7 @@ export function LandingHero(props: {
           </div>
         </div>
         <div className='landing-hero-visual'>
-          <HeroGateway brand={props.brand} paused={paused} />
+          <HeroGateway brand={props.brand} logo={props.logo} paused={paused} />
           <Button
             variant='ghost'
             size='icon'

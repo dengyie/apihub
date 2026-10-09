@@ -398,3 +398,33 @@ func TestDoRequest_StreamingBodyReadAfterHeaderTimeoutCancel(t *testing.T) {
 	}
 	assert.Equal(t, "data: hello\n\n", string(buf[:n]))
 }
+
+func TestDoRequest_UpstreamErrorWhenClientConnectedDoesNotAbort(t *testing.T) {
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	policy.Default.TTFTTimeoutMs = 5000
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body"))
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 77,
+		},
+	}
+
+	// 指向一个未监听的端口，产生常规的 dial 失败错误
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, "http://127.0.0.1:54321/v1/chat", strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.Error(t, err)
+	require.Nil(t, resp)
+
+	// 客户端依然在线，上游网络失败绝不能被判定为 ClientAbortedError (499)
+	assert.False(t, types.IsClientAbortedError(err))
+	assert.False(t, loadbalancer.IsTTFTTimeout(err))
+}

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	common2 "github.com/dengyie/apihub/common"
@@ -629,6 +630,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	// 收到 Header 后立即停止定时器，并将 context 取消延迟到 resp.Body.Close()，避免破坏流式传输。
 	var cancelHeaderTimeout context.CancelFunc
 	var headerTimer *time.Timer
+	var headerTimedOut atomic.Bool
 	if loadbalancer.Enabled() {
 		channelID := 0
 		if info != nil {
@@ -640,6 +642,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 			headerCtx, cancelHeaderTimeout = context.WithCancel(req.Context())
 			req = req.WithContext(headerCtx)
 			headerTimer = time.AfterFunc(time.Duration(lbPolicy.TTFTTimeoutMs)*time.Millisecond, func() {
+				headerTimedOut.Store(true)
 				cancelHeaderTimeout()
 			})
 		}
@@ -653,9 +656,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		if cancelHeaderTimeout != nil {
 			cancelHeaderTimeout()
 		}
-		// 若 Header 等待超时且客户端仍在线，判定为 TTFT 超时错误，触发透明换渠道重试
-		if c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
-			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "canceled") || strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "Timeout")) {
+		// 若 Header 等待超时且下游客户端仍在线，判定为确凿的 TTFT 超时错误，触发透明换渠道重试。
+		// 严禁使用松散字符串匹配，严格以 headerTimedOut 定时器触发为准。
+		if headerTimedOut.Load() && c != nil && c.Request != nil && c.Request.Context().Err() == nil {
 			channelID := 0
 			if info != nil {
 				channelID = info.GetChannelID()
@@ -664,7 +667,11 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 			logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%dms），触发换渠道重试", channelID, lbPolicy.TTFTTimeoutMs))
 			return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs}
 		}
-		if isClientCanceled(err, req.Context()) {
+		var clientCtx context.Context
+		if c != nil && c.Request != nil {
+			clientCtx = c.Request.Context()
+		}
+		if isClientCanceled(err, clientCtx) {
 			logger.LogInfo(c, "do request aborted: client closed connection")
 			return nil, types.NewClientAbortedError(err)
 		}

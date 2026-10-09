@@ -16,19 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-/**
- * Get plain text preview (strip HTML tags and Markdown formatting)
- */
-export function getPreviewText(
-  content: string,
-  maxLength: number = 60
-): string {
-  if (!content) return ''
-  const plainText = content
-    .replaceAll(/<[^>]*>/g, '') // Remove HTML tags
-    .replaceAll(/[#*_]/g, '') // Remove Markdown formatting symbols
-    .trim()
-  return plainText.length > maxLength
-    ? `${plainText.substring(0, maxLength)}...`
-    : plainText
+import { useStatus } from '@/hooks/use-status'
+
+import type { ApiInfoItem } from '../types'
+
+/** Configured API addresses used by setup examples and API key actions. */
+export function useApiInfo(): { items: ApiInfoItem[]; loading: boolean } {
+  const { status, loading } = useStatus()
+  const items =
+    status && status.api_info_enabled !== false
+      ? ((status.api_info || []) as ApiInfoItem[])
+      : []
+  return { items, loading }
 }

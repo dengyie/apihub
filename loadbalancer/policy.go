@@ -10,6 +10,9 @@ import "time"
 // 又能在系统性慢上游时把总等待封住。
 const DefaultRequestTimeoutMs = 180000
 
+// DefaultTTFTTimeoutMs 默认首字超时（毫秒）。
+const DefaultTTFTTimeoutMs = 15000
+
 // DefaultEmptyStreamRetryBudgetMs 流式请求在「客户端仍未收到任何内容字节」
 // 时，换渠道重试的墙钟默认值（毫秒）。长流出字后立即作废，不套到
 // request_timeout_ms 上。
@@ -77,13 +80,42 @@ func GetRequestTimeout() time.Duration {
 
 // EmptyStreamRetryBudget 返回流式零字节换渠道重试墙钟；0 表示禁用。
 func (p *Policy) EmptyStreamRetryBudget() time.Duration {
-	if p == nil || p.EmptyStreamRetryBudgetMs == nil {
+	if p == nil {
 		return time.Duration(DefaultEmptyStreamRetryBudgetMs) * time.Millisecond
 	}
-	if *p.EmptyStreamRetryBudgetMs <= 0 {
-		return 0
+	if p.EmptyStreamRetryBudgetMs != nil {
+		if *p.EmptyStreamRetryBudgetMs <= 0 {
+			return 0
+		}
+		configured := time.Duration(*p.EmptyStreamRetryBudgetMs) * time.Millisecond
+		if reqTimeout := p.RequestTimeout(); reqTimeout > 0 && configured > reqTimeout {
+			configured = reqTimeout
+		}
+		return configured
 	}
-	return time.Duration(*p.EmptyStreamRetryBudgetMs) * time.Millisecond
+	// 当未显式配置 empty_stream_retry_budget_ms 时，自适应计算动态预算：
+	// 预算必须能够覆盖单次 TTFT 超时及后续重试窗口，避免「单次 TTFT 超时立即将整个重试掐死」的配置冲突死锁。
+	maxTTFT := p.Default.TTFTTimeoutMs
+	for _, ch := range p.Channels {
+		if ch.TTFTTimeoutMs > maxTTFT {
+			maxTTFT = ch.TTFTTimeoutMs
+		}
+	}
+	baseBudget := time.Duration(DefaultEmptyStreamRetryBudgetMs) * time.Millisecond
+	if maxTTFT > 0 {
+		retries := p.MaxRetries
+		if retries <= 0 {
+			retries = 1
+		}
+		needed := time.Duration(int64(retries+1)*int64(maxTTFT)) * time.Millisecond
+		if needed > baseBudget {
+			baseBudget = needed
+		}
+	}
+	if reqTimeout := p.RequestTimeout(); reqTimeout > 0 && baseBudget > reqTimeout {
+		baseBudget = reqTimeout
+	}
+	return baseBudget
 }
 
 // GetEmptyStreamRetryBudget 返回当前生效策略的流式零字节墙钟。

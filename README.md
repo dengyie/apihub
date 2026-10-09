@@ -1,6 +1,6 @@
 <div align="center">
 
-# APIHub
+# MangoApi
 
 **A production-hardened AI gateway — many upstreams, one endpoint**
 
@@ -13,9 +13,9 @@ itself derived from [One API](https://github.com/songquanpeng/one-api) by JustSo
 
 ---
 
-## What APIHub is
+## What MangoApi is
 
-APIHub is an OpenAI-compatible gateway that fronts many upstream model providers
+MangoApi is an OpenAI-compatible gateway that fronts many upstream model providers
 behind a single endpoint, with the reliability behaviour that a single-instance
 upstream gateway does not provide:
 
@@ -42,7 +42,7 @@ GitHub Actions.
 
 ## The load balancer
 
-Upstream New API routes on channel priority. APIHub adds a policy layer on top,
+Upstream New API routes on channel priority. MangoApi adds a policy layer on top,
 configured per channel in `data/loadbalancer.yaml` and **hot-reloaded within
 5 seconds** — no restart required.
 
@@ -97,7 +97,7 @@ per handler, so a new relay format does not silently reintroduce the bug.
 ## Zero-downtime deployment
 
 `supervisorctl restart` tears the listener down before starting the new
-process; every request arriving in that window is refused. APIHub makes that
+process; every request arriving in that window is refused. MangoApi makes that
 window unnecessary.
 
 Set `APIHUB_REUSEPORT=1` and both processes can hold the same port via
@@ -255,13 +255,13 @@ again on the host before each frontend publish.
 
 ## Attribution and licence
 
-APIHub is a derivative work under the **AGPL-3.0**. It is not an independent
+MangoApi is a derivative work under the **AGPL-3.0**. It is not an independent
 from-scratch implementation: the gateway core, billing, quota and console
 originate in New API, and the New API line itself derives from One API.
 
 As required by AGPLv3 Section 7, this distribution preserves upstream
 attribution and marks its changes. See [`NOTICE`](./NOTICE) for the required
-notices, the upstream links, and the summary of APIHub contributions.
+notices, the upstream links, and the summary of MangoApi contributions.
 
 New API itself carries an additional Section 7(b) notice that modified
 versions with a user interface must preserve:

@@ -16,8 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { describe, expect, test } from 'vitest'
+import { cleanup, render } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
+import { LandingWordmark } from '../components/landing-wordmark'
 import { computeWordmarkMetrics, estimateEmWidth } from '../wordmark-metrics'
 
 describe('estimateEmWidth', () => {
@@ -41,7 +43,7 @@ describe('computeWordmarkMetrics', () => {
   // textLength + lengthAdjust="spacingAndGlyphs", which stretched or squashed
   // the operator's site name by up to 2x depending on its length.
   test.each([
-    'New API',
+    'MangoApi',
     '接',
     'A',
     '一个非常非常长的中文站点名称',
@@ -56,17 +58,17 @@ describe('computeWordmarkMetrics', () => {
   })
 
   test('keeps the band at its nominal width for a realistic name', () => {
-    expect(computeWordmarkMetrics('New API').width).toBe(1120)
+    expect(computeWordmarkMetrics('MangoApi').width).toBe(1120)
     expect(computeWordmarkMetrics('接口').width).toBe(1120)
   })
 
   // The regression this guards: the band used to widen past MIN_FONT_SIZE while
   // its height shrank with the font size, and since the SVG is `height: auto`
   // the whole footer collapsed into a sliver for a long site name.
-  test.each(['New API', '一个非常非常长的中文站点名称', 'x'.repeat(40)])(
+  test.each(['MangoApi', '一个非常非常长的中文站点名称', 'x'.repeat(40)])(
     'holds the box at a constant %s size whatever the name length',
     (brand) => {
-      const reference = computeWordmarkMetrics('New API')
+      const reference = computeWordmarkMetrics('MangoApi')
 
       expect(computeWordmarkMetrics(brand)).toMatchObject({
         width: reference.width,
@@ -77,7 +79,7 @@ describe('computeWordmarkMetrics', () => {
   )
 
   test('keeps the baseline inside the viewBox so the mark is not clipped', () => {
-    for (const brand of ['New API', '接', 'x'.repeat(40)]) {
+    for (const brand of ['MangoApi', '接', 'x'.repeat(40)]) {
       const { baseline, height } = computeWordmarkMetrics(brand)
 
       expect(baseline).toBeGreaterThan(0)
@@ -86,10 +88,92 @@ describe('computeWordmarkMetrics', () => {
   })
 
   test('draws enough stripes to cover the band', () => {
-    for (const brand of ['New API', '接', 'x'.repeat(40)]) {
+    for (const brand of ['MangoApi', '接', 'x'.repeat(40)]) {
       const { height, rows } = computeWordmarkMetrics(brand)
 
       expect(rows * 6).toBeGreaterThanOrEqual(height)
     }
+  })
+})
+
+describe('wordmark rendering and motion', () => {
+  beforeEach(() => {
+    const matchMedia = window.matchMedia
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+      ...matchMedia(query),
+      matches: false,
+    }))
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(private callback: IntersectionObserverCallback) {}
+        observe(target: Element) {
+          this.callback(
+            [{ isIntersecting: true, target } as IntersectionObserverEntry],
+            this as unknown as IntersectionObserver
+          )
+        }
+        disconnect() {}
+      }
+    )
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  test('each mark clips its own name when the hero and footer render together', () => {
+    const { container, rerender } = render(
+      <>
+        <LandingWordmark brand='MangoApi' />
+        <LandingWordmark brand='Footer brand' />
+      </>
+    )
+    const clips = container.querySelectorAll('clipPath')
+    const marks = container.querySelectorAll('svg > g')
+    expect(clips).toHaveLength(2)
+    expect(clips[0].id).not.toBe(clips[1].id)
+    expect(marks[0]).toHaveAttribute('clip-path', `url(#${clips[0].id})`)
+    expect(marks[1]).toHaveAttribute('clip-path', `url(#${clips[1].id})`)
+    const firstClipId = clips[0].id
+
+    rerender(
+      <>
+        <LandingWordmark brand='Updated MangoApi' />
+        <LandingWordmark brand='Footer brand' />
+      </>
+    )
+    expect(container.querySelector('clipPath')).toHaveAttribute(
+      'id',
+      firstClipId
+    )
+    expect(clips[0]).toHaveTextContent('Updated MangoApi')
+    expect(clips[1]).toHaveTextContent('Footer brand')
+  })
+
+  test('pauses and resumes the visible stripe animation with the hero control', () => {
+    const { container, rerender } = render(<LandingWordmark brand='MangoApi' />)
+    const mark = container.querySelector('.landing-wordmark')
+    expect(mark).toHaveAttribute('data-playing', 'true')
+
+    rerender(<LandingWordmark brand='MangoApi' paused />)
+    expect(mark).toHaveAttribute('data-playing', 'false')
+
+    rerender(<LandingWordmark brand='MangoApi' paused={false} />)
+    expect(mark).toHaveAttribute('data-playing', 'true')
+  })
+
+  test('keeps the brand visible and static when reduced motion is preferred', () => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    vi.mocked(window.matchMedia).mockReturnValue({ ...media, matches: true })
+    const { container } = render(<LandingWordmark brand='MangoApi' />)
+    expect(container.querySelector('.landing-wordmark')).toHaveAttribute(
+      'data-playing',
+      'false'
+    )
+    expect(container.querySelector('clipPath text')).toHaveTextContent(
+      'MangoApi'
+    )
   })
 })

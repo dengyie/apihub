@@ -723,7 +723,7 @@ test('deprecated and flexible integration badges preserve provider selection and
   expect(select).toHaveBeenNthCalledWith(1, { kind: 'builtin', type: 8 })
 
   const details =
-    "New API's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently"
+    "MangoApi's flexible channel lets you configure upstream addresses and authentication per endpoint, choose native forwarding or supported protocol conversions, and configure model listing and balance queries independently"
   expect(advanced).toHaveAccessibleDescription(
     `Flexible integration · ${details}`
   )

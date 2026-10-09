@@ -197,6 +197,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		// 客户端已主动断开：快速退出重试，避免无效的渠道选路与资源占用。
+		// 必须严格检查 context.Canceled，不能误将网关整请求超时 (context.DeadlineExceeded) 当成下游取消。
+		if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled) {
+			if newAPIError == nil {
+				newAPIError = types.NewClientAbortedError(c.Request.Context().Err())
+			}
+			logger.LogInfo(c, "客户端已断开，停止重试")
+			break
+		}
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
@@ -351,19 +360,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if wasEmptyStream {
 			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id, relayInfo.OriginModelName)
 		}
-		if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
-			zeroByteRetryable(newAPIError) {
-			newAPIError = types.NewErrorWithStatusCode(
-				&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
-				types.ErrorCodeEmptyStreamBudgetExhausted,
-				http.StatusBadGateway,
-				types.ErrOptionWithSkipRetry(),
-			)
-			relayInfo.LastError = newAPIError
-			logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
-			lbAttempt.End(false, false)
-			break
-		}
+			if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
+				zeroByteRetryable(newAPIError) {
+				// 如果是渠道的首字超时且尚有重试机会，且客户端仍在等待，
+				// 不应因静态配置预算偏小而直接掐死重试，按策略实际配置的单次 TTFT 窗口动态放行
+				if loadbalancer.IsTTFTTimeout(newAPIError) &&
+					c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
+					retryParam.GetRetry() < common.RetryTimes {
+					channelTTFT := loadbalancer.GetPolicy().Resolve(channel.Id).TTFTTimeoutMs
+					if channelTTFT <= 0 {
+						channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
+					}
+					zeroByteDeadline = time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
+				} else {
+					newAPIError = types.NewErrorWithStatusCode(
+						&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
+						types.ErrorCodeEmptyStreamBudgetExhausted,
+						http.StatusBadGateway,
+						types.ErrOptionWithSkipRetry(),
+					)
+					relayInfo.LastError = newAPIError
+					logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
+					lbAttempt.End(false, false)
+					break
+				}
+			}
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)

@@ -23,7 +23,7 @@ import logoUrl from '../../public/logo.png'
  */
 
 // System Configuration Defaults
-export const DEFAULT_SYSTEM_NAME = 'New API'
+export const DEFAULT_SYSTEM_NAME = 'MangoApi'
 export const DEFAULT_LOGO = logoUrl
 
 // LocalStorage Keys
