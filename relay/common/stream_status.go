@@ -93,6 +93,21 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	})
 }
 
+// OverrideEndReason 权威覆写流结束状态。
+// 用于下游客户端主动断开或网关总超时等权威事件纠偏：即便内部 reader/writer 因连接关闭先行产生
+// 级联错误并触发了 SetEndReason（例如写入下游 EPIPE 报 HandlerStop 或上游读报错），
+// 下游主动断开依然是终态的真正根因，必须允许权威收敛为 ClientGone / Timeout。
+func (s *StreamStatus) OverrideEndReason(reason StreamEndReason, err error) {
+	if s == nil {
+		return
+	}
+	s.endOnce.Do(func() {}) // 消耗 endOnce，杜绝后续普通 SetEndReason 再次覆盖
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.EndReason = reason
+	s.EndError = err
+}
+
 // EndReasonValue reads the recorded reason under the lock.
 //
 // EndReason and EndError are written by SetEndReason, which runs on whichever

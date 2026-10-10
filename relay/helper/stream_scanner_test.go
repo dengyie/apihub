@@ -773,6 +773,8 @@ func TestStreamScannerHandler_UpstreamScanErrorStillRecorded(t *testing.T) {
 
 	var brokenErr *loadbalancer.StreamBrokenError
 	require.ErrorAs(t, err, &brokenErr, "真实的上游读错误必须触发换渠道重试")
+	assert.NotNil(t, brokenErr.Err, "StreamBrokenError 必须保留底层的 endErr")
+	assert.NotNil(t, errors.Unwrap(brokenErr), "StreamBrokenError 必须能解包出底层错误")
 	assert.False(t, info.StreamStatus.IsClientAbort())
 	assert.Greater(t, info.StreamStatus.TotalErrorCount(), 0, "真实读错误必须留痕")
 	assert.True(t, info.StreamStatus.IsUpstreamStreamFault())
@@ -793,10 +795,32 @@ func TestStreamScannerHandler_ContextDeadlineExceededNotClientAbort(t *testing.T
 	<-deadlineCtx.Done()
 	c.Request = c.Request.WithContext(deadlineCtx)
 
-	_ = StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
 
 	assert.False(t, info.StreamStatus.IsClientAbort(), "网关/请求超时 context.DeadlineExceeded 绝不能判定为客户端主动断开")
 	endReason, _ := info.StreamStatus.EndState()
 	assert.Equal(t, relaycommon.StreamEndReasonTimeout, endReason, "DeadlineExceeded 应当归因于超时")
+	var brokenErr *loadbalancer.StreamBrokenError
+	require.ErrorAs(t, err, &brokenErr, "网关超时引发的流中断应当返回 StreamBrokenError")
+	assert.NotNil(t, brokenErr.Err, "StreamBrokenError 必须携带 context.DeadlineExceeded")
+	assert.True(t, errors.Is(brokenErr, context.DeadlineExceeded), "StreamBrokenError 解包必须匹配 context.DeadlineExceeded")
 }
+
+func TestStreamScannerHandler_SSEKeepAliveCommentsIgnored(t *testing.T) {
+	t.Parallel()
+
+	// 模拟上游发送心跳注释，随后发送真正的 data 块与 [DONE]
+	body := ": keep-alive\n\n: ping\n\ndata: {\"text\":\"hi\"}\n\ndata: [DONE]\n\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	var receivedData []string
+	_ = StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		receivedData = append(receivedData, data)
+	})
+
+	assert.Equal(t, 1, info.ReceivedResponseCount, "心跳注释帧不得计入有效响应块数")
+	assert.Equal(t, []string{"{\"text\":\"hi\"}"}, receivedData, "心跳注释帧不得分发给业务 handler")
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+}
+
 

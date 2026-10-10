@@ -9,9 +9,23 @@ import (
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
 	kitdto "github.com/dengyie/apihub/relaykit/dto"
 )
+
+func init() {
+	loadbalancer.SetChannelMaxInflightProvider(func(channelID int) int {
+		if !common.MemoryCacheEnabled {
+			return 0
+		}
+		ch, err := CacheGetChannel(channelID)
+		if err == nil && ch != nil {
+			return ch.GetSetting().MaxInflight
+		}
+		return 0
+	})
+}
 
 var group2model2channels map[string]map[string][]int // enabled channel
 var channelsIDM map[int]*Channel                     // all channels include disabled

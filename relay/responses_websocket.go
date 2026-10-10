@@ -116,7 +116,15 @@ type responsesWSSession struct {
 	lockedRoute     dto.AdvancedCustomRoute
 }
 
-func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner ResponsesWSRequestRunner) *types.NewAPIError {
+// ResponsesWebSocketHelper 驱动整条 Responses WebSocket 连接，直到读循环结束。
+//
+// 它没有返回值，而且这是刻意的：它曾经返回 *types.NewAPIError，而唯一的调用方
+// （controller.ResponsesWebSocket）把这个返回值直接丢掉——连接级的失败根本没有
+// 记账入口。签名返回错误等于邀请后来者加一条 `return err`，而调用方会静默吞掉它，
+// 没有编译错误也没有任何测试变红。此处每一轮 response.create 的失败都由
+// runCall 在子请求上下文上处理并逐轮记账，所以本函数要么正常收尾要么已经收尾，
+// 不存在需要上报的返回值。去掉返回值让这个契约由编译器强制，而不是靠注释维持。
+func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner ResponsesWSRequestRunner) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	s := &responsesWSSession{ctx: ctx, cancel: cancel, client: client, runner: runner,
 		request: c.Request.Clone(ctx), requestID: c.GetString(common.RequestIdKey)}
@@ -136,7 +144,7 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 	for {
 		_, message, err := client.ReadMessage()
 		if err != nil {
-			return nil
+			return
 		}
 		envelope, streamID, err := parseResponsesWSEnvelope(message)
 		eventType := envelope.Type
@@ -156,7 +164,7 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 			case state.controls <- responsesWSControl{body: message, eventID: envelope.EventID, streamID: streamID}:
 			case <-state.done:
 			case <-s.ctx.Done():
-				return nil
+				return
 			default:
 				s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
 			}
@@ -237,6 +245,14 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		}
 		if info == nil && modelName != "" {
 			info = &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: common.GetContextKeyString(c, appconstant.ContextKeyUsingGroup), StartTime: started}
+		}
+		// Publish the info before the per-turn terminal recorder in the controller
+		// runs, so WebSocket type=5 rows carry the same response_model /
+		// billing_model / conversion_diagnostics the HTTP rows do. The recorder
+		// reads it off the gin context because it lives in another package, and it
+		// treats an absent value as nil, so writing here is purely additive.
+		if info != nil {
+			common.SetContextKey(c, appconstant.ContextKeyRelayInfo, info)
 		}
 		perfmetrics.RecordRelayResult(c.Request.Context(), info, apiErr)
 		// Settlement already marks the request policy successful, and nothing

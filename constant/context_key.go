@@ -76,6 +76,21 @@ const (
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
 
+	// ContextKeyErrorLogRecorded marks that the scope carrying this key already
+	// persisted its type=5 row. It suppresses only the *duplicate request-level*
+	// row the terminal recorder would otherwise add on top of what the
+	// channel-attempt path already wrote — N channel attempts still produce N
+	// rows on the 通用日志 page; it never collapses those N into 1.
+	ContextKeyErrorLogRecorded ContextKey = "error_log_recorded"
+
+	// ContextKeyRelayInfo exposes the *relaycommon.RelayInfo built by the relay
+	// layer to the per-turn terminal error recorder in the controller. The
+	// WebSocket path runs the recorder in a different package from the one that
+	// builds the info, and the gin context is the only surface they share. The
+	// value is absent on every HTTP request and whenever the relay never got far
+	// enough to build one; readers must treat a missing value as nil.
+	ContextKeyRelayInfo ContextKey = "relay_info"
+
 	// ContextKeyTokenAuditParams contains only the API token operation's safe metadata.
 	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.

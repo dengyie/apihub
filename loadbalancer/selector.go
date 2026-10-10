@@ -84,10 +84,18 @@ func IsEmptyStreamBudget(err error) bool {
 type StreamBrokenError struct {
 	ChannelID int
 	Reason    string
+	Err       error
 }
 
 func (e *StreamBrokenError) Error() string {
+	if e.Err != nil {
+		return "loadbalancer: upstream stream broken: " + e.Reason + ": " + e.Err.Error()
+	}
 	return "loadbalancer: upstream stream broken: " + e.Reason
+}
+
+func (e *StreamBrokenError) Unwrap() error {
+	return e.Err
 }
 
 // IsStreamBroken 判断是否为流中断错误（支持从 NewAPIError 中解包）

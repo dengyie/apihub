@@ -273,6 +273,7 @@ func TestCorroborationRegistryBounded(t *testing.T) {
 	corroborationRegistry.mu.Unlock()
 	assert.LessOrEqual(t, size, 4096, "佐证表必须有界")
 }
+
 // 佐证表的键含客户端给的模型名。已有并发用例只覆盖了「有界」这个结论，
 // 没有覆盖触发它的机制：并发下每条 key 各不相同，靠的是过期清扫那条路径。
 // 这里钉住第二道闸门 —— 一个窗口之内涌入的互不相同的键一条也过期不了，

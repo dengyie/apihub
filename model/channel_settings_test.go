@@ -9,6 +9,7 @@ import (
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	filterdto "github.com/dengyie/apihub/dto"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -48,6 +49,17 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestChannelMaxInflightProviderMemoryCacheGuard(t *testing.T) {
+	prevCache := common.MemoryCacheEnabled
+	defer func() {
+		common.MemoryCacheEnabled = prevCache
+	}()
+
+	// 1. 当 MemoryCacheEnabled 为 false 时，即使数据库存在对应渠道，动态提供器也应直接返回 0，严禁穿透查库
+	common.MemoryCacheEnabled = false
+	assert.Equal(t, 0, loadbalancer.GetChannelMaxInflight(99999), "MemoryCacheEnabled 为 false 时必须立即返回 0，不能查库")
 }
 
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {

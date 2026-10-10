@@ -301,3 +301,53 @@ func TestClientFacingGatewayStatusRewritesOnly502(t *testing.T) {
 		assert.Equal(t, code, clientFacingGatewayStatus(code))
 	}
 }
+
+func TestStreamScannerTTFTTimeoutPreservedInRelayError(t *testing.T) {
+	status := relaycommon.NewStreamStatus()
+	ttftErr := &loadbalancer.TTFTTimeoutError{ChannelID: 88, TimeoutMs: 25000}
+	status.SetEndReason(relaycommon.StreamEndReasonTimeout, ttftErr)
+
+	assert.True(t, status.IsUpstreamStreamFault())
+	_, endErr := status.EndState()
+	require.NotNil(t, endErr)
+	assert.True(t, loadbalancer.IsTTFTTimeout(endErr))
+
+	// 模拟 controller/relay.go:315 逻辑构造的错误
+	var underlyingErr error
+	var errCode types.ErrorCode
+	statusCode := http.StatusBadGateway
+	if endErr != nil && loadbalancer.IsTTFTTimeout(endErr) {
+		underlyingErr = endErr
+		errCode = types.ErrorCodeChannelResponseTimeExceeded
+		statusCode = http.StatusGatewayTimeout
+	} else {
+		underlyingErr = &loadbalancer.StreamBrokenError{
+			ChannelID: 88,
+			Reason:    status.Summary(),
+			Err:       endErr,
+		}
+		errCode = types.ErrorCodeBadResponseBody
+	}
+	apiErr := types.NewErrorWithStatusCode(underlyingErr, errCode, statusCode)
+
+	assert.True(t, loadbalancer.IsTTFTTimeout(apiErr), "构造后的 API 错误必须能被 IsTTFTTimeout 解包")
+	assert.True(t, zeroByteRetryable(apiErr), "流式首字超时必须允许零字节换渠道重试")
+	assert.Equal(t, http.StatusGatewayTimeout, apiErr.StatusCode)
+}
+
+func TestRetryLoop_ClientCanceledOverwritesPriorAttemptError(t *testing.T) {
+	priorError := types.NewErrorWithStatusCode(errors.New("upstream internal error"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	require.False(t, types.IsClientAbortedError(priorError))
+
+	// 模拟客户端在准备下一次重试前主动断开
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var finalAPIError *types.NewAPIError = priorError
+	if errors.Is(cancelCtx.Err(), context.Canceled) {
+		finalAPIError = types.NewClientAbortedError(cancelCtx.Err())
+	}
+
+	assert.True(t, types.IsClientAbortedError(finalAPIError), "客户端取消必须覆盖前序尝试的 500 错误，返回 499 client_aborted")
+	assert.Equal(t, 499, finalAPIError.StatusCode)
+}

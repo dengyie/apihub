@@ -359,20 +359,20 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
-			// 智能负载：首个有效数据到达即标记首字
-			markFirstByte()
+				if len(data) < 6 {
+					continue
+				}
+				if data[:5] != "data:" && data[:6] != "[DONE]" {
+					continue
+				}
+				data = data[5:]
+				data = strings.TrimSpace(data)
+				if data == "" {
+					continue
+				}
 
-			if len(data) < 6 {
-				continue
-			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
-				continue
-			}
-			data = data[5:]
-			data = strings.TrimSpace(data)
-			if data == "" {
-				continue
-			}
+				// 智能负载：首个有效数据/完成帧到达即标记首字（SSE 注释/心跳空帧不计入首字）
+				markFirstByte()
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
@@ -424,9 +424,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
 			// 避免为已放弃的请求继续消费上游 token。
 			if errors.Is(c.Request.Context().Err(), context.Canceled) {
-				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+				info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 			} else {
-				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
+				info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
 			}
 		}
 
@@ -434,12 +434,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		// 只要客户端 context 已取消或记录了 context canceled，最终原因应纠正为 ClientGone。
 		// 必须严格区分 context.Canceled 与 context.DeadlineExceeded，不能将网关超时误判为客户端放弃。
 		if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled) {
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 		} else if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.DeadlineExceeded) {
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
+			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
 		} else if _, recordedErr := info.StreamStatus.EndState(); recordedErr != nil && (errors.Is(recordedErr, context.Canceled) || strings.Contains(recordedErr.Error(), "context canceled")) {
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, recordedErr)
-	}
+			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, recordedErr)
+		}
 
 	cleanup()
 	switch {
@@ -485,7 +485,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 的渠道错误」。两者宽窄不同——图片中继会把上游错误事件作为数据帧内联交付后
 	// 正常 EOF 收尾（soft_errors=1, received>0），那是成功路径，不该重试。
 	isClientGone := info.StreamStatus.IsClientAbort() ||
-		(c != nil && c.Request != nil && c.Request.Context().Err() != nil)
+		(c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled))
 
 	streamBroken := false
 	if !isClientGone {
@@ -503,9 +503,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	if streamBroken {
 		endReason := info.StreamStatus.Summary()
+		_, endErr := info.StreamStatus.EndState()
 		logger.LogError(c, fmt.Sprintf("流中断：渠道 #%d 传输异常中断（%s, 已收块=%d, 字节=%d），触发换渠道重试并熔断",
 			channelID, endReason, info.ReceivedResponseCount, info.ReceivedContentBytes))
-		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason}
+		return &loadbalancer.StreamBrokenError{ChannelID: channelID, Reason: endReason, Err: endErr}
 	}
 	return nil
 }

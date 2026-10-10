@@ -332,3 +332,28 @@ func TestStreamStatus_Concurrent_ReadWrite(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func TestStreamStatus_OverrideEndReason_AllowsClientAbortCorrection(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+
+	// 模拟写入下游网络失败先行触发 SetEndReason
+	writeErr := fmt.Errorf("write tcp broken pipe")
+	s.SetEndReason(StreamEndReasonHandlerStop, writeErr)
+	s.RecordError(writeErr.Error())
+	assert.Equal(t, StreamEndReasonHandlerStop, s.EndReason)
+	assert.False(t, s.IsClientAbort(), "普通写入错误不应判定为客户端取消")
+	assert.True(t, s.IsUpstreamStreamFault(), "此时尚未纠偏，属于异常结束")
+
+	// 权威纠偏：下游 context.Canceled 才是真正根因
+	s.OverrideEndReason(StreamEndReasonClientGone, context.Canceled)
+	assert.Equal(t, StreamEndReasonClientGone, s.EndReason)
+	assert.True(t, s.IsClientAbort(), "权威覆写后必须判定为客户端取消")
+	assert.False(t, s.IsUpstreamStreamFault(), "客户端取消绝不能算作上游传输故障")
+
+	// 再次调用普通的 SetEndReason 不得覆盖权威终态
+	s.SetEndReason(StreamEndReasonScannerErr, fmt.Errorf("late scanner err"))
+	assert.Equal(t, StreamEndReasonClientGone, s.EndReason)
+	assert.True(t, s.IsClientAbort())
+}
+
