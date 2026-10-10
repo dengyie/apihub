@@ -1142,26 +1142,26 @@ func TestEmptyStreamPolicyAndTracker(t *testing.T) {
 	assert.Equal(t, 15*time.Second, omitted.EmptyStreamRetryBudget())
 	assert.Equal(t, 5, omitted.EmptyStreamTripLimit())
 
-		// nil 接收者兜底
-		var nilPolicy *Policy
-		assert.NotZero(t, nilPolicy.EmptyStreamRetryBudget())
-		assert.Equal(t, DefaultEmptyStreamTripThreshold, nilPolicy.EmptyStreamTripLimit())
+	// nil 接收者兜底
+	var nilPolicy *Policy
+	assert.NotZero(t, nilPolicy.EmptyStreamRetryBudget())
+	assert.Equal(t, DefaultEmptyStreamTripThreshold, nilPolicy.EmptyStreamTripLimit())
 
-		// 自适应动态预算测试（未配 empty_stream_retry_budget_ms 但配了大 TTFT）
-		var adaptive Policy
-		adaptive.MaxRetries = 2
-		adaptive.Default.TTFTTimeoutMs = 75000 // 75s
-		// (2 + 1) * 75s = 225s，受 DefaultRequestTimeoutMs (180s) 钳制为 180s
-		assert.Equal(t, 180*time.Second, adaptive.EmptyStreamRetryBudget())
+	// 自适应动态预算测试（未配 empty_stream_retry_budget_ms 但配了大 TTFT）
+	var adaptive Policy
+	adaptive.MaxRetries = 2
+	adaptive.Default.TTFTTimeoutMs = 75000 // 75s
+	// (2 + 1) * 75s = 225s，受 DefaultRequestTimeoutMs (180s) 钳制为 180s
+	assert.Equal(t, 180*time.Second, adaptive.EmptyStreamRetryBudget())
 
-			var adaptiveChannel Policy
-			adaptiveChannel.MaxRetries = 1
-			adaptiveChannel.Default.TTFTTimeoutMs = 10000
-			adaptiveChannel.Channels = map[int]ChannelPolicy{
-				246: {TTFTTimeoutMs: 30000}, // 30s
-			}
-			// (1 + 1) * 30s = 60s
-			assert.Equal(t, 60*time.Second, adaptiveChannel.EmptyStreamRetryBudget())
+	var adaptiveChannel Policy
+	adaptiveChannel.MaxRetries = 1
+	adaptiveChannel.Default.TTFTTimeoutMs = 10000
+	adaptiveChannel.Channels = map[int]ChannelPolicy{
+		246: {TTFTTimeoutMs: 30000}, // 30s
+	}
+	// (1 + 1) * 30s = 60s
+	assert.Equal(t, 60*time.Second, adaptiveChannel.EmptyStreamRetryBudget())
 
 	// 2. 连续空流熔断跟踪
 	oldPolicy := currentPolicy.Load()
@@ -1246,3 +1246,15 @@ func TestEndCancelledPreservesConsecutiveFailures(t *testing.T) {
 	assert.Equal(t, int32(2), stats.consecutiveFailures.Load(), "EndCancelled 绝不能将坏渠道的历史失败清零")
 }
 
+func TestStreamBrokenError_UnwrapPreservesUnderlyingTTFT(t *testing.T) {
+	ttftErr := &TTFTTimeoutError{ChannelID: 101, TimeoutMs: 25000}
+	brokenErr := &StreamBrokenError{
+		ChannelID: 101,
+		Reason:    "stream ended prematurely",
+		Err:       ttftErr,
+	}
+
+	assert.True(t, IsStreamBroken(brokenErr))
+	assert.True(t, IsTTFTTimeout(brokenErr), "StreamBrokenError 必须能正确 Unwrap 并被 IsTTFTTimeout 解包识别")
+	assert.Equal(t, ttftErr, errors.Unwrap(brokenErr))
+}

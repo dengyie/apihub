@@ -43,6 +43,8 @@ type ChannelSettings struct {
 	// HTTP2ConnectionShards spreads HTTP/2 traffic across N independent transports
 	// (1-8). Zero/unset means 1. Ignored when HTTPProtocol is "http1".
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
+	// MaxInflight 单渠道最大并发请求数。0 或未配置表示继承全局默认配置。
+	MaxInflight int `json:"max_inflight,omitempty"`
 }
 
 // BindsTaskPlugin reports whether the channel is bound to the task plugin,

@@ -208,4 +208,3 @@ func exhaustionCount(model string) int {
 	}
 	return 0
 }
-

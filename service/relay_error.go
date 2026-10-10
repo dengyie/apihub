@@ -231,26 +231,74 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
-		userId := c.GetInt("id")
-		tokenName := c.GetString("token_name")
-		modelName := c.GetString("original_model")
-		tokenId := c.GetInt("token_id")
-		userGroup := c.GetString("group")
-		other := model.NewLogOther()
-		if c.Request != nil && c.Request.URL != nil {
-			other.SetPublic("request_path", c.Request.URL.Path)
-		}
-		other.SetPublic("error_type", err.GetErrorType())
-		other.SetPublic("error_code", err.GetErrorCode())
-		other.SetPublic("status_code", err.StatusCode)
-		AppendRelayLogAdminInfo(c, relayInfo, other)
-		AppendResponseModelLogInfo(relayInfo, other)
-		AppendTaskPluginContextAuditInfo(c, other)
-		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-		if startTime.IsZero() {
-			startTime = time.Now()
-		}
-		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		writeErrorLogRow(c, channelError.ChannelId, err, relayInfo)
 	}
+}
+
+// writeErrorLogRow 写入 type=5 行并落去重标记。渠道失败与请求级失败共用这一条
+// 记账路径，所以「谁写谁打标记」必须收在这里：调用方只负责判断要不要写。
+//
+// 名字里没有「只写一次」：去重靠的是 ContextKeyErrorLogRecorded 标记，而
+// ProcessChannelError 每次渠道尝试都会调到这里，所以 N 次尝试仍然落 N 行。
+func writeErrorLogRow(c *gin.Context, channelId int, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
+	userId := c.GetInt("id")
+	tokenName := c.GetString("token_name")
+	modelName := c.GetString("original_model")
+	tokenId := c.GetInt("token_id")
+	userGroup := c.GetString("group")
+	other := model.NewLogOther()
+	if c.Request != nil && c.Request.URL != nil {
+		other.SetPublic("request_path", c.Request.URL.Path)
+	}
+	other.SetPublic("error_type", err.GetErrorType())
+	other.SetPublic("error_code", err.GetErrorCode())
+	other.SetPublic("status_code", err.StatusCode)
+	AppendRelayLogAdminInfo(c, relayInfo, other)
+	AppendResponseModelLogInfo(relayInfo, other)
+	AppendTaskPluginContextAuditInfo(c, other)
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	useTimeSeconds := int(time.Since(startTime).Seconds())
+	// 标记必须在写库之前落：写库失败（DB 抖动）时宁可这次不重试，也不能让同一次
+	// 请求在终结 defer 里再补一行。
+	common.SetContextKey(c, constant.ContextKeyErrorLogRecorded, true)
+	model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+}
+
+// RecordRequestErrorLog 为「没有走到渠道」就失败的请求补一条 type=5 行：
+// 参数校验、模型/映射解析、选渠道、预扣费等路径都不会经过 ProcessChannelError，
+// 通用日志页此前只看得到成功的 type=2，请求级失败完全不可见。
+//
+// 去重是硬要求：渠道重试里每次尝试失败都已由 ProcessChannelError 落一行，
+// 终结路径再补一行就是 N+1 行。因此命中 ContextKeyErrorLogRecorded 就直接跳过。
+//
+// 渠道号一律从 c 上读（ContextKeyChannelId），不接受调用方传参：所有调用点的
+// 值都来自同一份 gin context，参数化等于开一个编译器管不着的第二数据源，
+// 不一致时不会编译失败，只会静默写出归因错误的日志行。
+func RecordRequestErrorLog(c *gin.Context, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
+	if c == nil || err == nil {
+		return
+	}
+	if !constant.ErrorLogEnabled || !types.IsRecordErrorLog(err) {
+		return
+	}
+	// 客户端主动取消不记：取消是下游行为不是上游故障，与 Relay 终结 defer 的判断同源。
+	//
+	// 这道闸门**不能**当成 !IsRecordErrorLog 的重复而删掉：本地构造的
+	// NewClientAbortedError 确实自带 opt-out，但 errorCode 的判定依据是「错误码等于
+	// client_aborted」，而不是「谁构造的」。relaykit/types/error.go 里
+	// WithOpenAIError (:359) 与 WithClaudeError (:383) 会把**上游响应体里的
+	// code/type 字符串**直接写成 errorCode，且都不施加 opt-out。上游于是可以自己决定
+	// 「这条失败要不要进通用日志页」。真实形状见 relay/responses_websocket.go:439 的
+	// 上游 error 帧拒绝：上游给什么 code 就是什么 code，没有 opt-out，也不经过
+	// ProcessChannelError（所以去重标记同样拦不住），三道闸门里只有这里拦得住。
+	if types.IsClientAbortedError(err) {
+		return
+	}
+	if common.GetContextKeyBool(c, constant.ContextKeyErrorLogRecorded) {
+		return
+	}
+	writeErrorLogRow(c, common.GetContextKeyInt(c, constant.ContextKeyChannelId), err, relayInfo)
 }

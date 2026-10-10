@@ -460,6 +460,7 @@ export const FIELD_PLACEHOLDERS = {
   MODELS: 'Comma-separated model names, e.g., gpt-4,gpt-3.5-turbo',
   GROUP: 'Please Select user groups that can access this channel.',
   MODEL_MAPPING: '{"request_model": "actual_model"}',
+  MAX_INFLIGHT: '0',
   TEST_MODEL: 'Model to use for testing',
   TAG: 'Optional tag for grouping channels',
   REMARK: 'Optional notes about this channel',
@@ -480,6 +481,8 @@ export const FIELD_DESCRIPTIONS = {
     'For this channel, map the model name in client requests to the model name sent upstream.',
   PRIORITY: 'Higher priority channels are selected first',
   WEIGHT: 'Used for load balancing. Higher weight = more requests',
+  MAX_INFLIGHT:
+    'Maximum concurrent requests allowed for this channel. 0 or empty uses global default.',
   TEST_MODEL: 'Model to use when testing channel connectivity',
   AUTO_BAN: 'Automatically disable channel on repeated failures',
   STATUS_CODE_MAPPING: 'Map response status codes (JSON format)',

@@ -2174,7 +2174,7 @@ export function ChannelMutateDrawer({
         icon={<Route className='h-3.5 w-3.5' />}
         iconTone='info'
       />
-      <div className='grid gap-4 sm:grid-cols-2'>
+      <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-3'>
         <FormField
           control={form.control}
           name='priority'
@@ -2212,6 +2212,33 @@ export function ChannelMutateDrawer({
                 />
               </FormControl>
               <FormDescription>{t(FIELD_DESCRIPTIONS.WEIGHT)}</FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='max_inflight'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Max Inflight')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min='0'
+                  placeholder={t(FIELD_PLACEHOLDERS.MAX_INFLIGHT)}
+                  value={field.value ?? ''}
+                  onChange={(e) =>
+                    field.onChange(
+                      e.target.value === '' ? undefined : Number(e.target.value)
+                    )
+                  }
+                />
+              </FormControl>
+              <FormDescription>
+                {t(FIELD_DESCRIPTIONS.MAX_INFLIGHT)}
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}

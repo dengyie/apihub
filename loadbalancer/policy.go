@@ -1,6 +1,9 @@
 package loadbalancer
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // DefaultRequestTimeoutMs 非流式请求的整请求预算默认值（毫秒）。
 //
@@ -275,19 +278,56 @@ func (b BreakerPolicy) EscalationCapOrDefault() int64 {
 	return b.EscalationCap
 }
 
+// ChannelMaxInflightProvider 动态提供渠道最大并发连接数的函数签名。
+// 避免 loadbalancer 与 model 产生包循环依赖。
+type ChannelMaxInflightProvider func(channelID int) int
+
+var (
+	channelMaxInflightProviderMu sync.RWMutex
+	channelMaxInflightProvider   ChannelMaxInflightProvider
+)
+
+// SetChannelMaxInflightProvider 注册渠道动态最大并发连接数提供器。
+func SetChannelMaxInflightProvider(fn ChannelMaxInflightProvider) {
+	channelMaxInflightProviderMu.Lock()
+	defer channelMaxInflightProviderMu.Unlock()
+	channelMaxInflightProvider = fn
+}
+
+// GetChannelMaxInflight 返回渠道配置的动态最大并发数；未设置或返回 <=0 表示未指定。
+func GetChannelMaxInflight(channelID int) int {
+	channelMaxInflightProviderMu.RLock()
+	fn := channelMaxInflightProvider
+	channelMaxInflightProviderMu.RUnlock()
+	if fn != nil && channelID > 0 {
+		return fn(channelID)
+	}
+	return 0
+}
+
 // Resolve 将渠道级策略与默认策略合并，返回生效的完整策略
 func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	if p == nil || !p.Enabled {
 		return ChannelPolicy{}
 	}
+	// 动态渠道设置优先于静态配置文件：渠道在 UI / 数据库中设置的 MaxInflight
+	// 享有最高优先级，0 或未配置时回退到 loadbalancer.yaml 中的 channels[id] 或 default。
+	dynamicMaxInflight := GetChannelMaxInflight(channelID)
 	cp, ok := p.Channels[channelID]
 	if !ok {
-		return p.Default
+		resolved := p.Default
+		if dynamicMaxInflight > 0 {
+			resolved.MaxInflight = dynamicMaxInflight
+		}
+		return resolved
 	}
 	// 零值字段回退到 Default
 	resolved := p.Default
 	if cp.MaxInflight != 0 {
 		resolved.MaxInflight = cp.MaxInflight
+	}
+	if dynamicMaxInflight > 0 {
+		resolved.MaxInflight = dynamicMaxInflight
 	}
 	if cp.TTFTTimeoutMs != 0 {
 		resolved.TTFTTimeoutMs = cp.TTFTTimeoutMs
