@@ -337,6 +337,11 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	require.False(t, exists)
 	_, exists = info.RuntimeHeadersOverride["x-codex-turn-metadata"]
 	require.False(t, exists)
+
+	// Verify that codex cli trace defaults to prefer mode, allowing retry on failure.
+	require.False(t, ShouldSkipRetryAfterChannelAffinityFailure(ctx), "codex cli trace should not skip retry by default")
+	decision := DecideRelayRetry(ctx, types.NewOpenAIError(errors.New("upstream error"), types.ErrorCodeBadResponseStatusCode, http.StatusServiceUnavailable), 2)
+	require.Equal(t, "retry", decision.Action, "requests matching codex cli trace should failover to healthy channels")
 }
 
 func TestMidjourneyPolicyAcceptance(t *testing.T) {

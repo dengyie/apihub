@@ -116,6 +116,7 @@ func buildCodexPassHeaderTemplate() map[string]any {
 
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:               true,
+	SessionMode:           "prefer",
 	SwitchOnSuccess:       true,
 	KeepOnChannelDisabled: false,
 	MaxEntries:            100_000,
@@ -131,7 +132,8 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildCodexPassHeaderTemplate(),
-			SkipRetryOnFailure:    true,
+			SkipRetryOnFailure:    false,
+			SessionMode:           "prefer",
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,
@@ -146,7 +148,8 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
+			SkipRetryOnFailure:    false,
+			SessionMode:           "prefer",
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,
