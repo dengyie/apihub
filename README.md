@@ -12,6 +12,7 @@ itself derived from [One API](https://github.com/songquanpeng/one-api) by JustSo
 </div>
 
 ---
+<img width="1470" height="798" alt="image" src="https://github.com/user-attachments/assets/e2e76968-2563-43e8-8109-dfaeb3b37332" />
 
 ## What MangoApi is
 
