@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -1739,15 +1740,8 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
-	// get_key_status 为只读查询，不记录审计；其余为修改操作，记录审计并跳过中间件兜底。
-	if request.Action == "get_key_status" {
-		markAuditLogged(c)
-	} else {
-		recordManageAudit(c, "channel.multi_key_manage", map[string]any{
-			"action": request.Action,
-			"id":     channel.Id,
-		})
-	}
+	// 标记请求已进入 handler 处理，跳过中间件通用兜底。
+	markAuditLogged(c)
 
 	lock := model.GetChannelPollingLock(channel.Id)
 	lock.Lock()
@@ -1881,7 +1875,8 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
+		keys := channel.GetKeys()
+		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize || keyIndex >= len(keys) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "密钥索引超出范围",
@@ -1911,6 +1906,11 @@ func ManageMultiKeys(c *gin.Context) {
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
+		recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+			"action":    "disable_key",
+			"id":        channel.Id,
+			"key_index": keyIndex,
+		})
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已禁用",
@@ -1927,7 +1927,8 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
+		keys := channel.GetKeys()
+		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize || keyIndex >= len(keys) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "密钥索引超出范围",
@@ -1954,6 +1955,11 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+			"action":    "enable_key",
+			"id":        channel.Id,
+			"key_index": keyIndex,
+		})
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "密钥已启用",
@@ -1979,6 +1985,11 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		model.InitChannelCache()
+		recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+			"action": "enable_all_keys",
+			"id":     channel.Id,
+			"count":  enabledCount,
+		})
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已启用 %d 个密钥", enabledCount),
@@ -2029,137 +2040,70 @@ func ManageMultiKeys(c *gin.Context) {
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
+		recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+			"action": "disable_all_keys",
+			"id":     channel.Id,
+			"count":  disabledCount,
+		})
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": fmt.Sprintf("已禁用 %d 个密钥", disabledCount),
 		})
 		return
 
-	case "delete_key":
-		if request.KeyIndex == nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "未指定要删除的密钥索引",
-			})
-			return
-		}
-
-		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "密钥索引超出范围",
-			})
-			return
-		}
-
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-		var newProxyList = make(map[int]string)
-
-		newIndex := 0
-		for i, key := range keys {
-			// 跳过要删除的密钥
-			if i == keyIndex {
-				continue
+		case "delete_key":
+			if request.KeyIndex == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "未指定要删除的密钥索引",
+				})
+				return
 			}
 
-			remainingKeys = append(remainingKeys, key)
+			keyIndex := *request.KeyIndex
+			keys := channel.GetKeys()
+			if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize || keyIndex >= len(keys) {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "密钥索引超出范围",
+				})
+				return
+			}
 
-			// 保留其他密钥的状态信息，重新索引
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if status, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists && status != 1 {
-					newStatusList[newIndex] = status
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-				if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-					newDisabledTime[newIndex] = t
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-				if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-					newDisabledReason[newIndex] = r
-				}
-			}
+			deletedProxy := ""
 			if channel.ChannelInfo.MultiKeyProxyList != nil {
-				if p, exists := channel.ChannelInfo.MultiKeyProxyList[i]; exists && strings.TrimSpace(p) != "" {
-					newProxyList[newIndex] = p
-				}
-			}
-			newIndex++
-		}
-
-		if len(remainingKeys) == 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "不能删除最后一个密钥",
-			})
-			return
-		}
-
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
-		channel.ChannelInfo.MultiKeyProxyList = newProxyList
-
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		model.InitChannelCache()
-		if shouldCloseWebSocket {
-			closeActiveChannelWebSockets([]int{channel.Id})
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥已删除",
-		})
-		return
-
-	case "delete_disabled_keys":
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var deletedCount int
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-		var newProxyList = make(map[int]string)
-
-		newIndex := 0
-		for i, key := range keys {
-			status := 1 // default enabled
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
-					status = s
-				}
+				deletedProxy = channel.ChannelInfo.MultiKeyProxyList[keyIndex]
 			}
 
-			// 只删除自动禁用（status == 3）的密钥，保留启用（status == 1）和手动禁用（status == 2）的密钥
-			if status == 3 {
-				deletedCount++
-			} else {
+			var remainingKeys []string
+			var newStatusList = make(map[int]int)
+			var newDisabledTime = make(map[int]int64)
+			var newDisabledReason = make(map[int]string)
+			var newProxyList = make(map[int]string)
+
+			newIndex := 0
+			for i, key := range keys {
+				// 跳过要删除的密钥
+				if i == keyIndex {
+					continue
+				}
+
 				remainingKeys = append(remainingKeys, key)
-				// 保留非自动禁用密钥的状态信息，重新索引
-				if status != 1 {
-					newStatusList[newIndex] = status
-					if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-						if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-							newDisabledTime[newIndex] = t
-						}
+
+				// 保留其他密钥的状态信息，重新索引
+				if channel.ChannelInfo.MultiKeyStatusList != nil {
+					if status, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists && status != 1 {
+						newStatusList[newIndex] = status
 					}
-					if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-						if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-							newDisabledReason[newIndex] = r
-						}
+				}
+				if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+					if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
+						newDisabledTime[newIndex] = t
+					}
+				}
+				if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+					if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
+						newDisabledReason[newIndex] = r
 					}
 				}
 				if channel.ChannelInfo.MultiKeyProxyList != nil {
@@ -2169,95 +2113,219 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 				newIndex++
 			}
-		}
 
-		if deletedCount == 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "没有需要删除的自动禁用密钥",
-			})
-			return
-		}
-
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
-		channel.ChannelInfo.MultiKeyProxyList = newProxyList
-
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		model.InitChannelCache()
-		if shouldCloseWebSocket {
-			closeActiveChannelWebSockets([]int{channel.Id})
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
-			"data":    deletedCount,
-		})
-		return
-
-	case "update_key_proxy":
-		if request.KeyIndex == nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "未指定要配置代理的密钥索引",
-			})
-			return
-		}
-
-		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "密钥索引超出范围",
-			})
-			return
-		}
-
-		proxyStr := ""
-		if request.Proxy != nil {
-			proxyStr = strings.TrimSpace(*request.Proxy)
-		}
-
-		if proxyStr != "" {
-			if _, proxyErr := common.ParseProxyURLStrict(proxyStr); proxyErr != nil {
+			if len(remainingKeys) == 0 {
 				c.JSON(http.StatusOK, gin.H{
 					"success": false,
-					"message": fmt.Sprintf("代理地址格式无效：%s", proxyErr.Error()),
+					"message": "不能删除最后一个密钥",
 				})
 				return
 			}
-		}
 
-		if channel.ChannelInfo.MultiKeyProxyList == nil {
-			channel.ChannelInfo.MultiKeyProxyList = make(map[int]string)
-		}
+			// Update channel with remaining keys
+			channel.Key = strings.Join(remainingKeys, "\n")
+			channel.ChannelInfo.MultiKeySize = len(remainingKeys)
+			channel.ChannelInfo.MultiKeyStatusList = newStatusList
+			channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+			channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+			channel.ChannelInfo.MultiKeyProxyList = newProxyList
 
-		if proxyStr == "" {
-			delete(channel.ChannelInfo.MultiKeyProxyList, keyIndex)
-		} else {
-			channel.ChannelInfo.MultiKeyProxyList[keyIndex] = proxyStr
-		}
-
-		err = channel.Update()
-		if err != nil {
-			common.ApiError(c, err)
+			shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
+			err = channel.Update()
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			model.InitChannelCache()
+			if shouldCloseWebSocket {
+				closeActiveChannelWebSockets([]int{channel.Id})
+			}
+			if deletedProxy != "" {
+				service.InvalidateProxyClient(deletedProxy)
+			}
+			recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+				"action":    "delete_key",
+				"id":        channel.Id,
+				"key_index": keyIndex,
+			})
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "密钥已删除",
+			})
 			return
-		}
-		model.InitChannelCache()
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "密钥出口代理配置已更新",
-		})
-		return
+
+		case "delete_disabled_keys":
+			keys := channel.GetKeys()
+			var remainingKeys []string
+			var deletedCount int
+			var newStatusList = make(map[int]int)
+			var newDisabledTime = make(map[int]int64)
+			var newDisabledReason = make(map[int]string)
+			var newProxyList = make(map[int]string)
+			var deletedProxies []string
+
+			newIndex := 0
+			for i, key := range keys {
+				status := 1 // default enabled
+				if channel.ChannelInfo.MultiKeyStatusList != nil {
+					if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
+						status = s
+					}
+				}
+
+				// 只删除自动禁用（status == 3）的密钥，保留启用（status == 1）和手动禁用（status == 2）的密钥
+				if status == 3 {
+					deletedCount++
+					if channel.ChannelInfo.MultiKeyProxyList != nil {
+						if p, exists := channel.ChannelInfo.MultiKeyProxyList[i]; exists && strings.TrimSpace(p) != "" {
+							deletedProxies = append(deletedProxies, p)
+						}
+					}
+				} else {
+					remainingKeys = append(remainingKeys, key)
+					// 保留非自动禁用密钥的状态信息，重新索引
+					if status != 1 {
+						newStatusList[newIndex] = status
+						if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+							if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
+								newDisabledTime[newIndex] = t
+							}
+						}
+						if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+							if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
+								newDisabledReason[newIndex] = r
+							}
+						}
+					}
+					if channel.ChannelInfo.MultiKeyProxyList != nil {
+						if p, exists := channel.ChannelInfo.MultiKeyProxyList[i]; exists && strings.TrimSpace(p) != "" {
+							newProxyList[newIndex] = p
+						}
+					}
+					newIndex++
+				}
+			}
+
+			if deletedCount == 0 {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "没有需要删除的自动禁用密钥",
+				})
+				return
+			}
+
+			// Update channel with remaining keys
+			channel.Key = strings.Join(remainingKeys, "\n")
+			channel.ChannelInfo.MultiKeySize = len(remainingKeys)
+			channel.ChannelInfo.MultiKeyStatusList = newStatusList
+			channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+			channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+			channel.ChannelInfo.MultiKeyProxyList = newProxyList
+
+			shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
+			err = channel.Update()
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			model.InitChannelCache()
+			if shouldCloseWebSocket {
+				closeActiveChannelWebSockets([]int{channel.Id})
+			}
+			for _, dp := range deletedProxies {
+				service.InvalidateProxyClient(dp)
+			}
+			recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+				"action": "delete_disabled_keys",
+				"id":     channel.Id,
+				"count":  deletedCount,
+			})
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
+				"data":    deletedCount,
+			})
+			return
+
+		case "update_key_proxy":
+			if request.KeyIndex == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "未指定要配置代理的密钥索引",
+				})
+				return
+			}
+
+			keyIndex := *request.KeyIndex
+			keys := channel.GetKeys()
+			if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize || keyIndex >= len(keys) {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "密钥索引超出范围",
+				})
+				return
+			}
+
+			proxyStr := ""
+			if request.Proxy != nil {
+				proxyStr = strings.TrimSpace(*request.Proxy)
+			}
+
+			var parsedURL *url.URL
+			if proxyStr != "" {
+				var proxyErr error
+				parsedURL, proxyErr = common.ParseProxyURLStrict(proxyStr)
+				if proxyErr != nil {
+					c.JSON(http.StatusOK, gin.H{
+						"success": false,
+						"message": fmt.Sprintf("代理地址格式无效：%s", proxyErr.Error()),
+					})
+					return
+				}
+			}
+
+			oldProxy := ""
+			if channel.ChannelInfo.MultiKeyProxyList != nil {
+				oldProxy = channel.ChannelInfo.MultiKeyProxyList[keyIndex]
+			}
+
+			if channel.ChannelInfo.MultiKeyProxyList == nil {
+				channel.ChannelInfo.MultiKeyProxyList = make(map[int]string)
+			}
+
+			if proxyStr == "" {
+				delete(channel.ChannelInfo.MultiKeyProxyList, keyIndex)
+			} else {
+				channel.ChannelInfo.MultiKeyProxyList[keyIndex] = proxyStr
+			}
+
+			err = channel.Update()
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			model.InitChannelCache()
+
+			if oldProxy != "" && oldProxy != proxyStr {
+				service.InvalidateProxyClient(oldProxy)
+			}
+
+			auditProxy := ""
+			if parsedURL != nil {
+				auditProxy = parsedURL.Redacted()
+			}
+			recordManageAudit(c, "channel.multi_key_manage", map[string]any{
+				"action":    "update_key_proxy",
+				"id":        channel.Id,
+				"key_index": keyIndex,
+				"proxy":     auditProxy,
+			})
+
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "密钥出口代理配置已更新",
+			})
+			return
 
 	default:
 		c.JSON(http.StatusOK, gin.H{
@@ -2269,7 +2337,7 @@ func ManageMultiKeys(c *gin.Context) {
 }
 
 func multiKeyActionRequiresSensitiveWrite(action string) bool {
-	return action == "delete_key" || action == "delete_disabled_keys"
+	return action == "delete_key" || action == "delete_disabled_keys" || action == "update_key_proxy"
 }
 
 // OllamaPullModel 拉取 Ollama 模型

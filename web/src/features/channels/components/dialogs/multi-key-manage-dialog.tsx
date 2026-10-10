@@ -62,6 +62,7 @@ import {
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
   isDestructiveAction,
+  maskProxyUrl,
 } from '../../lib'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
 import { useChannels } from '../channels-provider'
@@ -167,12 +168,13 @@ export function MultiKeyManageDialog({
   }
 
   const handleOpenEditProxy = (keyIndex: number, currentProxy?: string) => {
+    if (!canEditSensitive) return
     setEditingProxyKeyIndex(keyIndex)
     setEditingProxyValue(currentProxy || '')
   }
 
   const handleSaveProxy = async () => {
-    if (editingProxyKeyIndex === null || !currentRow) return
+    if (editingProxyKeyIndex === null || !currentRow || !canEditSensitive) return
 
     setIsSavingProxy(true)
     try {
@@ -445,14 +447,16 @@ export function MultiKeyManageDialog({
                     header: t('Proxy'),
                     className: 'min-w-[180px]',
                     cellClassName: 'max-w-xs truncate font-mono text-xs',
-                    cell: (key) =>
-                      key.proxy ? (
-                        <span className='font-mono text-xs' title={key.proxy}>
-                          {key.proxy}
+                    cell: (key) => {
+                      const masked = maskProxyUrl(key.proxy)
+                      return masked ? (
+                        <span className='font-mono text-xs' title={masked}>
+                          {masked}
                         </span>
                       ) : (
                         <span className='text-muted-foreground text-xs'>-</span>
-                      ),
+                      )
+                    },
                   },
                   {
                     id: 'reason',
@@ -478,6 +482,7 @@ export function MultiKeyManageDialog({
                         status={key.status}
                         proxy={key.proxy}
                         canDelete={canEditSensitive}
+                        canEditSensitive={canEditSensitive}
                         onAction={setConfirmAction}
                         onEditProxy={handleOpenEditProxy}
                       />
@@ -586,6 +591,12 @@ export function MultiKeyManageDialog({
               placeholder='socks5://username:password@127.0.0.1:2080'
               value={editingProxyValue}
               onChange={(e) => setEditingProxyValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleSaveProxy()
+                }
+              }}
               disabled={isSavingProxy}
               autoFocus
             />
