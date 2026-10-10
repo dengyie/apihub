@@ -67,4 +67,55 @@ describe('multi-key utils', () => {
       expect(isDestructiveAction(null)).toBe(false)
     })
   })
+
+  describe('getMultiKeyStatusConfig', () => {
+    test('returns correct configuration for known statuses', () => {
+      expect(getMultiKeyStatusConfig(1)).toEqual({
+        variant: 'success',
+        label: 'Enabled',
+      })
+      expect(getMultiKeyStatusConfig(2)).toEqual({
+        variant: 'neutral',
+        label: 'Manual Disabled',
+      })
+      expect(getMultiKeyStatusConfig(3)).toEqual({
+        variant: 'danger',
+        label: 'Auto Disabled',
+      })
+    })
+
+    test('returns fallback configuration for unknown statuses', () => {
+      expect(getMultiKeyStatusConfig(999)).toEqual({
+        variant: 'neutral',
+        label: 'Unknown',
+      })
+    })
+  })
+
+  describe('getMultiKeyConfirmMessage', () => {
+    test('returns correct message for each action type', () => {
+      expect(getMultiKeyConfirmMessage({ type: 'delete', keyIndex: 0 })).toBe(
+        'Are you sure you want to delete this key? This action cannot be undone.'
+      )
+      expect(getMultiKeyConfirmMessage({ type: 'enable', keyIndex: 0 })).toBe(
+        'Enable this key?'
+      )
+      expect(getMultiKeyConfirmMessage({ type: 'disable', keyIndex: 0 })).toBe(
+        'Disable this key?'
+      )
+      expect(getMultiKeyConfirmMessage({ type: 'enable-all' })).toBe(
+        'Are you sure you want to enable all keys?'
+      )
+      expect(getMultiKeyConfirmMessage({ type: 'disable-all' })).toBe(
+        'Are you sure you want to disable all enabled keys?'
+      )
+      expect(getMultiKeyConfirmMessage({ type: 'delete-disabled' })).toBe(
+        'Are you sure you want to delete all auto-disabled keys? This action cannot be undone.'
+      )
+    })
+
+    test('returns empty string for null action', () => {
+      expect(getMultiKeyConfirmMessage(null)).toBe('')
+    })
+  })
 })
