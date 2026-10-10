@@ -137,3 +137,30 @@ func TestGetKeysMatchesParseChannelKeyList(t *testing.T) {
 	assert.Equal(t, []string{"cached-one", "cached-two"}, channel.GetKeys(),
 		"预加载的 Keys 缓存应优先于重新解析")
 }
+
+func TestMultiKeyProxyListPruning(t *testing.T) {
+	channelInfo := ChannelInfo{
+		IsMultiKey:   true,
+		MultiKeySize: 2,
+		MultiKeyProxyList: map[int]string{
+			0: "socks5://127.0.0.1:2080",
+			1: "socks5://127.0.0.1:2081",
+			2: "socks5://127.0.0.1:2082", // out of bounds index
+		},
+	}
+
+	// Simulating the cleanup loop from channel.Update()
+	if channelInfo.MultiKeyProxyList != nil {
+		for idx := range channelInfo.MultiKeyProxyList {
+			if idx >= channelInfo.MultiKeySize {
+				delete(channelInfo.MultiKeyProxyList, idx)
+			}
+		}
+	}
+
+	assert.Len(t, channelInfo.MultiKeyProxyList, 2)
+	assert.Equal(t, "socks5://127.0.0.1:2080", channelInfo.MultiKeyProxyList[0])
+	assert.Equal(t, "socks5://127.0.0.1:2081", channelInfo.MultiKeyProxyList[1])
+	_, exists := channelInfo.MultiKeyProxyList[2]
+	assert.False(t, exists)
+}

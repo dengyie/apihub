@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, RefreshCw, Trash2, Power, PowerOff } from 'lucide-react'
+import { Loader2, RefreshCw, Trash2, Power, PowerOff, Globe } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -27,6 +27,7 @@ import { StaticDataTable } from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -52,6 +53,7 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
+  updateMultiKeyProxy,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
@@ -101,6 +103,11 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+
+  // Edit proxy modal state
+  const [editingProxyKeyIndex, setEditingProxyKeyIndex] = useState<number | null>(null)
+  const [editingProxyValue, setEditingProxyValue] = useState('')
+  const [isSavingProxy, setIsSavingProxy] = useState(false)
 
   // Reset and load data when dialog opens
   useEffect(() => {
@@ -157,6 +164,36 @@ export function MultiKeyManageDialog({
   const handlePageChange = (newPage: number) => {
     setCurrentPage(newPage)
     loadKeyStatus(newPage, pageSize)
+  }
+
+  const handleOpenEditProxy = (keyIndex: number, currentProxy?: string) => {
+    setEditingProxyKeyIndex(keyIndex)
+    setEditingProxyValue(currentProxy || '')
+  }
+
+  const handleSaveProxy = async () => {
+    if (editingProxyKeyIndex === null || !currentRow) return
+
+    setIsSavingProxy(true)
+    try {
+      const response = await updateMultiKeyProxy(
+        currentRow.id,
+        editingProxyKeyIndex,
+        editingProxyValue.trim()
+      )
+      if (response?.success) {
+        toast.success(response.message || t('Proxy updated successfully'))
+        queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+        setEditingProxyKeyIndex(null)
+        loadKeyStatus(currentPage, pageSize)
+      } else {
+        handleServerError(response, t('Failed to update proxy'))
+      }
+    } catch (error: unknown) {
+      handleServerError(error, t('Failed to update proxy'))
+    } finally {
+      setIsSavingProxy(false)
+    }
   }
 
   const performAction = async () => {
@@ -404,6 +441,20 @@ export function MultiKeyManageDialog({
                     cell: (key) => renderStatusBadge(key.status),
                   },
                   {
+                    id: 'proxy',
+                    header: t('Proxy'),
+                    className: 'min-w-[180px]',
+                    cellClassName: 'max-w-xs truncate font-mono text-xs',
+                    cell: (key) =>
+                      key.proxy ? (
+                        <span className='font-mono text-xs' title={key.proxy}>
+                          {key.proxy}
+                        </span>
+                      ) : (
+                        <span className='text-muted-foreground text-xs'>-</span>
+                      ),
+                  },
+                  {
                     id: 'reason',
                     header: t('Disabled Reason'),
                     className: 'min-w-[200px]',
@@ -425,8 +476,10 @@ export function MultiKeyManageDialog({
                       <MultiKeyTableRowActions
                         keyIndex={key.index}
                         status={key.status}
+                        proxy={key.proxy}
                         canDelete={canEditSensitive}
                         onAction={setConfirmAction}
+                        onEditProxy={handleOpenEditProxy}
                       />
                     ),
                   },
@@ -477,6 +530,73 @@ export function MultiKeyManageDialog({
         isLoading={isPerformingAction}
         handleConfirm={performAction}
       />
+
+      {/* Edit Key Proxy Dialog */}
+      <Dialog
+        open={editingProxyKeyIndex !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen && !isSavingProxy) {
+            setEditingProxyKeyIndex(null)
+          }
+        }}
+        title={
+          <div className='flex items-center gap-2'>
+            <Globe className='h-4 w-4' />
+            <span>
+              {t('Configure Key Proxy')}
+              {editingProxyKeyIndex !== null && (
+                <span className='ml-2 text-sm font-normal text-muted-foreground'>
+                  (#{editingProxyKeyIndex + 1})
+                </span>
+              )}
+            </span>
+          </div>
+        }
+        description={t(
+          'Set an independent egress proxy URL (e.g., socks5://user:pass@127.0.0.1:2080 or http://user:pass@ip:port) for this specific API key. Leave blank to inherit the channel default proxy.'
+        )}
+        footer={
+          <div className='flex justify-end gap-2'>
+            <Button
+              variant='outline'
+              onClick={() => setEditingProxyKeyIndex(null)}
+              disabled={isSavingProxy}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button
+              variant='default'
+              onClick={handleSaveProxy}
+              disabled={isSavingProxy}
+            >
+              {isSavingProxy && (
+                <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+              )}
+              {t('Save')}
+            </Button>
+          </div>
+        }
+      >
+        <div className='space-y-4 py-2'>
+          <div className='space-y-2'>
+            <label className='text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70'>
+              {t('Egress Proxy URL')}
+            </label>
+            <Input
+              placeholder='socks5://username:password@127.0.0.1:2080'
+              value={editingProxyValue}
+              onChange={(e) => setEditingProxyValue(e.target.value)}
+              disabled={isSavingProxy}
+              autoFocus
+            />
+            <p className='text-xs text-muted-foreground'>
+              {t(
+                'Supports socks5://, socks5h://, http://, and https:// protocols with optional authentication. Clear the input to remove custom proxy.'
+              )}
+            </p>
+          </div>
+        </div>
+      </Dialog>
     </>
   )
 }

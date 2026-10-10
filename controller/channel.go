@@ -1677,12 +1677,13 @@ func CopyChannel(c *gin.Context) {
 
 // MultiKeyManageRequest represents the request for multi-key management operations
 type MultiKeyManageRequest struct {
-	ChannelId int    `json:"channel_id"`
-	Action    string `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
-	KeyIndex  *int   `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
-	Page      int    `json:"page,omitempty"`      // for get_key_status pagination
-	PageSize  int    `json:"page_size,omitempty"` // for get_key_status pagination
-	Status    *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	ChannelId int     `json:"channel_id"`
+	Action    string  `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
+	KeyIndex  *int    `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
+	Proxy     *string `json:"proxy,omitempty"`     // for update_key_proxy action
+	Page      int     `json:"page,omitempty"`      // for get_key_status pagination
+	PageSize  int     `json:"page_size,omitempty"` // for get_key_status pagination
+	Status    *int    `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
 }
 
 // MultiKeyStatusResponse represents the response for key status query
@@ -1703,7 +1704,8 @@ type KeyStatus struct {
 	Status       int    `json:"status"` // 1: enabled, 2: disabled
 	DisabledTime int64  `json:"disabled_time,omitempty"`
 	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	KeyPreview   string `json:"key_preview"`     // first 10 chars of key for identification
+	Proxy        string `json:"proxy,omitempty"` // independent egress proxy if configured
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1806,12 +1808,18 @@ func ManageMultiKeys(c *gin.Context) {
 				keyPreview = key[:10] + "..."
 			}
 
+			var proxy string
+			if channel.ChannelInfo.MultiKeyProxyList != nil {
+				proxy = channel.ChannelInfo.MultiKeyProxyList[i]
+			}
+
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
 				Index:        i,
 				Status:       status,
 				DisabledTime: disabledTime,
 				Reason:       reason,
 				KeyPreview:   keyPreview,
+				Proxy:        proxy,
 			})
 		}
 
@@ -2050,6 +2058,7 @@ func ManageMultiKeys(c *gin.Context) {
 		var newStatusList = make(map[int]int)
 		var newDisabledTime = make(map[int]int64)
 		var newDisabledReason = make(map[int]string)
+		var newProxyList = make(map[int]string)
 
 		newIndex := 0
 		for i, key := range keys {
@@ -2076,6 +2085,11 @@ func ManageMultiKeys(c *gin.Context) {
 					newDisabledReason[newIndex] = r
 				}
 			}
+			if channel.ChannelInfo.MultiKeyProxyList != nil {
+				if p, exists := channel.ChannelInfo.MultiKeyProxyList[i]; exists && strings.TrimSpace(p) != "" {
+					newProxyList[newIndex] = p
+				}
+			}
 			newIndex++
 		}
 
@@ -2093,6 +2107,7 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = newStatusList
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+		channel.ChannelInfo.MultiKeyProxyList = newProxyList
 
 		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
 		err = channel.Update()
@@ -2117,6 +2132,7 @@ func ManageMultiKeys(c *gin.Context) {
 		var newStatusList = make(map[int]int)
 		var newDisabledTime = make(map[int]int64)
 		var newDisabledReason = make(map[int]string)
+		var newProxyList = make(map[int]string)
 
 		newIndex := 0
 		for i, key := range keys {
@@ -2146,6 +2162,11 @@ func ManageMultiKeys(c *gin.Context) {
 						}
 					}
 				}
+				if channel.ChannelInfo.MultiKeyProxyList != nil {
+					if p, exists := channel.ChannelInfo.MultiKeyProxyList[i]; exists && strings.TrimSpace(p) != "" {
+						newProxyList[newIndex] = p
+					}
+				}
 				newIndex++
 			}
 		}
@@ -2164,6 +2185,7 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = newStatusList
 		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
 		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+		channel.ChannelInfo.MultiKeyProxyList = newProxyList
 
 		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
 		err = channel.Update()
@@ -2179,6 +2201,61 @@ func ManageMultiKeys(c *gin.Context) {
 			"success": true,
 			"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
 			"data":    deletedCount,
+		})
+		return
+
+	case "update_key_proxy":
+		if request.KeyIndex == nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "未指定要配置代理的密钥索引",
+			})
+			return
+		}
+
+		keyIndex := *request.KeyIndex
+		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "密钥索引超出范围",
+			})
+			return
+		}
+
+		proxyStr := ""
+		if request.Proxy != nil {
+			proxyStr = strings.TrimSpace(*request.Proxy)
+		}
+
+		if proxyStr != "" {
+			if _, proxyErr := common.ParseProxyURLStrict(proxyStr); proxyErr != nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": fmt.Sprintf("代理地址格式无效：%s", proxyErr.Error()),
+				})
+				return
+			}
+		}
+
+		if channel.ChannelInfo.MultiKeyProxyList == nil {
+			channel.ChannelInfo.MultiKeyProxyList = make(map[int]string)
+		}
+
+		if proxyStr == "" {
+			delete(channel.ChannelInfo.MultiKeyProxyList, keyIndex)
+		} else {
+			channel.ChannelInfo.MultiKeyProxyList[keyIndex] = proxyStr
+		}
+
+		err = channel.Update()
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		model.InitChannelCache()
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "密钥出口代理配置已更新",
 		})
 		return
 
