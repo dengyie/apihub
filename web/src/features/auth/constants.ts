@@ -32,6 +32,7 @@ export const loginFormSchema = z.object({
 export const registerFormSchema = z
   .object({
     username: z.string().min(1, 'Please enter your username'),
+    invitationCode: z.string().trim().min(1, 'Please enter a code.'),
     email: z.string().optional(),
     password: accountPasswordSchema,
     confirmPassword: z.string().min(1, 'Please confirm your password'),

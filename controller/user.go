@@ -271,8 +271,11 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
-	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, _ := model.GetUserIdByAffCode(affCode)
+	inviterId, err := resolveRegistrationInviterID(user.AffCode)
+	if err != nil {
+		writeRegistrationAffiliateError(c, err)
+		return
+	}
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,
@@ -332,6 +335,41 @@ func Register(c *gin.Context) {
 		"message": "",
 	})
 	return
+}
+
+var (
+	errRegistrationAffiliateCodeRequired = errors.New("registration affiliate code required")
+	errRegistrationAffiliateCodeInvalid  = errors.New("registration affiliate code invalid")
+)
+
+func resolveRegistrationInviterID(affiliateCode string) (int, error) {
+	affiliateCode = strings.TrimSpace(affiliateCode)
+	if affiliateCode == "" {
+		return 0, errRegistrationAffiliateCodeRequired
+	}
+
+	inviterID, err := model.GetUserIdByAffCode(affiliateCode)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, errRegistrationAffiliateCodeInvalid
+		}
+		return 0, err
+	}
+	if inviterID == 0 {
+		return 0, errRegistrationAffiliateCodeInvalid
+	}
+	return inviterID, nil
+}
+
+func writeRegistrationAffiliateError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errRegistrationAffiliateCodeRequired):
+		common.ApiErrorI18n(c, i18n.MsgUserAffCodeEmpty)
+	case errors.Is(err, errRegistrationAffiliateCodeInvalid):
+		common.ApiErrorI18n(c, i18n.MsgUserAffCodeInvalid)
+	default:
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+	}
 }
 
 func GetAllUsers(c *gin.Context) {

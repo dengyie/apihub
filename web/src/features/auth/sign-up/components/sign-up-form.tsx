@@ -92,6 +92,7 @@ export function SignUpForm({
     resolver: zodResolver(registerFormSchema),
     defaultValues: {
       username: '',
+      invitationCode: getAffiliateCode(),
       email: '',
       password: '',
       confirmPassword: '',
@@ -99,6 +100,7 @@ export function SignUpForm({
   })
 
   const emailValue = form.watch('email')
+  const invitationCode = form.watch('invitationCode')
   const emailVerificationRequired = !!status?.email_verification
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -136,8 +138,9 @@ export function SignUpForm({
     const aff = new URLSearchParams(window.location.search).get('aff')?.trim()
     if (aff) {
       saveAffiliateCode(aff)
+      form.setValue('invitationCode', aff, { shouldValidate: true })
     }
-  }, [])
+  }, [form])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {
@@ -166,7 +169,7 @@ export function SignUpForm({
         password: data.password,
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
-        aff_code: getAffiliateCode(),
+        aff_code: data.invitationCode.trim(),
         turnstile: turnstileToken,
       })
 
@@ -193,6 +196,10 @@ export function SignUpForm({
   }
 
   const handleOpenWeChatDialog = () => {
+    if (!invitationCode.trim()) {
+      toast.error(t('Please enter a code.'))
+      return
+    }
     if (requiresLegalConsent && !agreedToLegal) {
       toast.error(legalConsentErrorMessage)
       return
@@ -217,7 +224,7 @@ export function SignUpForm({
 
     setIsWeChatSubmitting(true)
     try {
-      const res = await wechatLoginByCode(wechatCode)
+      const res = await wechatLoginByCode(wechatCode, invitationCode.trim())
       if (res?.success) {
         handleWeChatDialogChange(false)
         if (await handleLoginResult(res.data)) {
@@ -260,6 +267,30 @@ export function SignUpForm({
               <FormLabel>{t('Username')}</FormLabel>
               <FormControl>
                 <Input placeholder={t('Enter your username')} {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {/* Invitation Code Field */}
+        <FormField
+          control={form.control}
+          name='invitationCode'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invitation Code')}</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder={t('Invitation Code')}
+                  autoComplete='off'
+                  {...field}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    field.onChange(value)
+                    saveAffiliateCode(value.trim())
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -385,7 +416,11 @@ export function SignUpForm({
         {oauthRegisterEnabled && (
           <OAuthProviders
             status={status}
-            disabled={isLoading || (requiresLegalConsent && !agreedToLegal)}
+            disabled={
+              isLoading ||
+              !invitationCode.trim() ||
+              (requiresLegalConsent && !agreedToLegal)
+            }
             onWeChatLogin={hasWeChatLogin ? handleOpenWeChatDialog : undefined}
             isWeChatLoading={isWeChatSubmitting}
             className='pt-2'

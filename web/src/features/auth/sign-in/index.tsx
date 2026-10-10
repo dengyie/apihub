@@ -36,19 +36,18 @@ export function SignIn() {
         <div className='space-y-3'>
           <p className='auth-eyebrow'>{t('Welcome back')}</p>
           <h1 className='auth-title'>{t('Sign in')}</h1>
-          {!status?.self_use_mode_enabled &&
-            status?.register_enabled !== false && (
-              <p className='text-muted-foreground text-left text-sm sm:text-base'>
-                {t("Don't have an account?")}{' '}
-                <Link
-                  to='/sign-up'
-                  className='hover:text-primary font-medium underline underline-offset-4'
-                >
-                  {t('Sign up')}
-                </Link>
-                .
-              </p>
-            )}
+          {status?.register_enabled !== false && (
+            <p className='text-muted-foreground text-left text-sm sm:text-base'>
+              {t("Don't have an account?")}{' '}
+              <Link
+                to='/sign-up'
+                className='hover:text-primary font-medium underline underline-offset-4'
+              >
+                {t('Sign up')}
+              </Link>
+              .
+            </p>
+          )}
         </div>
 
         <UserAuthForm redirectTo={redirect} />

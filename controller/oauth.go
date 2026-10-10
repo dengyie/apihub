@@ -328,6 +328,10 @@ func handleOAuthLogin(c *gin.Context, provider oauth.Provider, oauthUser *oauth.
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
 			return
 		}
+		if errors.Is(err, errRegistrationAffiliateCodeRequired) || errors.Is(err, errRegistrationAffiliateCodeInvalid) {
+			writeRegistrationAffiliateError(c, err)
+			return
+		}
 		switch err.(type) {
 		case *OAuthUserDeletedError:
 			common.ApiErrorI18n(c, i18n.MsgOAuthUserDeleted)
@@ -521,11 +525,13 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 	user.Role = common.RoleCommonUser
 	user.Status = common.UserStatusEnabled
 
-	// Handle affiliate code
-	inviterId := 0
-	if affiliateCode != "" {
-		inviterId, _ = model.GetUserIdByAffCode(affiliateCode)
+	// Require a valid affiliate code only when creating a new account. Existing
+	// OAuth users can continue to sign in without an invitation code.
+	inviterId, err := resolveRegistrationInviterID(affiliateCode)
+	if err != nil {
+		return nil, nil, err
 	}
+	user.InviterId = inviterId
 
 	// Use transaction to ensure user creation and OAuth binding are atomic
 	if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {

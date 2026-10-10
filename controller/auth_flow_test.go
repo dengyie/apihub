@@ -702,6 +702,51 @@ func TestGenerateOAuthCodeCarriesAffiliateInLoginFlow(t *testing.T) {
 	assert.Empty(t, flow.SessionId)
 }
 
+func TestRegistrationAffiliateCodeValidation(t *testing.T) {
+	provider := setupAuthFlowControllerTest(t)
+	previousRegister := common.RegisterEnabled
+	common.RegisterEnabled = true
+	t.Cleanup(func() { common.RegisterEnabled = previousRegister })
+	inviter := &model.User{
+		Username:    "registration-inviter",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     "valid-invitation",
+		AuthVersion: 1,
+	}
+	require.NoError(t, model.DB.Create(inviter).Error)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/auth-flow-test", nil)
+
+	tests := []struct {
+		name string
+		code string
+		err  error
+		want bool
+	}{
+		{name: "missing", err: errRegistrationAffiliateCodeRequired},
+		{name: "unknown", code: "unknown-invitation", err: errRegistrationAffiliateCodeInvalid},
+		{name: "valid", code: "valid-invitation", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			user, _, err := findOrCreateOAuthUser(ctx, provider, &oauth.OAuthUser{ProviderUserID: "register-" + test.name}, &oauth.OAuthToken{}, test.code)
+			if test.err != nil {
+				require.ErrorIs(t, err, test.err)
+				assert.Nil(t, user)
+				var count int64
+				require.NoError(t, model.DB.Model(&model.User{}).Count(&count).Error)
+				assert.EqualValues(t, 1, count)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, user)
+			assert.Equal(t, test.want, user.InviterId == inviter.Id)
+		})
+	}
+}
+
 func TestGenerateOAuthCodeBindsFlowToAuthenticatedSession(t *testing.T) {
 	_, identity := setupSecurityEnrollmentTest(t)
 	oauth.Register("auth-flow-test", &authFlowTestOAuthProvider{})
@@ -853,12 +898,18 @@ func (*legacyGitHubOAuthProvider) ProviderUserIDColumn() string { return "github
 
 // legacyGitHubOAuthLogin registers provider for one test and completes an OAuth
 // login callback with it.
-func legacyGitHubOAuthLogin(t *testing.T, provider *legacyGitHubOAuthProvider) *httptest.ResponseRecorder {
+func legacyGitHubOAuthLogin(t *testing.T, provider *legacyGitHubOAuthProvider, affiliateCode ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	const slug = "github-legacy-login-test"
 	oauth.Register(slug, provider)
 	t.Cleanup(func() { oauth.Unregister(slug) })
-	token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{Purpose: model.AuthFlowPurposeOAuth, Provider: slug, Intent: model.AuthFlowIntentLogin, Payload: `{}`, ExpiresAt: time.Now().Add(time.Minute)})
+	payload := `{}`
+	if len(affiliateCode) > 0 {
+		encoded, err := common.Marshal(oauthFlowPayload{AffiliateCode: affiliateCode[0]})
+		require.NoError(t, err)
+		payload = string(encoded)
+	}
+	token, _, err := model.CreateAuthFlow(model.AuthFlowCreate{Purpose: model.AuthFlowPurposeOAuth, Provider: slug, Intent: model.AuthFlowIntentLogin, Payload: payload, ExpiresAt: time.Now().Add(time.Minute)})
 	require.NoError(t, err)
 	router := gin.New()
 	router.GET("/api/oauth/:provider", HandleOAuth)
@@ -939,8 +990,14 @@ func TestOAuthLoginLegacyGitHubBindingRequiresAccountEvidence(t *testing.T) {
 			if test.existingDeleted {
 				require.NoError(t, model.DB.Delete(existing).Error)
 			}
+			affiliateCode := ""
+			if test.expectNewAccount {
+				inviter := &model.User{Username: "registration-inviter", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "registration-inviter", AuthVersion: 1}
+				require.NoError(t, model.DB.Create(inviter).Error)
+				affiliateCode = inviter.AffCode
+			}
 			provider := &legacyGitHubOAuthProvider{providerUserID: "900001", legacyID: test.legacyID, verifiedEmails: test.verifiedEmails, verifiedEmailsErr: test.verifiedEmailsErr}
-			response := legacyGitHubOAuthLogin(t, provider)
+			response := legacyGitHubOAuthLogin(t, provider, affiliateCode)
 			var result struct {
 				Success bool   `json:"success"`
 				Message string `json:"message"`
