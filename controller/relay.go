@@ -74,6 +74,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var (
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
+		// 提前声明，使终结 defer 能看到 GenRelayInfo 成功后的 relayInfo；
+		// GenRelayInfo 失败时它为 nil，AppendRelayLogAdminInfo 会跳过。
+		relayInfo *relaycommon.RelayInfo
 	)
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
@@ -101,6 +104,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			return
 		}
 		service.RecordRequestPolicyTermination(c, newAPIError)
+		recordRequestErrorLogSafely(c, relayInfo, newAPIError)
 		logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 		applyRelayTerminalStatusShield(c, newAPIError)
 		newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
@@ -118,7 +122,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
-	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
+	relayInfo, err = relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
@@ -771,6 +775,35 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	service.ProcessChannelError(c, channelError, err, relayInfo)
+}
+
+// recordRequestErrorLogSafely 把这次请求的失败补记成一条 type=5 行，否则通用日志页
+// 只看得见成功的 type=2，请求级失败完全不可见。判开关、判 opt-out、判去重标记都在
+// service.RecordRequestErrorLog 里面，这里只负责一件事：不让观测代码弄坏响应。
+//
+// HTTP 路径上这一行跑在终结 defer 里、writeRelayTerminalError 之前；WebSocket 路径上
+// 它跑在逐轮终结的 middleware 里，而 responsesWSRequestEngine 是裸 gin.New()，全仓
+// 唯一的 gin.CustomRecovery 挂在 main.go:258 的主 server 上，覆盖不到它。此处一旦
+// panic 就会一路穿过 engine.ServeHTTP → s.runCall → ResponsesWebSocketHelper 掀掉整条
+// WebSocket 连接。所以两条路径都必须过这一层包装，绝不能裸调 RecordRequestErrorLog。
+//
+// recover 只在本层自己 panic 时才拦得住：外层正在展开的 panic 传进来时，这里是
+// 非 panic 帧，recover() 返回 nil，下面的 recover 分支不成立，外层 panic 照常继续
+// 向上传播。反过来（HTTP 终结 defer 里本层自己 panic）也正是这里要拦的情况。
+// 静默吞掉会让日志缺口变成无人知晓的缺口，所以 recover 之后留一条带定位信息的痕迹。
+func recordRequestErrorLogSafely(c *gin.Context, relayInfo *relaycommon.RelayInfo, err *types.NewAPIError) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			// recover 存在的唯一意义就是事故时刻，所以这行必须自带定位信息：
+			// 只有报错文本的话，值班的人还得先反查这次请求是谁、用什么模型、走的哪个渠道。
+			logger.LogError(c, fmt.Sprintf("record request error log panicked: %v, user_id=%d, model=%s, channel_id=%d",
+				recovered,
+				c.GetInt("id"),
+				common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
+				common.GetContextKeyInt(c, constant.ContextKeyChannelId)))
+		}
+	}()
+	service.RecordRequestErrorLog(c, err, relayInfo)
 }
 
 func RelayMidjourney(c *gin.Context) {
