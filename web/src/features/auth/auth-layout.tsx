@@ -22,10 +22,10 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
-import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ShaderArtwork } from '@/components/visuals/shader-artwork'
 import { useSystemConfig } from '@/hooks/use-system-config'
+
+import { LandingWordmark } from '../home/landing/components/landing-wordmark'
 
 type AuthLayoutProps = { children: React.ReactNode }
 
@@ -60,22 +60,22 @@ export function AuthLayout(props: AuthLayoutProps) {
       <main className='auth-stage'>
         <div className='auth-art-panel'>
           <div className='auth-artwork'>
-            <ShaderArtwork variant='metal' paused={paused} />
+            <h1 className='sr-only'>{systemName}</h1>
+            <LandingWordmark brand={systemName} paused={paused} />
           </div>
           <div className='auth-art-copy'>
-            <p>{t('Your workspace, connected.')}</p>
+            <p>{t('An open gateway to AI')}</p>
             <span>{t('One key. A world of possibilities.')}</span>
           </div>
-          <Button
-            variant='ghost'
-            size='icon'
+          <button
+            type='button'
             className='auth-motion-toggle'
             aria-label={paused ? t('Play animation') : t('Pause animation')}
             aria-pressed={paused}
             onClick={() => setPaused((value) => !value)}
           >
             {paused ? <Play /> : <Pause />}
-          </Button>
+          </button>
         </div>
         <div className='auth-form-panel'>
           <div className='auth-form-content'>{props.children}</div>

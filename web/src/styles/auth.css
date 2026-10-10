@@ -16,33 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-/* Auth and its portalled dialogs share a black palette, irrespective of the
-   saved site theme. :has releases the palette as soon as the route unmounts. */
-body:has(.auth-shell),
-html[data-site-design='paper'] body:has(.auth-shell),
 .auth-shell {
-  --background: #000;
-  --foreground: #f4f3ef;
-  --card: #101010;
-  --card-foreground: #f4f3ef;
-  --popover: #151515;
-  --popover-foreground: #f4f3ef;
-  --primary: #f4f3ef;
-  --primary-foreground: #080808;
-  --secondary: #1a1a1a;
-  --secondary-foreground: #f4f3ef;
-  --muted: #1a1a1a;
-  --muted-foreground: #a09f9b;
-  --accent: #202020;
-  --accent-foreground: #f4f3ef;
-  --border: #282828;
-  --input: #363636;
-  --ring: #deddd7;
-  --destructive: #ff8a8a;
-  --skeleton-base: #161616;
-  --skeleton-highlight: #242424;
   color: var(--foreground);
-  background: #000;
+  background: var(--background);
 }
 .auth-shell {
   display: flex;
@@ -55,19 +31,26 @@ html[data-site-design='paper'] body:has(.auth-shell),
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 30px clamp(24px, 4.5vw, 64px);
+  width: min(100%, 1440px);
+  min-height: 92px;
+  margin: 0 auto;
+  padding: 0 clamp(24px, 5vw, 72px);
+  border-bottom: 1px solid var(--border);
 }
 .auth-brand {
   display: inline-flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
+  color: var(--foreground);
   font-size: 21px;
-  font-weight: 550;
-  letter-spacing: -0.04em;
+  font-weight: 650;
+  letter-spacing: -0.055em;
 }
 .auth-brand img {
-  border-radius: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   object-fit: contain;
 }
 .auth-brand span {
@@ -88,50 +71,71 @@ html[data-site-design='paper'] body:has(.auth-shell),
   align-items: center;
   gap: 8px;
 }
+.auth-header-actions a:hover {
+  color: var(--foreground);
+}
 .auth-stage {
   display: grid;
   grid-template-columns: 1.1fr 1fr;
   width: 100%;
-  max-width: 1320px;
+  max-width: 1440px;
   flex: 1;
   margin: 0 auto;
-  padding: 30px 52px 60px;
+  padding: 52px clamp(24px, 5vw, 72px) 72px;
   align-items: center;
 }
 .auth-art-panel {
   position: relative;
-  min-height: 590px;
+  min-height: 500px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .auth-artwork {
-  position: absolute;
-  inset: -5% 0 15%;
+  width: min(100%, 640px);
+  --wordmark-ink: var(--foreground);
 }
 .auth-art-copy {
   position: absolute;
-  bottom: 15px;
+  bottom: 4px;
   width: 100%;
   text-align: center;
 }
 .auth-art-copy p {
   font-family: var(--font-serif);
-  font-size: clamp(24px, 2.3vw, 34px);
+  font-size: clamp(22px, 2.1vw, 30px);
   line-height: 1.4;
-  letter-spacing: -0.045em;
+  letter-spacing: -0.04em;
 }
 .auth-art-copy > span {
   display: block;
   font-size: 12px;
   margin-top: 14px;
-  color: #898984;
+  color: var(--muted-foreground);
 }
 .auth-motion-toggle {
   position: absolute;
-  right: 12%;
-  bottom: 120px;
+  right: 8%;
+  bottom: 72px;
   width: 28px;
   height: 28px;
-  color: #858580;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
   border-radius: 50%;
+  color: var(--muted-foreground);
+  background: transparent;
+  transition:
+    color 160ms,
+    border-color 160ms,
+    background 160ms;
+}
+.auth-motion-toggle:hover {
+  border-color: var(--emphasis, var(--foreground));
+  color: var(--foreground);
+  background: var(--muted);
 }
 .auth-motion-toggle svg {
   width: 12px;
@@ -143,15 +147,15 @@ html[data-site-design='paper'] body:has(.auth-shell),
 }
 .auth-form-content {
   width: 100%;
-  max-width: 380px;
+  max-width: 400px;
   margin-inline: auto;
-  padding-block: 26px;
+  padding-block: 20px;
 }
 .auth-title {
-  font-size: 34px;
+  font-size: 36px;
   line-height: 1.2;
   font-weight: 450;
-  letter-spacing: -0.045em;
+  letter-spacing: -0.05em;
 }
 .auth-eyebrow {
   color: var(--muted-foreground);
@@ -161,15 +165,15 @@ html[data-site-design='paper'] body:has(.auth-shell),
 }
 .auth-form-content input:not([type='checkbox']):not([type='radio']) {
   height: 44px;
-  background: #0b0b0b;
+  background: var(--background);
   border-radius: 9px;
   padding-inline-start: 13px;
   box-shadow: none;
 }
 .auth-form-content
   input:not([type='checkbox']):not([type='radio']):focus-visible {
-  border-color: #c4c3bd;
-  box-shadow: 0 0 0 1px #c4c3bd;
+  border-color: var(--foreground);
+  box-shadow: 0 0 0 1px var(--foreground);
 }
 .auth-form-content [data-slot='form-label'] {
   font-size: 12px;
@@ -183,8 +187,8 @@ html[data-site-design='paper'] body:has(.auth-shell),
 }
 .auth-form-content [data-slot='button'][data-variant='outline'] {
   min-height: 40px;
-  background: #0b0b0b;
-  border-color: #303030;
+  background: var(--background);
+  border-color: var(--border);
 }
 .auth-form-content [data-slot='button']:hover {
   box-shadow: none;
@@ -193,18 +197,20 @@ html[data-site-design='paper'] body:has(.auth-shell),
   transition: color 160ms;
 }
 .auth-form-content a:hover {
-  color: #fff;
+  color: var(--foreground);
 }
 .auth-form-content [data-slot='card'] {
   box-shadow: none;
 }
 .auth-bottom {
+  width: min(100%, 1440px);
+  margin: 0 auto;
   display: flex;
   justify-content: space-between;
   gap: 20px;
-  padding: 22px clamp(24px, 4.5vw, 64px);
-  border-top: 1px solid #1a1a1a;
-  color: #83837f;
+  padding: 22px clamp(24px, 5vw, 72px);
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 @media (max-width: 1023px) {
@@ -224,7 +230,7 @@ html[data-site-design='paper'] body:has(.auth-shell),
 }
 @media (max-width: 767px) {
   .auth-header {
-    padding: 22px 24px;
+    min-height: 76px;
   }
   .auth-brand {
     font-size: 18px;
@@ -250,20 +256,14 @@ html[data-site-design='paper'] body:has(.auth-shell),
     align-items: stretch;
   }
   .auth-art-panel {
-    min-height: 190px;
+    min-height: 220px;
     max-width: 360px;
     width: 100%;
     margin: 0 auto;
   }
   .auth-artwork {
-    inset: 0;
+    width: min(100%, 380px);
     pointer-events: none;
-  }
-  .auth-artwork .shader-metal-ring {
-    width: 48%;
-    left: 26%;
-    top: 50%;
-    transform: translateY(-50%);
   }
   .auth-art-copy,
   .auth-motion-toggle {
