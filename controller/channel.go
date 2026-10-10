@@ -1804,7 +1804,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 			var proxy string
 			if channel.ChannelInfo.MultiKeyProxyList != nil {
-				proxy = channel.ChannelInfo.MultiKeyProxyList[i]
+				proxy = maskMultiKeyProxyForRead(
+					channel.ChannelInfo.MultiKeyProxyList[i],
+					authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite),
+				)
 			}
 
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
@@ -2338,6 +2341,30 @@ func ManageMultiKeys(c *gin.Context) {
 
 func multiKeyActionRequiresSensitiveWrite(action string) bool {
 	return action == "delete_key" || action == "delete_disabled_keys" || action == "update_key_proxy"
+}
+
+// maskMultiKeyProxyForRead decides what get_key_status hands back for a key's
+// independent egress proxy. Writing one already requires ChannelSensitiveWrite
+// (see multiKeyActionRequiresSensitiveWrite), so the stored value is a
+// credential. Without this gate any principal holding the endpoint's
+// ChannelOperate baseline could read the password straight out of the JSON
+// response even though they may not write it. Holders of ChannelSensitiveWrite
+// are the same set that may write the value, so they get it verbatim; everyone
+// else gets the RFC 3986 redacted form, which still shows scheme/host/username
+// for the UI to display.
+func maskMultiKeyProxyForRead(proxy string, canViewSecret bool) string {
+	proxy = strings.TrimSpace(proxy)
+	if proxy == "" || canViewSecret {
+		return proxy
+	}
+	parsed, err := common.ParseProxyURLStrict(proxy)
+	if err != nil {
+		// An unparseable value cannot be redacted reliably. Returning it
+		// verbatim risks disclosing a credential, so withhold it entirely and
+		// let the UI fall back to its "configured" placeholder.
+		return ""
+	}
+	return parsed.Redacted()
 }
 
 // OllamaPullModel 拉取 Ollama 模型

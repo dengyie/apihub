@@ -182,3 +182,124 @@ func TestMultiKeyEnableRestoresOnlyExhaustedChannels(t *testing.T) {
 		assert.NotContains(t, string(rawParams), "socks5://u:p@127.0.0.1:2080")
 	})
 }
+
+// TestMultiKeyProxyNotLeakedToReadOnlyCallers pins the asymmetry between the
+// write and read paths for per-key egress proxies. Writing one requires
+// ChannelSensitiveWrite, so the stored value is a credential; reading key
+// status back must therefore never hand that credential to a principal who
+// cannot write it. get_key_status is reachable on the endpoint's
+// ChannelOperate baseline (admin), which is a strictly larger set than the
+// root-only write permission — so without an explicit gate on the read path an
+// admin could lift every proxy password out of the JSON response.
+//
+// This test drives the real handler rather than the helper so that a future
+// refactor which drops the mask at the call site cannot pass.
+func TestMultiKeyProxyNotLeakedToReadOnlyCallers(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousMaster, previousCache, previousRedis, previousSQLite := common.IsMasterNode, common.MemoryCacheEnabled, common.RedisEnabled, common.SQLitePath
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousType, previousLogType)
+		common.IsMasterNode, common.MemoryCacheEnabled, common.RedisEnabled, common.SQLitePath = previousMaster, previousCache, previousRedis, previousSQLite
+	})
+	t.Setenv("SQL_DSN", os.Getenv("TEST_CHANNEL_SQL_DSN"))
+	t.Setenv("LOG_SQL_DSN", "")
+	common.IsMasterNode, common.MemoryCacheEnabled, common.RedisEnabled = false, false, false
+	common.SQLitePath = filepath.Join(t.TempDir(), "channel-proxy-read.db")
+	require.NoError(t, model.InitDB())
+	database := model.DB
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	model.LOG_DB = database
+	common.SetLogDatabaseType(common.MainDatabaseType())
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.User{}, &model.Log{}, &model.AuditLog{}))
+
+	root := &model.User{Username: "proxy-read-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AffCode: "proxy-read-root-aff"}
+	require.NoError(t, database.Create(root).Error)
+	t.Cleanup(func() { require.NoError(t, database.Unscoped().Delete(root).Error) })
+
+	// Admin holds ChannelOperate (the endpoint baseline) but is denied
+	// ChannelSensitiveWrite, which is exactly the escalate-or-read case.
+	admin := &model.User{Username: "proxy-read-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AffCode: "proxy-read-admin-aff"}
+	require.NoError(t, database.Create(admin).Error)
+	t.Cleanup(func() { require.NoError(t, database.Unscoped().Delete(admin).Error) })
+
+	const secretProxy = "socks5://leaked:pw123456@203.0.113.9:1080"
+	channel := &model.Channel{
+		Name: "proxy-read-gate", Type: 1, Key: "key-0\nkey-1", Status: common.ChannelStatusEnabled, Models: "test-model", Group: "default",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:        true,
+			MultiKeySize:      2,
+			MultiKeyProxyList: map[int]string{0: secretProxy},
+		},
+	}
+	require.NoError(t, channel.Insert())
+	t.Cleanup(func() {
+		_ = channel.Delete()
+		model.InitChannelCache()
+	})
+
+	callGetKeyStatus := func(t *testing.T, user *model.User) string {
+		t.Helper()
+		payload, err := common.Marshal(MultiKeyManageRequest{ChannelId: channel.Id, Action: "get_key_status"})
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Set("id", user.Id)
+		c.Set("role", user.Role)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/channel/multi_key/manage", bytes.NewReader(payload))
+		c.Request.Header.Set("Content-Type", "application/json")
+		ManageMultiKeys(c)
+		return recorder.Body.String()
+	}
+
+	adminBody := callGetKeyStatus(t, admin)
+	assert.NotContains(t, adminBody, "pw123456", "admin without ChannelSensitiveWrite must not receive the proxy password")
+	assert.NotContains(t, adminBody, secretProxy, "admin must not receive the raw proxy URL")
+	// Scheme/host stay visible so the UI can still show that a proxy is set.
+	assert.Contains(t, adminBody, "203.0.113.9:1080", "redacted form should keep the endpoint visible")
+
+	// Root may both write and read the value, so it must still come back intact
+	// or the edit dialog could not round-trip an existing proxy.
+	rootBody := callGetKeyStatus(t, root)
+	assert.Contains(t, rootBody, secretProxy, "root holds ChannelSensitiveWrite and must receive the proxy verbatim")
+
+	// The stored credential is untouched by masking: masking is a read concern.
+	reloaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, secretProxy, reloaded.ChannelInfo.MultiKeyProxyList[0], "read masking must not mutate stored proxy")
+}
+
+// TestMaskMultiKeyProxyForRead covers the helper's decision table directly,
+// including the unparseable-value case where redacting is impossible and the
+// only safe answer is to withhold the value.
+func TestMaskMultiKeyProxyForRead(t *testing.T) {
+	t.Run("secret holder gets the value verbatim", func(t *testing.T) {
+		assert.Equal(t, "socks5://u:p@h:1080", maskMultiKeyProxyForRead("socks5://u:p@h:1080", true))
+	})
+
+	t.Run("non secret holder gets RFC 3986 redacted form", func(t *testing.T) {
+		got := maskMultiKeyProxyForRead("socks5://u:p@h:1080", false)
+		assert.NotContains(t, got, "p@")
+		assert.Contains(t, got, "socks5://u:xxxxx@h:1080")
+	})
+
+	t.Run("empty stays empty for both", func(t *testing.T) {
+		assert.Equal(t, "", maskMultiKeyProxyForRead("", true))
+		assert.Equal(t, "", maskMultiKeyProxyForRead("", false))
+	})
+
+	t.Run("surrounding whitespace is trimmed", func(t *testing.T) {
+		assert.Equal(t, "", maskMultiKeyProxyForRead("   ", false))
+	})
+
+	t.Run("unparseable value is withheld rather than disclosed", func(t *testing.T) {
+		// A value we cannot parse cannot be redacted, so returning it verbatim
+		// would risk handing out a credential.
+		assert.Equal(t, "", maskMultiKeyProxyForRead("://not a url u:p@", false))
+		// The secret holder still sees it; masking is for other principals.
+		assert.Equal(t, "://not a url u:p@", maskMultiKeyProxyForRead("://not a url u:p@", true))
+	})
+}
