@@ -280,6 +280,22 @@ func TestToolCallStateLostMessageIsSelfExplanatory(t *testing.T) {
 	assert.Contains(t, msg, raw, "原始报错要保留，便于对日志排查")
 }
 
+// TestReasoningHydrationErrorMessageIsSelfExplanatory 验证跨账号推理水合报错文案被友好改写。
+func TestReasoningHydrationErrorMessageIsSelfExplanatory(t *testing.T) {
+	raw := "The encrypted content for item rs_01fd could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed."
+	err := types.NewErrorWithStatusCode(
+		errors.New(raw),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	require.True(t, loadbalancer.IsReasoningHydrationError(err), "分类器必须命中推理水合错误")
+
+	msg := clientFacingRelayMessage(err)
+	assert.Contains(t, msg, "跨账号推理思考密文校验失败")
+	assert.Contains(t, msg, "自愈重试")
+	assert.Contains(t, msg, raw, "原始报错要保留，便于对日志排查")
+}
+
 // TestClientFacingRelayMessagePassesThroughOthers 确保只有这一类被改写。
 func TestClientFacingRelayMessagePassesThroughOthers(t *testing.T) {
 	err := types.NewErrorWithStatusCode(

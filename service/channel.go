@@ -241,6 +241,10 @@ func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdi
 	if _, isParamErr := loadbalancer.IsParamNotSupportedError(err); isParamErr {
 		return autoDisableVerdict{}
 	}
+	// 推理水合（解密）失败属于跨账号会话密文不兼容，剥离密文重试即可自愈，不得触发自动禁用
+	if loadbalancer.IsReasoningHydrationError(err) {
+		return autoDisableVerdict{}
+	}
 	// 确定性失效优先于一切：模型映射失效与 OAuth 凭据刷新失效都不会自愈，
 	// 留在池子里等于每次请求都白烧一轮换渠道重试。自动禁用状态码默认只有 401，
 	// 覆盖不到 404「模型不存在」这类返回码。

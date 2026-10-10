@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/logger"
 	relaychannel "github.com/dengyie/apihub/relay/channel"
 	relaycommon "github.com/dengyie/apihub/relay/common"
@@ -49,7 +50,17 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		return nil, nil, nil, types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
 	}
 	adaptor.Init(info)
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+
+	// 当发生换渠道重试（info.RetryIndex > 0）或显式触发自愈降级时，
+	// 自动剥离历史 reasoning / encrypted_content 项，防止跨 OpenAI 账号推理水合失败 (400)
+	shouldStripReasoning := info.RetryIndex > 0 || common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning)
+	stripped := false
+	if shouldStripReasoning {
+		stripped = request.StripReasoningInput()
+	}
+
+	// 若未剥离加密项且开启了透传，直接走透传通道；若剥离了加密项，必须重新序列化以规避上游解密报错
+	if !stripped && (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return nil, nil, nil, types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())

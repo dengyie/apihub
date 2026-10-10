@@ -10,6 +10,7 @@ import (
 	kitutil "github.com/dengyie/apihub/relaykit/relayconvert/kitutil"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/samber/lo"
+	"github.com/tidwall/gjson"
 )
 
 type ResponseFormat struct {
@@ -1266,4 +1267,42 @@ func (r *OpenAIResponsesRequest) ParseInput() []MediaInput {
 	}
 
 	return mediaInputs
+}
+
+// StripReasoningInput removes items of type "reasoning", items with id prefix "rs_",
+// or items containing "encrypted_content" from the Responses API input array.
+// Returns true if any items were stripped.
+// If all items were stripped, an empty array `[]` is preserved, which complies with JSON schema.
+func (r *OpenAIResponsesRequest) StripReasoningInput() bool {
+	if len(r.Input) == 0 || kitutil.GetJsonType(r.Input) != "array" {
+		return false
+	}
+
+	var rawItems []json.RawMessage
+	if err := kitutil.Unmarshal(r.Input, &rawItems); err != nil {
+		return false
+	}
+
+	filtered := make([]json.RawMessage, 0, len(rawItems))
+	changed := false
+	for _, rawItem := range rawItems {
+		itemType := strings.TrimSpace(gjson.GetBytes(rawItem, "type").String())
+		itemId := strings.TrimSpace(gjson.GetBytes(rawItem, "id").String())
+		hasEncrypted := gjson.GetBytes(rawItem, "encrypted_content").Exists()
+		if itemType == "reasoning" || hasEncrypted || strings.HasPrefix(itemId, "rs_") {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, rawItem)
+	}
+
+	if !changed {
+		return false
+	}
+
+	if marshaled, err := kitutil.Marshal(filtered); err == nil {
+		r.Input = marshaled
+		return true
+	}
+	return false
 }

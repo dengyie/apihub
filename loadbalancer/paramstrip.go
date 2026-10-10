@@ -506,6 +506,22 @@ func IsThinkingModeHistoryError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "content[].thinking in the thinking mode must be passed back")
 }
 
+// IsReasoningHydrationError 判断是否为上游 Responses 推理水合（解密）失败错误（通常返回 400）。
+//
+// 当多轮对话历史中包含某 OpenAI 账号加密的 reasoning 项（rs_*，encrypted_content），
+// 被路由或重试到不同 OpenAI 账号的上游时，上游无法解密，抛出：
+// "The encrypted content for item rs_* could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed."
+// 属于跨账号会话密文不兼容，网关应剥离历史加密项并触发重试自愈，不能视为渠道损坏。
+func IsReasoningHydrationError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "reasoning hydration failed") ||
+		(strings.Contains(msg, "encrypted content") && strings.Contains(msg, "could not be verified")) ||
+		(strings.Contains(msg, "encrypted content could not be decrypted"))
+}
+
 // IsUpstreamToolCallStateLostError 判断是否为上游丢失工具调用会话状态错误（通常返回 400）。
 //
 // 客户端（如 codex CLI）续接一次工具调用时只带上一轮的 call_id，并不回传该调用的完整上下文；
@@ -609,6 +625,10 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 	}
 	// 若为参数不支持类的 400 错误（如 thinking、reasoning_effort 等），优先由参数裁剪机制处理，不计入上游中继失效熔断
 	if _, ok := IsParamNotSupportedError(err); ok {
+		return false
+	}
+	// Responses 推理水合（解密）失败属于跨账号多轮会话密文不兼容，剥离密文重试即可自愈，不得归为中继代理失效熔断
+	if IsReasoningHydrationError(err) {
 		return false
 	}
 	if IsThinkingModeHistoryError(err) {

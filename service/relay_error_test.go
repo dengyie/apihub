@@ -377,3 +377,11 @@ func TestIsUpstreamRelayErrorExcludesParamErrorAcross5xx(t *testing.T) {
 		http.StatusInternalServerError, "upstream request failed")),
 		"普通的 500 仍然是中继故障 —— 豁免只能窄化到参数措辞，不能把 5xx 一刀切")
 }
+
+func TestDecideRelayRetryReasoningHydrationError(t *testing.T) {
+	const hydrationMsg = "The encrypted content for item rs_01fd could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed."
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	got := DecideRelayRetry(c, upstreamError(http.StatusBadRequest, hydrationMsg), 2)
+	assert.Equal(t, "retry", got.Action)
+	assert.Equal(t, "reasoning_hydration_failed", got.Reason)
+}

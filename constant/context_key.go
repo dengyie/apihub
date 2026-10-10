@@ -95,4 +95,8 @@ const (
 	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.
 	ContextKeyTokenAuditSucceeded ContextKey = "token_audit_succeeded"
+
+	// ContextKeyStripResponsesReasoning instructs PrepareResponsesRequest to strip foreign
+	// reasoning/encrypted_content items from the responses input payload before sending upstream.
+	ContextKeyStripResponsesReasoning ContextKey = "strip_responses_reasoning"
 )

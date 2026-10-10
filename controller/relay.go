@@ -372,31 +372,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if wasEmptyStream {
 			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id, relayInfo.OriginModelName)
 		}
-			if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
-				zeroByteRetryable(newAPIError) {
-				// 如果是渠道的首字超时且尚有重试机会，且客户端仍在等待，
-				// 不应因静态配置预算偏小而直接掐死重试，按策略实际配置的单次 TTFT 窗口动态放行
-				if loadbalancer.IsTTFTTimeout(newAPIError) &&
-					c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
-					retryParam.GetRetry() < common.RetryTimes {
-					channelTTFT := loadbalancer.GetPolicy().Resolve(channel.Id).TTFTTimeoutMs
-					if channelTTFT <= 0 {
-						channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
-					}
-					zeroByteDeadline = time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
-				} else {
-					newAPIError = types.NewErrorWithStatusCode(
-						&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
-						types.ErrorCodeEmptyStreamBudgetExhausted,
-						http.StatusBadGateway,
-						types.ErrOptionWithSkipRetry(),
-					)
-					relayInfo.LastError = newAPIError
-					logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
-					lbAttempt.EndCancelled()
-					break
+		if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
+			zeroByteRetryable(newAPIError) {
+			// 如果是渠道的首字超时且尚有重试机会，且客户端仍在等待，
+			// 不应因静态配置预算偏小而直接掐死重试，按策略实际配置的单次 TTFT 窗口动态放行
+			if loadbalancer.IsTTFTTimeout(newAPIError) &&
+				c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
+				retryParam.GetRetry() < common.RetryTimes {
+				channelTTFT := loadbalancer.GetPolicy().Resolve(channel.Id).TTFTTimeoutMs
+				if channelTTFT <= 0 {
+					channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
 				}
+				zeroByteDeadline = time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
+			} else {
+				newAPIError = types.NewErrorWithStatusCode(
+					&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
+					types.ErrorCodeEmptyStreamBudgetExhausted,
+					http.StatusBadGateway,
+					types.ErrOptionWithSkipRetry(),
+				)
+				relayInfo.LastError = newAPIError
+				logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
+				lbAttempt.EndCancelled()
+				break
 			}
+		}
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
@@ -522,6 +522,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
 			loadbalancer.MarkParamUnsupported(channel.Id, modelName, param)
 			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 不支持 %s 参数，已标记自动裁剪", channel.Id, scopeLabel(modelName), param))
+		}
+		// 智能负载推理水合自愈：若上游因密文无法解密返回 400，标记后续重试必须剥离历史加密项
+		if loadbalancer.IsReasoningHydrationError(newAPIError) {
+			common.SetContextKey(c, constant.ContextKeyStripResponsesReasoning, true)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游推理水合失败 (Encrypted content cannot be decrypted)，已标记后续重试自动清洗加密项并自愈", channel.Id, scopeLabel(modelName)))
 		}
 		// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。
 		// 403 本身已会触发换渠道重试，这里加的是超长熔断。
@@ -703,12 +708,18 @@ func clientFacingRelayMessage(newAPIError *types.NewAPIError) string {
 	if loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) {
 		return upstreamToolCallStateLostMessage + "上游原始报错：" + newAPIError.Error()
 	}
+	if loadbalancer.IsReasoningHydrationError(newAPIError) {
+		return upstreamReasoningHydrationErrorMessage + "上游原始报错：" + newAPIError.Error()
+	}
 	return newAPIError.Error()
 }
 
 const upstreamToolCallStateLostMessage = "工具调用续接失败：当前渠道没有这次工具调用的会话记录，无法继续。" +
 	"这通常不是你的请求或凭据有问题，而是网关侧的会话粘性记录失效（重启或发版后清空），" +
 	"续接请求被路由到了当初产生该 call_id 的渠道之外。请重试；若反复失败，请新建会话重新开始。"
+
+const upstreamReasoningHydrationErrorMessage = "跨账号推理思考密文校验失败：多轮会话中的加密思考项与上游账号不匹配。" +
+	"网关已自动尝试剥离加密项并自愈重试，若重试耗尽仍失败，建议新建会话重新开始。"
 
 // applyRelayTerminalStatusShield 把上游渠道的 401/403/410/400 映射成网关侧故障码，
 // 避免客户端 SDK 把网关故障当成自己的凭证错误。客户端断开不得映射。
@@ -718,15 +729,16 @@ func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIErr
 	}
 	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
 	if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-		if loadbalancer.IsEOLError(newAPIError) ||
-			loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-			loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-			loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-			loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
-			loadbalancer.IsUpstreamRelayError(newAPIError) ||
-			loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
-			loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) ||
-			newAPIError.StatusCode == http.StatusForbidden ||
+			if loadbalancer.IsEOLError(newAPIError) ||
+				loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+				loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+				loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+				loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
+				loadbalancer.IsUpstreamRelayError(newAPIError) ||
+				loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+				loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) ||
+				loadbalancer.IsReasoningHydrationError(newAPIError) ||
+				newAPIError.StatusCode == http.StatusForbidden ||
 			newAPIError.StatusCode == http.StatusUnauthorized ||
 			newAPIError.StatusCode == http.StatusGone ||
 			newAPIError.StatusCode == http.StatusBadRequest {

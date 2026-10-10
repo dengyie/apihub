@@ -155,3 +155,29 @@ func TestParamStripExcludesAuthAndRoutingStatusCodes(t *testing.T) {
 		assert.True(t, ok, "状态码 %d 必须识别为参数不支持", code)
 	}
 }
+
+func TestIsReasoningHydrationError(t *testing.T) {
+	err1 := types.NewErrorWithStatusCode(
+		errors.New("The encrypted content for item rs_01fd9964e6696813016ac9d2f15b3c819395da0763f4a21526 could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed."),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.True(t, IsReasoningHydrationError(err1))
+	assert.False(t, IsUpstreamRelayError(err1), "推理水合解密失败不得被判定为中继代理失效")
+
+	err2 := types.NewErrorWithStatusCode(
+		errors.New("Encrypted content could not be decrypted"),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.True(t, IsReasoningHydrationError(err2))
+	assert.False(t, IsUpstreamRelayError(err2), "推理水合解密失败不得被判定为中继代理失效")
+
+	errOther := types.NewErrorWithStatusCode(
+		errors.New("invalid parameter: temperature"),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.False(t, IsReasoningHydrationError(errOther))
+	assert.False(t, IsReasoningHydrationError(nil))
+}

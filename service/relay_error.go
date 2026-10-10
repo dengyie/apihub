@@ -153,6 +153,10 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsThinkingModeHistoryError(err) {
 		return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
 	}
+	// 智能负载：Responses 推理水合（解密）失败（如 "reasoning hydration failed: Encrypted content could not be decrypted"），换渠道并脱敏重试
+	if loadbalancer.IsReasoningHydrationError(err) {
+		return PolicyDecision{Action: "retry", Reason: "reasoning_hydration_failed", Source: "loadbalancer"}
+	}
 	// 智能负载：上游模型不可用/已禁用/未配置（如 "model not found"、"model is disabled on this gateway"），换渠道重试
 	if loadbalancer.IsUpstreamModelUnavailableError(err) {
 		return PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}
@@ -161,13 +165,13 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsUpstreamRelayError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
 	}
-		if operation_setting.ShouldRetryByStatusCode(code) {
-			return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
-		}
-		// 智能负载：上游限流/并发超限（如 400 包装的并发限制、RPM 限流），换渠道重试
-		if loadbalancer.IsUpstreamRateLimitError(err) {
-			return PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}
-		}
+	if operation_setting.ShouldRetryByStatusCode(code) {
+		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
+	}
+	// 智能负载：上游限流/并发超限（如 400 包装的并发限制、RPM 限流），换渠道重试
+	if loadbalancer.IsUpstreamRateLimitError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}
+	}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
 }
 

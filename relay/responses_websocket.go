@@ -27,6 +27,7 @@ import (
 	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/dengyie/apihub/service"
+	"github.com/dengyie/apihub/loadbalancer"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -328,18 +329,21 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			adaptor := GetAdaptor(info.ApiType)
 			adaptor.Init(info)
 			target, dialErr := relaychannel.DoWssRequest(adaptor, c, info, nil)
-			if dialErr != nil {
-				apiErr = service.NormalizeViolationFeeError(types.NewError(dialErr, types.ErrorCodeDoRequestFailed))
-				service.ResetStatusCode(apiErr, c.GetString("status_code_mapping"))
-				info.LastError = apiErr
-				decision := service.DecideRelayRetry(c, apiErr, common.RetryTimes-retry.GetRetry())
-				service.RecordPolicyFailure(c, channel.Id, apiErr, decision)
-				service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
-				if decision.Action == "retry" {
-					continue
+				if dialErr != nil {
+					apiErr = service.NormalizeViolationFeeError(types.NewError(dialErr, types.ErrorCodeDoRequestFailed))
+					service.ResetStatusCode(apiErr, c.GetString("status_code_mapping"))
+					info.LastError = apiErr
+					decision := service.DecideRelayRetry(c, apiErr, common.RetryTimes-retry.GetRetry())
+					service.RecordPolicyFailure(c, channel.Id, apiErr, decision)
+					service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
+					if loadbalancer.IsReasoningHydrationError(apiErr) {
+						common.SetContextKey(c, appconstant.ContextKeyStripResponsesReasoning, true)
+					}
+					if decision.Action == "retry" {
+						continue
+					}
+					return apiErr
 				}
-				return apiErr
-			}
 			if !s.setTarget(target) {
 				return types.NewError(context.Canceled, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
@@ -895,6 +899,12 @@ func buildResponsesWSErrorPayload(eventID, streamID string, apiErr *types.NewAPI
 		status = http.StatusInternalServerError
 	}
 	openaiErr := apiErr.ToOpenAIError()
+	if loadbalancer.IsReasoningHydrationError(apiErr) {
+		openaiErr.Message = "跨账号推理思考密文校验失败：多轮会话中的加密思考项与上游账号不匹配。" +
+			"网关已自动尝试剥离加密项并自愈重试，若重试耗尽仍失败，建议新建会话重新开始。" +
+			"上游原始报错：" + openaiErr.Message
+		status = http.StatusServiceUnavailable
+	}
 	return common.Marshal(&responsesWSErrorEvent{
 		Type:     "error",
 		Status:   status,

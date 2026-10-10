@@ -155,38 +155,66 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 }
 
 func SetContextKey(c *gin.Context, key constant.ContextKey, value any) {
+	if c == nil {
+		return
+	}
 	c.Set(string(key), value)
 }
 
 func GetContextKey(c *gin.Context, key constant.ContextKey) (any, bool) {
+	if c == nil {
+		return nil, false
+	}
 	return c.Get(string(key))
 }
 
 func GetContextKeyString(c *gin.Context, key constant.ContextKey) string {
+	if c == nil {
+		return ""
+	}
 	return c.GetString(string(key))
 }
 
 func GetContextKeyInt(c *gin.Context, key constant.ContextKey) int {
+	if c == nil {
+		return 0
+	}
 	return c.GetInt(string(key))
 }
 
 func GetContextKeyBool(c *gin.Context, key constant.ContextKey) bool {
+	if c == nil {
+		return false
+	}
 	return c.GetBool(string(key))
 }
 
 func GetContextKeyStringSlice(c *gin.Context, key constant.ContextKey) []string {
+	if c == nil {
+		return nil
+	}
 	return c.GetStringSlice(string(key))
 }
 
 func GetContextKeyStringMap(c *gin.Context, key constant.ContextKey) map[string]any {
+	if c == nil {
+		return nil
+	}
 	return c.GetStringMap(string(key))
 }
 
 func GetContextKeyTime(c *gin.Context, key constant.ContextKey) time.Time {
+	if c == nil {
+		return time.Time{}
+	}
 	return c.GetTime(string(key))
 }
 
 func GetContextKeyType[T any](c *gin.Context, key constant.ContextKey) (T, bool) {
+	if c == nil {
+		var zero T
+		return zero, false
+	}
 	if value, ok := c.Get(string(key)); ok {
 		if v, ok := value.(T); ok {
 			return v, true
