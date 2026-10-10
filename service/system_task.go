@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/logger"
 	"github.com/dengyie/apihub/model"
 
@@ -19,7 +20,12 @@ const (
 	// tasks created on other nodes and mark expired leases failed.
 	systemTaskRunnerIdleInterval = 15 * time.Second
 	systemTaskLockTTL            = 60 * time.Second
-	logCleanupBatchSize          = 100
+	// logCleanupBatchSize is rows per DELETE. Each batch is one write
+	// transaction, so a small value turns a large backlog into thousands of
+	// sequential transactions and holds SQLite's write lock far longer than
+	// necessary. 1000 keeps any single batch short while cutting the
+	// transaction count for a full sweep by an order of magnitude.
+	logCleanupBatchSize = 1000
 
 	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
 	// pass runs, independent of how often the runner wakes to claim tasks.
@@ -73,14 +79,36 @@ func registeredSystemTaskHandlers() []SystemTaskHandler {
 	return handlers
 }
 
-// logCleanupHandler wraps the existing on-demand log cleanup task as a
-// registered (non-scheduled) handler. It is created via StartLogCleanupTask.
+// logCleanupHandler runs the log retention sweep. It serves both entry points:
+// the on-demand admin endpoint (StartLogCleanupTask) and the daily scheduler,
+// which creates a task through Enabled/Interval/NewPayload.
 type logCleanupHandler struct{}
 
 func (logCleanupHandler) Type() string { return model.SystemTaskTypeLogCleanup }
 
 func (logCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	runLogCleanupTask(ctx, task, runnerID)
+}
+
+// logCleanupInterval is how often the retention sweep runs. Daily is enough:
+// the table grows by roughly a day's volume between runs, and a shorter period
+// only buys deletions that the next run would make anyway.
+const logCleanupInterval = 24 * time.Hour
+
+// Enabled reports whether the daily sweep should enqueue itself. A retention of
+// 0 (or negative) disables the schedule without disabling the admin endpoint.
+func (logCleanupHandler) Enabled() bool { return constant.LogRetentionDays > 0 }
+
+func (logCleanupHandler) Interval() time.Duration { return logCleanupInterval }
+
+// NewPayload computes the watermark at enqueue time rather than reusing a
+// previous task's payload. Reusing one would make every run after the first
+// delete nothing, because the timestamp it carries has already been applied.
+func (logCleanupHandler) NewPayload() any {
+	return LogCleanupPayload{
+		TargetTimestamp: common.GetTimestamp() - int64(constant.LogRetentionDays)*24*60*60,
+		BatchSize:       logCleanupBatchSize,
+	}
 }
 
 func init() {
