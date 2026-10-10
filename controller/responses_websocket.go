@@ -123,7 +123,7 @@ func ResponsesWebSocket(c *gin.Context) {
 
 	if apiError := relay.ResponsesWebSocketHelper(c, ws, runner); apiError != nil {
 		logger.LogError(c, fmt.Sprintf("responses websocket relay error: %s", common.LocalLogPreview(apiError.Error())))
-		apiError.SetMessage(common.MessageWithRequestId(apiError.Error(), requestID))
+		apiError.SetMessage(common.MessageWithRequestId(clientFacingRelayMessage(apiError), requestID))
 		helper.WssError(c, ws, apiError.ToOpenAIError())
 	}
 }

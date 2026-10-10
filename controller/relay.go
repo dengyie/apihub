@@ -103,7 +103,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		service.RecordRequestPolicyTermination(c, newAPIError)
 		logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 		applyRelayTerminalStatusShield(c, newAPIError)
-		newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+		newAPIError.SetMessage(common.MessageWithRequestId(clientFacingRelayMessage(newAPIError), requestId))
 		writeRelayTerminalError(c, ws, relayFormat, newAPIError)
 	}()
 
@@ -658,7 +658,47 @@ func zeroByteRetryable(err *types.NewAPIError) bool {
 	}
 }
 
-// applyRelayTerminalStatusShield 把上游渠道的 401/403/410/400 映射成 502，
+// relayGatewayFaultStatus 是本网关回给客户端的「上游/网关侧故障」状态码。
+//
+// 不能用 502：Cloudflare 会把源站的 502 响应体整个替换成它自己的纯文本
+// "error code: 502"，我们写进 body 的失败原因（哪个渠道、为什么失败）根本到不了
+// 客户端，使用者只看到一句无从下手的通用错误。生产实测同一次请求直连源站能拿到
+// {"error":{"message":"找不到可消费的工具调用状态：call_id=..."}}，经 CF 只剩
+// "error code: 502"；而 503 及其响应体 CF 原样透传。两者同为 5xx，客户端 SDK 的
+// 重试语义一致，也不会把网关故障误判成自己的凭证错误。
+const relayGatewayFaultStatus = http.StatusServiceUnavailable
+
+// clientFacingGatewayStatus 把内部构造的 502 统一改写成 relayGatewayFaultStatus。
+// 只在「回给客户端」的最后一跳改写：内部错误分类、熔断判定、日志仍按原始状态码进行。
+func clientFacingGatewayStatus(statusCode int) int {
+	if statusCode == http.StatusBadGateway {
+		return relayGatewayFaultStatus
+	}
+	return statusCode
+}
+
+// clientFacingRelayMessage 决定客户端最终读到的错误正文。
+//
+// 默认原样透出上游/内部的报错，只改写「上游丢失工具调用会话状态」这一类：
+// 上游原文（"找不到可消费的工具调用状态：call_id=..."）只描述现象，对使用者没有
+// 任何可操作信息，而这条错误在生产里几乎全由本网关自己的渠道亲和失效引起
+// （见 loadbalancer.IsUpstreamToolCallStateLostError）。说明成因与出路，
+// 用户才知道该重试还是该新开会话。原始报错保留在句尾，便于对着日志排查。
+func clientFacingRelayMessage(newAPIError *types.NewAPIError) string {
+	if newAPIError == nil {
+		return ""
+	}
+	if loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) {
+		return upstreamToolCallStateLostMessage + "上游原始报错：" + newAPIError.Error()
+	}
+	return newAPIError.Error()
+}
+
+const upstreamToolCallStateLostMessage = "工具调用续接失败：当前渠道没有这次工具调用的会话记录，无法继续。" +
+	"这通常不是你的请求或凭据有问题，而是网关侧的会话粘性记录失效（重启或发版后清空），" +
+	"续接请求被路由到了当初产生该 call_id 的渠道之外。请重试；若反复失败，请新建会话重新开始。"
+
+// applyRelayTerminalStatusShield 把上游渠道的 401/403/410/400 映射成网关侧故障码，
 // 避免客户端 SDK 把网关故障当成自己的凭证错误。客户端断开不得映射。
 func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIError) {
 	if newAPIError == nil || types.IsClientAbortedError(newAPIError) {
@@ -673,14 +713,15 @@ func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIErr
 			loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
 			loadbalancer.IsUpstreamRelayError(newAPIError) ||
 			loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+			loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) ||
 			newAPIError.StatusCode == http.StatusForbidden ||
 			newAPIError.StatusCode == http.StatusUnauthorized ||
 			newAPIError.StatusCode == http.StatusGone ||
 			newAPIError.StatusCode == http.StatusBadRequest {
-			newAPIError.StatusCode = http.StatusBadGateway
+			newAPIError.StatusCode = relayGatewayFaultStatus
 		}
 	} else if loadbalancer.IsEOLError(newAPIError) {
-		newAPIError.StatusCode = http.StatusBadGateway
+		newAPIError.StatusCode = relayGatewayFaultStatus
 	}
 }
 
@@ -688,17 +729,19 @@ func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat typ
 	if c == nil || newAPIError == nil {
 		return
 	}
+	// 客户端读到的状态码在最后一跳统一改写，见 clientFacingGatewayStatus。
+	statusCode := clientFacingGatewayStatus(newAPIError.StatusCode)
 	if !c.Writer.Written() {
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			helper.WssError(c, ws, newAPIError.ToOpenAIError())
 		case types.RelayFormatClaude:
-			c.JSON(newAPIError.StatusCode, gin.H{
+			c.JSON(statusCode, gin.H{
 				"type":  "error",
 				"error": newAPIError.ToClaudeError(),
 			})
 		default:
-			c.JSON(newAPIError.StatusCode, gin.H{
+			c.JSON(statusCode, gin.H{
 				"error": newAPIError.ToOpenAIError(),
 			})
 		}
@@ -706,7 +749,7 @@ func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat typ
 	}
 	// SSE 流已经输出部分数据（headers 已发送），无法再发送 HTTP 状态码或普通 JSON。
 	// 必须通过 SSE 协议发送标准错误帧，通知客户端请求失败并携带错误码，
-	// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出 502/错误并标记 retryable: true。
+	// 这样客户端 SDK（如 ZCode、OpenAI SDK）能正确解析出错误并标记 retryable: true。
 	var sseErrData string
 	switch relayFormat {
 	case types.RelayFormatClaude:
@@ -717,7 +760,7 @@ func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat typ
 		sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
 	default:
 		openAIErr := newAPIError.ToOpenAIError()
-		openAIErr.Code = newAPIError.StatusCode
+		openAIErr.Code = statusCode
 		errJSON, _ := common.Marshal(gin.H{
 			"error": openAIErr,
 		})

@@ -29,36 +29,36 @@ func TestUpstreamChannelErrorStatusShielding(t *testing.T) {
 		expectedStatus int
 	}{
 		{
-			name:           "upstream 403 group permission denied mapped to 502",
+			name:           "upstream 403 group permission denied mapped to 503",
 			useChannel:     []string{"165"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     http.StatusForbidden,
 			errMessage:     "无权访问 按量分组 分组 (request id: 202609280523093326619788268d9d6owlmt1Nf)",
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
-			name:           "upstream 404 TokenPlan model unsupported mapped to 502",
+			name:           "upstream 404 TokenPlan model unsupported mapped to 503",
 			useChannel:     []string{"150"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     http.StatusNotFound,
 			errMessage:     "deepseek-v4-flash is not supported by TokenPlan",
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
-			name:           "upstream 401 invalid key mapped to 502",
+			name:           "upstream 401 invalid key mapped to 503",
 			useChannel:     []string{"120"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     http.StatusUnauthorized,
 			errMessage:     "Invalid API Key",
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
-			name:           "upstream 410 EOL model mapped to 502",
+			name:           "upstream 410 EOL model mapped to 503",
 			useChannel:     []string{"56"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     410,
 			errMessage:     "The model deepseek-ai/deepseek-v4-flash-0731 has reached its end of life",
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
 			name:           "downstream client insufficient quota remains 403",
@@ -69,20 +69,28 @@ func TestUpstreamChannelErrorStatusShielding(t *testing.T) {
 			expectedStatus: http.StatusForbidden,
 		},
 		{
-			name:           "upstream 400 parameter level max not supported mapped to 502",
+			name:           "upstream 400 parameter level max not supported mapped to 503",
 			useChannel:     []string{"19"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     http.StatusBadRequest,
 			errMessage:     `level "max" not supported, valid levels: low, medium, high`,
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
-			name:           "upstream 400 thinking mode history error mapped to 502",
+			name:           "upstream 400 thinking mode history error mapped to 503",
 			useChannel:     []string{"24"},
 			errorCode:      types.ErrorCodeBadResponseStatusCode,
 			statusCode:     http.StatusBadRequest,
 			errMessage:     "The `reasoning_content` in the thinking mode must be passed back to the API.",
-			expectedStatus: http.StatusBadGateway,
+			expectedStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:           "upstream 400 tool call state lost mapped to 503",
+			useChannel:     []string{"155"},
+			errorCode:      types.ErrorCodeBadResponseStatusCode,
+			statusCode:     http.StatusBadRequest,
+			errMessage:     "找不到可消费的工具调用状态：call_id=call_qGRzoQMDDF3pXgOX7gt6TFaw",
+			expectedStatus: http.StatusServiceUnavailable,
 		},
 		{
 			name:           "downstream client malformed request remains 400",
@@ -106,25 +114,8 @@ func TestUpstreamChannelErrorStatusShielding(t *testing.T) {
 				tc.statusCode,
 			)
 
-			// Execute the status code shielding logic as in Relay defer func
-			isUpstreamChannelError := len(c.GetStringSlice("use_channel")) > 0
-			if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-				if loadbalancer.IsEOLError(newAPIError) ||
-					loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-					loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-					loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-					loadbalancer.IsUpstreamRelayError(newAPIError) ||
-					loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
-					newAPIError.StatusCode == http.StatusForbidden ||
-					newAPIError.StatusCode == http.StatusUnauthorized ||
-					newAPIError.StatusCode == http.StatusGone ||
-					newAPIError.StatusCode == http.StatusBadRequest {
-					newAPIError.StatusCode = http.StatusBadGateway
-				}
-			} else if loadbalancer.IsEOLError(newAPIError) {
-				newAPIError.StatusCode = http.StatusBadGateway
-			}
-
+			// 直接调用生产函数，不再内联复制一遍，避免盾标改了这里却看不出来。
+			applyRelayTerminalStatusShield(c, newAPIError)
 			assert.Equal(t, tc.expectedStatus, newAPIError.StatusCode)
 		})
 	}
@@ -168,7 +159,10 @@ func TestWriteRelayTerminalErrorSkipsSSEFrameWhenAlreadyWrittenAndAborted(t *tes
 	)
 	writeRelayTerminalError(c, nil, types.RelayFormatOpenAI, streamErr)
 	assert.True(t, strings.Contains(w.Body.String(), before))
-	assert.Contains(t, w.Body.String(), `"code":502`)
+	// 内部错误码仍是 502，但 SSE 帧里回给客户端的码被改写成 503
+	// （Cloudflare 会替换源站 502 的响应体，见 clientFacingGatewayStatus）。
+	assert.Contains(t, w.Body.String(), `"code":503`)
+	assert.NotContains(t, w.Body.String(), `"code":502`)
 }
 
 func TestZeroByteRetryableAndStreamDeliveredContent(t *testing.T) {
@@ -266,4 +260,44 @@ func TestRetryLoop_ContextDeadlineExceededDoesNotMarkClientAborted(t *testing.T)
 
 	assert.True(t, errors.Is(deadlineCtx.Err(), context.DeadlineExceeded))
 	assert.False(t, errors.Is(deadlineCtx.Err(), context.Canceled))
+}
+
+// TestToolCallStateLostMessageIsSelfExplanatory 钉住用户最终读到的文案：
+// 上游原文只描述现象，必须被替换成有成因、有出路的说明，原始报错附在句尾备查。
+func TestToolCallStateLostMessageIsSelfExplanatory(t *testing.T) {
+	raw := "找不到可消费的工具调用状态：call_id=call_qGRzoQMDDF3pXgOX7gt6TFaw"
+	err := types.NewErrorWithStatusCode(
+		errors.New(raw),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusBadRequest,
+	)
+	require.True(t, loadbalancer.IsUpstreamToolCallStateLostError(err), "分类器必须命中上游原文")
+
+	msg := clientFacingRelayMessage(err)
+	assert.Contains(t, msg, "工具调用续接失败")
+	assert.Contains(t, msg, "会话粘性")
+	assert.Contains(t, msg, "重试")
+	assert.Contains(t, msg, raw, "原始报错要保留，便于对日志排查")
+}
+
+// TestClientFacingRelayMessagePassesThroughOthers 确保只有这一类被改写。
+func TestClientFacingRelayMessagePassesThroughOthers(t *testing.T) {
+	err := types.NewErrorWithStatusCode(
+		errors.New("The model has reached its end of life"),
+		types.ErrorCodeBadResponseStatusCode,
+		http.StatusGone,
+	)
+	assert.Equal(t, err.Error(), clientFacingRelayMessage(err))
+	assert.Equal(t, "", clientFacingRelayMessage(nil))
+}
+
+// TestClientFacingGatewayStatusRewritesOnly502 Cloudflare 会把源站的 502 响应体
+// 换成它自己的 "error code: 502"，所以回给客户端的最后一跳不能出现 502。
+func TestClientFacingGatewayStatusRewritesOnly502(t *testing.T) {
+	assert.Equal(t, http.StatusServiceUnavailable, clientFacingGatewayStatus(http.StatusBadGateway))
+	for _, code := range []int{http.StatusOK, http.StatusBadRequest, http.StatusUnauthorized,
+		http.StatusForbidden, http.StatusGone, http.StatusTooManyRequests,
+		http.StatusGatewayTimeout, http.StatusServiceUnavailable} {
+		assert.Equal(t, code, clientFacingGatewayStatus(code))
+	}
 }

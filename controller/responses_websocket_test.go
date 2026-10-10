@@ -1017,12 +1017,14 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 	// clientStatus 是**客户端看到**的状态码，不是上游返回的那个。
 	//
-	// 上游 4xx 一律经 applyRelayTerminalStatusShield 改写成 502，让客户端 SDK
-	// 不会把网关侧的渠道故障误当成自己的凭证错误（controller/relay.go 的
-	// 函数注释写明了这条意图，TestUpstreamChannelErrorStatusShielding 逐条
-	// 钉住）。本用例写于 2026-09-21，盾标在 2026-09-30 的 v29.7 才落地，
-	// 当时没有回填断言，于是这三个子用例一直红着 —— 是过期期望，不是回归。
-	// 下面显式断言 502 而不是把上游码抄一遍，免得盾标被改回去时无人察觉。
+	// 上游 4xx 一律经 applyRelayTerminalStatusShield 改写成网关侧故障码，让客户端
+	// SDK 不会把网关侧的渠道故障误当成自己的凭证错误（controller/relay.go 的函数
+	// 注释写明了这条意图，TestUpstreamChannelErrorStatusShielding 逐条钉住）。
+	// 本用例写于 2026-09-21，盾标在 2026-09-30 的 v29.7 才落地，当时没有回填断言，
+	// 于是这三个子用例一直红着 —— 是过期期望，不是回归。
+	// 下面显式断言客户端看到的码而不是把上游码抄一遍，免得盾标被改回去时无人察觉。
+	// 2026-10-10：盾标从 502 改成 503 —— Cloudflare 会把源站 502 的响应体换成它
+	// 自己的纯文本 "error code: 502"，我们写的失败原因到不了客户端。
 	for _, tc := range []struct {
 		name, code            string
 		firstStatus           int
@@ -1031,8 +1033,8 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 		success               bool
 		ignored               bool
 	}{
-		{name: "business rejection", code: "context_length_exceeded", firstStatus: 400, clientStatus: http.StatusBadGateway, attempts: 1, success: false, ignored: true},
-		{name: "credentials rejected as 400", code: "invalid_api_key", firstStatus: 400, clientStatus: http.StatusBadGateway, attempts: 1, success: false, ignored: false},
+		{name: "business rejection", code: "context_length_exceeded", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: true},
+		{name: "credentials rejected as 400", code: "invalid_api_key", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: false},
 		{name: "retry succeeds", code: "server_error", firstStatus: 500, clientStatus: http.StatusOK, attempts: 2, success: true, ignored: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,14 +1,12 @@
 package controller
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/dengyie/apihub/service"
@@ -81,19 +79,15 @@ func TestWrittenStreamTerminalSSEError(t *testing.T) {
 		http.StatusBadGateway,
 	)
 
-	openAIErr := newAPIError.ToOpenAIError()
-	openAIErr.Code = newAPIError.StatusCode
-	errJSON, err := common.Marshal(gin.H{
-		"error": openAIErr,
-	})
-	require.NoError(t, err)
-	sseErrData := fmt.Sprintf("data: %s\n\n", string(errJSON))
-	_, err = c.Writer.Write([]byte(sseErrData))
-	require.NoError(t, err)
+	// 调用生产函数，而不是把 SSE 帧格式在这里抄一遍：要钉的是客户端真正收到的
+	// 那个码，抄一遍的话 writeRelayTerminalError 改了这里也不会红。
+	writeRelayTerminalError(c, nil, types.RelayFormatOpenAI, newAPIError)
 
 	body := w.Body.String()
 	assert.True(t, strings.Contains(body, "thinking..."))
-	assert.True(t, strings.Contains(body, "\"code\":502"))
+	// 内部错误码是 502，但回给客户端的被改写成 503：Cloudflare 会把源站 502 的
+	// 响应体整个替换成 "error code: 502"，错误原因就传不出去了。
+	assert.True(t, strings.Contains(body, "\"code\":503"))
 	assert.True(t, strings.Contains(body, "INTERNAL_ERROR"))
 }
 

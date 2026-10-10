@@ -506,11 +506,39 @@ func IsThinkingModeHistoryError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "content[].thinking in the thinking mode must be passed back")
 }
 
+// IsUpstreamToolCallStateLostError 判断是否为上游丢失工具调用会话状态错误（通常返回 400）。
+//
+// 客户端（如 codex CLI）续接一次工具调用时只带上一轮的 call_id，并不回传该调用的完整上下文；
+// 上游若在自己的会话存储里找不到这个 call_id，就会返回「找不到可消费的工具调用状态：call_id=...」。
+//
+// 对本网关而言触发条件几乎总是自己造成的：渠道亲和（会话粘性）只存在于进程内存中，
+// 蓝绿发布或重启后记录清空，续接请求便会被路由到当初产生该 call_id 的渠道之外，
+// 上游自然认不出这个 call_id。这类错误要能被单独识别，好在回给客户端时替换成
+// 有成因、有出路的说明，而不是把上游那句对使用者毫无信息量的话原样透出去。
+func IsUpstreamToolCallStateLostError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "找不到可消费的工具调用状态") {
+		return true
+	}
+	if strings.Contains(msg, "工具调用状态") && strings.Contains(msg, "call_id") {
+		return true
+	}
+	return strings.Contains(msg, "no consumable tool call state") ||
+		strings.Contains(msg, "tool call state not found") ||
+		strings.Contains(msg, "no tool call state found") ||
+		strings.Contains(msg, "unable to find tool call state") ||
+		strings.Contains(msg, "unknown tool call state")
+}
+
 // IsUpstreamPermissionError 判断是否为上游渠道权限/分组无权访问/TokenPlan不支持等错误（通常返回 403 或 404）。
 // 例如聚合中继站（One-API/New-API 等）返回 "无权访问 按量分组 分组"、"user_group_no_permission"、
 // "当前分组本时段不可调用"、"当前分组无可用渠道"，或订阅计划返回 "deepseek-v4-flash is not supported by TokenPlan"。
 // 这类错误属于上游渠道配置、分组或套餐权限缺陷，而非下游客户端认证失败。
-// 应触发换渠道重试与即时熔断隔离，并在透传保护中映射为 502 Bad Gateway 避免客户端终止会话。
+// 应触发换渠道重试与即时熔断隔离，并在透传保护中映射为网关侧故障码（503，见 controller/relay.go）
+// 避免客户端把上游配置缺陷误当成自己的凭证错误而终止会话。
 func IsUpstreamPermissionError(err *types.NewAPIError) bool {
 	if err == nil {
 		return false
