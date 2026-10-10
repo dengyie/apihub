@@ -520,6 +520,22 @@ export async function deleteDisabledMultiKeys(
   }) as Promise<{ success: boolean; message?: string; data?: number }>
 }
 
+/**
+ * Update independent egress proxy for a specific key in multi-key channel
+ */
+export async function updateMultiKeyProxy(
+  channelId: number,
+  keyIndex: number,
+  proxy?: string
+): Promise<{ success: boolean; message?: string }> {
+  return manageMultiKeys({
+    channel_id: channelId,
+    action: 'update_key_proxy',
+    key_index: keyIndex,
+    proxy,
+  }) as Promise<{ success: boolean; message?: string }>
+}
+
 // ============================================================================
 // Tag Operations
 // ============================================================================

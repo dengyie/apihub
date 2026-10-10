@@ -623,6 +623,14 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
+		// 若当前多Key具有单独配置的出口代理，优先覆盖渠道级别的Proxy设置
+		if channel.ChannelInfo.MultiKeyProxyList != nil {
+			if keyProxy, ok := channel.ChannelInfo.MultiKeyProxyList[index]; ok && strings.TrimSpace(keyProxy) != "" {
+				setting := channel.GetSetting()
+				setting.Proxy = strings.TrimSpace(keyProxy)
+				common.SetContextKey(c, constant.ContextKeyChannelSetting, setting)
+			}
+		}
 	} else {
 		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)
