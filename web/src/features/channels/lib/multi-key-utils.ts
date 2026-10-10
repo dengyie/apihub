@@ -73,3 +73,26 @@ export function isDestructiveAction(
     action.type === 'disable-all'
   )
 }
+
+/**
+ * Mask password credentials in a proxy URL
+ * e.g., socks5://user:secret@127.0.0.1:2080 -> socks5://user:***@127.0.0.1:2080
+ */
+export function maskProxyUrl(proxy?: string): string {
+  if (!proxy) return ''
+  try {
+    const url = new URL(proxy)
+    if (url.password) {
+      url.password = '***'
+      const res = url.toString()
+      if (!proxy.endsWith('/') && res.endsWith('/')) {
+        return res.slice(0, -1)
+      }
+      return res
+    }
+    return proxy
+  } catch {
+    return proxy.replace(/(:\/\/[^:@/]+):([^@/]+)(@)/, '$1:***$3')
+  }
+}
+

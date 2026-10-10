@@ -345,3 +345,38 @@ func TestSharedEndpointRebindsToBoundNewAPIExtension(t *testing.T) {
 	assert.Equal(t, "alpha", c.GetString("task_plugin_key"), "the first bound candidate executes regardless of the earlier pin")
 	assert.Equal(t, "alpha", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
 }
+
+func TestSetupContextForSelectedChannelMultiKeyProxyOverride(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	channel := &model.Channel{
+		Id:   95,
+		Type: constant.ChannelTypeOpenAI,
+		Key:  "sk-key-0\nsk-key-1",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+			MultiKeyProxyList: map[int]string{
+				0: "socks5://zen_user_0:pass0@127.0.0.1:2080",
+			},
+		},
+	}
+	channel.SetSetting(dto.ChannelSettings{
+		Proxy: "http://default-channel-proxy:8080",
+	})
+
+	// When index 0 is selected, it should override ChannelSetting.Proxy with its dedicated proxy
+	err := SetupContextForSelectedChannel(c, channel, "gpt-4o")
+	require.Nil(t, err)
+
+	selectedSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting)
+	require.True(t, ok)
+	selectedIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+
+	if selectedIndex == 0 {
+		assert.Equal(t, "socks5://zen_user_0:pass0@127.0.0.1:2080", selectedSetting.Proxy)
+	} else if selectedIndex == 1 {
+		assert.Equal(t, "http://default-channel-proxy:8080", selectedSetting.Proxy)
+	}
+}

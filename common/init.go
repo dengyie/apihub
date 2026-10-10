@@ -200,6 +200,10 @@ func initConstantEnv() {
 	// false，导致裸机/systemd/二进制部署完全没有 type=5 行——通用日志页只看得到
 	// 成功的 type=2，请求失败对用户是不可见的。默认值对齐 compose，行为一致。
 	constant.ErrorLogEnabled = GetEnvOrDefaultBool("ERROR_LOG_ENABLED", true)
+	// 通用日志保留天数。定时清理任务据此计算删除水位线，超过天数的行会被删掉。
+	// 默认 30 天：足以覆盖绝大多数排障回溯，同时把 logs 表稳态体积压在几百 MB。
+	// 设为 0 关闭自动清理（仍可手动调 /api/system-task/log-cleanup）。
+	constant.LogRetentionDays = GetEnvOrDefault("LOG_RETENTION_DAYS", 30)
 	// 任务轮询时查询的最大数量
 	constant.TaskQueryLimit = GetEnvOrDefault("TASK_QUERY_LIMIT", 1000)
 	// 异步任务超时时间（分钟），超过此时间未完成的任务将被标记为失败并退款。0 表示禁用。

@@ -234,6 +234,7 @@ export interface KeyStatus {
   disabled_time?: number
   reason?: string
   key_preview?: string
+  proxy?: string
 }
 
 export type MultiKeyConfirmAction = {
@@ -244,7 +245,9 @@ export type MultiKeyConfirmAction = {
     | 'enable-all'
     | 'disable-all'
     | 'delete-disabled'
+    | 'edit-proxy'
   keyIndex?: number
+  proxy?: string
 }
 
 export interface MultiKeyStatusResponse {
@@ -321,7 +324,9 @@ export interface MultiKeyManageParams {
     | 'disable_all_keys'
     | 'delete_key'
     | 'delete_disabled_keys'
+    | 'update_key_proxy'
   key_index?: number
+  proxy?: string
   page?: number
   page_size?: number
   status?: number // 1=enabled, 2=manual_disabled, 3=auto_disabled

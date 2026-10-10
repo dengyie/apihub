@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Globe } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -25,21 +26,45 @@ import type { MultiKeyConfirmAction } from '../../types'
 type MultiKeyTableRowActionsProps = {
   keyIndex: number
   status: number
+  proxy?: string
   canDelete: boolean
+  canEditSensitive?: boolean
   onAction: (action: MultiKeyConfirmAction) => void
+  onEditProxy: (keyIndex: number, currentProxy?: string) => void
 }
 
 export function MultiKeyTableRowActions({
   keyIndex,
   status,
+  proxy,
   canDelete,
+  canEditSensitive,
   onAction,
+  onEditProxy,
 }: MultiKeyTableRowActionsProps) {
   const { t } = useTranslation()
   const isEnabled = status === 1
+  const canEditProxy = canEditSensitive ?? canDelete
 
   return (
     <div className='flex justify-end gap-2'>
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => {
+          if (!canEditProxy) return
+          onEditProxy(keyIndex, proxy)
+        }}
+        disabled={!canEditProxy}
+        title={
+          canEditProxy
+            ? t('Configure independent egress proxy for this key')
+            : t('No permission to perform this action')
+        }
+      >
+        <Globe className='mr-1.5 h-3.5 w-3.5' />
+        {t('Proxy')}
+      </Button>
       {isEnabled ? (
         <Button
           variant='outline'
