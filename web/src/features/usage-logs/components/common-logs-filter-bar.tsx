@@ -41,7 +41,7 @@ import {
 } from '@/components/ui/tooltip'
 import { getGroups } from '@/features/users/api'
 import { useMediaQuery } from '@/hooks'
-import { getUserGroups } from '@/lib/api'
+import { getUserGroups, getUserModels } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { LOG_TYPE_ALL_VALUE, LOG_TYPE_FILTERS } from '../constants'
@@ -136,6 +136,25 @@ export function CommonLogsFilterBar<TData>(
     queryFn: async () => requireServerSuccess(await getUserGroups()),
     enabled: !isAdmin,
   })
+  const { data: userModels } = useQuery({
+    queryKey: ['usage-logs', 'user-models'],
+    queryFn: async () => {
+      // Fallback: if the model list is unavailable, the filter still works as
+      // a free-text input, so tolerate this fetch failing quietly.
+      try {
+        return requireServerSuccess(await getUserModels())
+      } catch {
+        return null
+      }
+    },
+    meta: { errorToast: false },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const modelOptions = useMemo(() => {
+    const models = Array.isArray(userModels?.data) ? userModels.data : []
+    return models.map((model) => ({ label: model, value: model }))
+  }, [userModels])
   const groupOptions = useMemo(() => {
     const groups = isAdmin
       ? (adminGroups?.data ?? [])
@@ -335,10 +354,15 @@ export function CommonLogsFilterBar<TData>(
   )
   const modelFilter = (
     <LogsFilterField>
-      <LogsFilterInput
+      <Combobox
+        options={modelOptions}
+        allowCustomValue
+        aria-label={t('Model Name')}
+        emptyText={t('No model found.')}
         placeholder={t('Model Name')}
+        className='h-8 min-w-0 text-sm leading-5'
         value={filters.model || ''}
-        onChange={(e) => handleChange('model', e.target.value)}
+        onValueChange={(value) => handleChange('model', value ?? '')}
         onKeyDown={handleKeyDown}
       />
     </LogsFilterField>
