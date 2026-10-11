@@ -20,25 +20,28 @@ import (
 
 // TestResetCorroborationDoesNotTouchSiblingModels 复位 "a" 不得动 "a|b"。
 //
-// 这是本条缺陷的最小复现：前缀 "1|a|" 匹配 "1|a|b|status_code"，
+// 这是本条缺陷的最小复现：前缀 "1|a|" 匹配 "1|a|b|model_unavailable"，
 // 所以旧实现在复位 "a" 时把 "a|b" 的计数一起清了。
+// 判据用 model_unavailable：它是唯一按模型分桶的类别，模型名进键——
+// 渠道级三类（channel_error / status_code / keyword）归一到渠道桶后，
+// 模型名根本不参与构键，兄弟桶问题只在这一类上存在。
 func TestResetCorroborationDoesNotTouchSiblingModels(t *testing.T) {
 	defer resetCorroborationForTest()()
 	prev := GetPolicy()
 	SetPolicy(corroborationPolicyForTest(3, 600))
 	t.Cleanup(func() { SetPolicy(prev) })
 
-	_, _ = RecordAutoDisableSignal(1, "a", CorroborationClassStatusCode)
-	_, _ = RecordAutoDisableSignal(1, "a", CorroborationClassStatusCode)
-	_, _ = RecordAutoDisableSignal(1, "a|b", CorroborationClassStatusCode)
-	require.Equal(t, 2, CorroborationCount(1, "a", CorroborationClassStatusCode))
-	require.Equal(t, 1, CorroborationCount(1, "a|b", CorroborationClassStatusCode))
+	_, _ = RecordAutoDisableSignal(1, "a", CorroborationClassModelUnavailable)
+	_, _ = RecordAutoDisableSignal(1, "a", CorroborationClassModelUnavailable)
+	_, _ = RecordAutoDisableSignal(1, "a|b", CorroborationClassModelUnavailable)
+	require.Equal(t, 2, CorroborationCount(1, "a", CorroborationClassModelUnavailable))
+	require.Equal(t, 1, CorroborationCount(1, "a|b", CorroborationClassModelUnavailable))
 
 	ResetCorroboration(1, "a")
 
-	assert.Equal(t, 0, CorroborationCount(1, "a", CorroborationClassStatusCode),
+	assert.Equal(t, 0, CorroborationCount(1, "a", CorroborationClassModelUnavailable),
 		"被复位的模型必须真的清零")
-	assert.Equal(t, 1, CorroborationCount(1, "a|b", CorroborationClassStatusCode),
+	assert.Equal(t, 1, CorroborationCount(1, "a|b", CorroborationClassModelUnavailable),
 		"名字以被复位模型为前缀的模型不受影响 —— 它们是两个独立的桶")
 }
 
@@ -77,16 +80,17 @@ func TestResetCorroborationIsNotConfusedByOtherChannels(t *testing.T) {
 	SetPolicy(corroborationPolicyForTest(3, 600))
 	t.Cleanup(func() { SetPolicy(prev) })
 
-	_, _ = RecordAutoDisableSignal(1, "m", CorroborationClassStatusCode)
-	_, _ = RecordAutoDisableSignal(11, "m", CorroborationClassStatusCode)
-	_, _ = RecordAutoDisableSignal(1, "m2", CorroborationClassStatusCode)
+	// 用 model_unavailable：模型名参与构键的类别，才能钉住「模型名维度」的精度。
+	_, _ = RecordAutoDisableSignal(1, "m", CorroborationClassModelUnavailable)
+	_, _ = RecordAutoDisableSignal(11, "m", CorroborationClassModelUnavailable)
+	_, _ = RecordAutoDisableSignal(1, "m2", CorroborationClassModelUnavailable)
 
 	ResetCorroboration(1, "m")
 
-	assert.Equal(t, 0, CorroborationCount(1, "m", CorroborationClassStatusCode))
-	assert.Equal(t, 1, CorroborationCount(11, "m", CorroborationClassStatusCode),
+	assert.Equal(t, 0, CorroborationCount(1, "m", CorroborationClassModelUnavailable))
+	assert.Equal(t, 1, CorroborationCount(11, "m", CorroborationClassModelUnavailable),
 		"别的渠道不受影响 —— 前缀 1| 与 11| 不该互相误删")
-	assert.Equal(t, 1, CorroborationCount(1, "m2", CorroborationClassStatusCode),
+	assert.Equal(t, 1, CorroborationCount(1, "m2", CorroborationClassModelUnavailable),
 		"同渠道的其它模型不受影响")
 }
 

@@ -201,18 +201,18 @@ func classifyAutoDisable(channelId int, err *types.NewAPIError) autoDisableVerdi
 	if loadbalancer.IsEmptyStream(err) || loadbalancer.IsEmptyStreamBudget(err) {
 		return autoDisableVerdict{}
 	}
-	// TTFT 超时是**延迟**信号，不是凭据失效信号，而且熔断器早就明确把它排除在
-	// 失败计数之外了（controller/relay.go 里 lbAttempt.End 传的是
-	// !loadbalancer.IsTTFTTimeout(...)）。两道防线对同一个事件给出相反判断，
-	// 而自动禁用这一侧的后果是渠道级的、不可逆的。
+	// TTFT 超时是**延迟**信号，不是凭据失效信号。
 	//
-	// 根因在 types.IsChannelError：它是纯粹的「错误码带 channel: 前缀即渠道级」
-	// 总闸，而 TTFT 的错误码恰恰就叫 channel:response_time_exceeded
-	//（relaykit/types/error.go）。于是纯延迟抖动攒够 3 次佐证，就能把一条
-	// 只是慢的渠道整条摘掉 —— 这与 classifyAutoDisable 上面那些守卫要防的
-	// 「把可自愈的问题当确定性失效」是同一类错误，只是走了另一条道进来。
+	// 两套机制对同一事件分工明确（2026-10 review 统一口径）：
+	//   - 熔断器把 TTFT 超时按**硬失败**计入 (渠道, 模型) 计数（controller 的
+	//     End 与 scanner 的流故障口径都传 failed=true，被
+	//     TestTrackerPreStreamTTFTTimeoutTripsBreaker 钉死）——延迟问题的正确
+	//     处置是可逆的按模型熔断冷却；
+	//   - 自动禁用绝不据此摘渠道：熔断可自愈、自动禁用要人工或测活才回来，
+	//     把延迟抖动攒成不可逆摘除是两道防线对同一事件给出相反判断的错误，
+	//     生产实测纯延迟抖动攒够佐证就能摘掉一条只是慢的渠道。
 	//
-	// 延迟的正确处置是熔断：按 (渠道, 模型) 粒度、冷却后自愈，不留痕不可逆。
+	// 因此这里显式排除，不依赖状态码或关键词白名单恰好漏掉它。
 	if loadbalancer.IsTTFTTimeout(err) {
 		return autoDisableVerdict{}
 	}
@@ -301,11 +301,18 @@ func ShouldDisableChannelCorroborated(channelId int, modelName string, err *type
 	}
 	ready, count := loadbalancer.RecordAutoDisableSignal(channelId, modelName, verdict.Class)
 	threshold := loadbalancer.GetPolicy().Default.Breaker.AutoDisableCorroborationThresholdOrDefault()
+	// 作用域表述必须与分桶一致：渠道级类别的佐证跨模型共享（见
+	// loadbalancer.corroborationScopeByClass），日志若写成 "model %q"
+	// 会把共享证据归因到触发请求的那个模型上，排障时引向错误结论。
+	scope := fmt.Sprintf("model %q", modelName)
+	if !loadbalancer.CorroborationClassIsModelScoped(verdict.Class) {
+		scope = "channel-wide (evidence pooled across models; trigger model " + fmt.Sprintf("%q", modelName) + ")"
+	}
 	if !ready && count == 1 {
 		// 只记首次：同一个模型连续失败几百次时，日志里出现一条就够定位，
 		// 几百条会把真正的信号淹掉（与 ModelExhaustion 告警同一个理由）。
-		common.SysLog(fmt.Sprintf("channel #%d model %q hit auto-disable rule (%s) 1/%d, holding back disable; breaker still applies",
-			channelId, modelName, verdict.Class, threshold))
+		common.SysLog(fmt.Sprintf("channel #%d %s hit auto-disable rule (%s) 1/%d, holding back disable; breaker still applies",
+			channelId, scope, verdict.Class, threshold))
 	} else if ready && count == threshold {
 		// 闸门打开的那一刻必须留痕。此前只有 count==1 那一条，而它恰恰是
 		// 「没禁用」；于是从 1/3 涨到 3/3、真正执行不可逆摘除的那一刻，
@@ -316,8 +323,8 @@ func ShouldDisableChannelCorroborated(channelId int, modelName string, err *type
 		// 之前会一直重试），>= 会把「42/3、43/3 …」逐次刷出来 —— 一条稳定
 		// 故障的渠道每来一个请求就产出一行，正是上面那条限定 count==1
 		// 要避免的淹没。== 只在跨越阈值的那一次成立。
-		common.SysLog(fmt.Sprintf("channel #%d model %q corroborated auto-disable rule (%s) %d/%d within window, proceeding with disable",
-			channelId, modelName, verdict.Class, count, threshold))
+		common.SysLog(fmt.Sprintf("channel #%d %s corroborated auto-disable rule (%s) %d/%d within window, proceeding with disable",
+			channelId, scope, verdict.Class, count, threshold))
 	}
 	return ready
 }

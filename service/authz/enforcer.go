@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dengyie/apihub/common"
 	"github.com/casbin/casbin/v2"
 	casbinmodel "github.com/casbin/casbin/v2/model"
+	"github.com/dengyie/apihub/common"
 	"gorm.io/gorm"
 )
 

@@ -272,8 +272,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 只保留 err.Error() 字符串、不保留 Unwrap 链，依赖错误链会在包装处静默
 		// 失效；预算到期是请求级事实，且尝试返回与本次检查之间只有微秒级窗口，
 		// 误判代价仅是终端错误文案。复用 TTFT 超时类型：语义相同（预算内没等到
-		// 可用响应——非流式下响应整体即「首字」），且天然接入既有分类——不计入
-		// 熔断硬失败（慢≠不健康），按 ttft_timeout 换渠道重试。
+		// 可用响应——非流式下响应整体即「首字」），且天然接入既有分类——计入
+		// 熔断失败计数（可逆的按模型冷却，「慢≠不健康」约束的是不可逆的自动
+		// 禁用，见 classifyAutoDisable），按 ttft_timeout 换渠道重试。
 		if requestBudgetCtx != nil && errors.Is(requestBudgetCtx.Err(), context.DeadlineExceeded) &&
 			newAPIError != nil {
 			newAPIError = types.NewErrorWithStatusCode(
@@ -370,7 +371,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		wasEmptyStream := loadbalancer.IsEmptyStream(newAPIError)
 		if wasEmptyStream {
-			loadbalancer.GlobalTracker().RecordEmptyStream(channel.Id, relayInfo.OriginModelName)
+			// 传入本次尝试的句柄：空流阈值熔断与 End 的阈值/半开熔断是同一次
+			// 失败事件的两个决策点，句柄标记保证至多一次 tripCount 递增。
+			loadbalancer.GlobalTracker().RecordEmptyStream(lbAttempt, channel.Id, relayInfo.OriginModelName)
 		}
 		if !zeroByteDeadline.IsZero() && !time.Now().Before(zeroByteDeadline) &&
 			zeroByteRetryable(newAPIError) {
@@ -405,6 +408,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// 这里的 End 不会双记；只有没有流状态的失败（首字节前的错误、非流式）
 		// 才由本层补记。400 不计入（参数不支持不代表渠道不健康）。
 		// 无论是否计入都必须 End，否则 inflight 不归还，并发上限会被永久占满。
+		//
+		// TTFT 超时计入**硬失败**（slow=true 且 failed=true，End 的 failed 分支
+		// 优先；流式路径由 scanner 以流故障口径先记账，结论一致）。这是生产
+		// 口径，TestTrackerPreStreamTTFTTimeoutTripsBreaker 钉死：延迟问题的
+		// 正确处置是**可逆的**按模型熔断冷却，「慢≠不健康」约束的是不可逆的
+		// 自动禁用（classifyAutoDisable 对同一事件显式不摘渠道），不是熔断计数。
+		// 唯一落到 slow 分支（软降级计数）的是「TTFT 已超时 + 客户端先行断开」：
+		// scanner 的 IsClientAbort 把它排除在上游故障之外，但无首字是真实的慢
+		// 证据，记入慢计数供选路降级排序（见 tracker.End 的 slow 分支注释）。
 		isPreStreamTTFT := relayInfo.StreamStatus == nil && loadbalancer.IsTTFTTimeout(newAPIError)
 		isPreStreamNonTTFTFailure := relayInfo.StreamStatus == nil &&
 			newAPIError.StatusCode != 400 &&
@@ -415,128 +427,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			!loadbalancer.IsUpstreamRateLimitError(newAPIError) &&
 			!types.IsClientAbortedError(newAPIError)
 		lbAttempt.End(loadbalancer.IsTTFTTimeout(newAPIError), isPreStreamTTFT || isPreStreamNonTTFTFailure)
-		// 熔断作用域：只有可证明是账号/密钥/中继级的问题才熔整个渠道，
-		// 其余只熔 (渠道, 模型) 这一对——一个模型 404 不该让该渠道
-		// 上百个健康模型一起退出轮转。判据见 loadbalancer.BreakerScopeOf。
-		//
-		// 下面每条熔断日志都必须打出作用域：按模型熔断之后，只打渠道
-		// id 的日志无法归因「到底是哪个模型把它熔了」。
-		modelName := relayInfo.OriginModelName
-		scopeOf := func(err *types.NewAPIError) string {
-			return loadbalancer.EffectiveModelName(channel.Id, modelName, err)
-		}
-		scopeLabel := func(model string) string {
-			if model == "" {
-				return "全部模型"
-			}
-			return model
-		}
-		// tripModelScope 熔断「实际作用域为模型级」的那一把键，并连带熔掉
-		// 映射到同一上游模型的兄弟客户端模型。
-		//
-		// until 传零值表示走常规冷却（相对 openedAt 递增退避），非零走定时
-		// 熔断（绝对 blockedUntil，如宵禁）——两者语义不同，不能互相替代。
-		//
-		// 返回实际生效的模型名（空串=渠道级）。开关关闭时 effective 为空，
-		// 键已折叠成渠道级，兄弟一并被渠道级熔断覆盖，这里直接返回空即可。
-		tripModelScope := func(err *types.NewAPIError, until time.Time) string {
-			effective := scopeOf(err)
-			trip := func(m string) {
-				if until.IsZero() {
-					loadbalancer.GlobalTracker().TripBreaker(channel.Id, m)
-				} else {
-					loadbalancer.GlobalTracker().TripBreakerUntil(channel.Id, m, until)
-				}
-			}
-			trip(effective)
-			if effective == "" {
-				return ""
-			}
-			for _, sibling := range loadbalancer.SiblingModelsFromMapping(channel.GetModelMapping(), modelName) {
-				trip(sibling)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 与 %s 映射到同一上游模型，一并熔断", channel.Id, scopeLabel(sibling), modelName))
-			}
-			return effective
-		}
-		// 智能负载：上游限流或并发超限（429 / RPM / 并发限制），采用短周期熔断冷却（默认 30 秒），避免整池因瞬时限流假死
-		if loadbalancer.IsUpstreamRateLimitError(newAPIError) {
-			// v29.14：429 一律按 (渠道, 模型) 避让，不再整渠道退出轮转。
-			// 限流通常是账号级 RPM 造成的，改为模型级后每个模型各自累计频次，
-			// 但冷却仍只有 30s，代价远小于「一次 429 让上百个健康模型消失」。
-			effective := scopeOf(newAPIError)
-			loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id, effective)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游限流/并发超限 (429/RPM/Concurrency)，已设置短期避让冷却: %s", channel.Id, scopeLabel(effective), newAPIError.Error()))
-			for _, sibling := range loadbalancer.SiblingModelsFromMapping(channel.GetModelMapping(), modelName) {
-				loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id, sibling)
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 与 %s 映射到同一上游模型，一并避让", channel.Id, scopeLabel(sibling), modelName))
-			}
-		} else {
-			// 智能负载：模型 EOL (410 等) 属于该模型自身的确定性失效，只熔这一个模型。
-			if loadbalancer.IsEOLError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型已 EOL/下线 (410)，已立即熔断", channel.Id, scopeLabel(tripped)))
-			}
-			// 智能负载：上游流传输中断（RST_STREAM / connection reset 等）。这是单次请求的
-			// 传输故障而非账号失效，只熔该模型；若它其实是系统性的，每个模型会各自
-			// 熔断并各自升级退避，最终收敛到全渠道退出，只是慢 N 步。
-			if loadbalancer.IsStreamBroken(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游流传输中断 (%s)，已立即熔断并触发重试", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-			// 智能负载：上游额度耗尽。v29.14 起熔断按模型粒度；账号级的整体下线
-			// 仍由自动下线（AutomaticDisableChannelEnabled）兜底。
-			if loadbalancer.IsUpstreamQuotaError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游额度已耗尽，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-			// 智能负载：会话路由失败是上游网关自身的问题，与具体哪个模型无关，熔整个渠道。
-			if loadbalancer.IsUpstreamRoutingError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-			// 智能负载：上游思考模式历史消息不兼容，是这个模型的请求形状问题，只熔该模型。
-			if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-			// 智能负载：上游模型不可用/已禁用/未配置。
-			// 立即对该模型熔断，并将机会让渡给重试池中的其他可用渠道。
-			if loadbalancer.IsUpstreamModelUnavailableError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型不可用/已禁用，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			} else if loadbalancer.IsUpstreamRelayError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-			// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持。
-			// v29.14 起同样按模型粒度，令牌整体失效由自动下线兜底。
-			if loadbalancer.IsUpstreamPermissionError(newAPIError) {
-				tripped := tripModelScope(newAPIError, time.Time{})
-				logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游权限受限/分组无权访问/模型不支持，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
-			}
-		}
+		// 智能负载：把这次失败记到正确的熔断作用域上。分支是**严格的
+		// if/else-if 链**，一次失败至多一次 tripBreaker——错误分类器之间存在
+		// 有意的重叠（IsUpstreamRelayError 会把 permission / thinking 类也认下，
+		// 宵禁的 403 同时命中 IsUpstreamPermissionError），链序即特异性序，
+		// 见 applyUpstreamFailureEffects 的注释。
+		applyUpstreamFailureEffects(c, channel, relayInfo, lbAttempt, newAPIError)
 		// 智能负载参数裁剪：上游明确说不支持某参数时，
 		// 标记该渠道**该模型**，后续该模型的请求（包括重试）自动裁剪该参数后再发。
 		// 必须传 modelName（= relayInfo.OriginModelName，与出站裁剪侧同一个字段）：
 		// 按渠道存会让任一模型的一次误判外溢到这条渠道的其它模型，把它们也一起裁掉。
 		if param, ok := loadbalancer.IsParamNotSupportedError(newAPIError); ok {
-			loadbalancer.MarkParamUnsupported(channel.Id, modelName, param)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 不支持 %s 参数，已标记自动裁剪", channel.Id, scopeLabel(modelName), param))
+			loadbalancer.MarkParamUnsupported(channel.Id, relayInfo.OriginModelName, param)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 不支持 %s 参数，已标记自动裁剪", channel.Id, relayInfo.OriginModelName, param))
 		}
 		// 智能负载推理水合自愈：若上游因密文无法解密返回 400，标记后续重试必须剥离历史加密项
 		if loadbalancer.IsReasoningHydrationError(newAPIError) {
 			common.SetContextKey(c, constant.ContextKeyStripResponsesReasoning, true)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游推理水合失败 (Encrypted content cannot be decrypted)，已标记后续重试自动清洗加密项并自愈", channel.Id, scopeLabel(modelName)))
-		}
-		// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。
-		// 403 本身已会触发换渠道重试，这里加的是超长熔断。
-		// v29.14 起按模型粒度：宵禁是账号的时段限制，但把它摊到每个模型上
-		// 最多让上游多接 failure_threshold 次无效请求，而整渠道退出期间
-		// 该渠道所有模型都不可用，代价大得多。
-		if loadbalancer.IsCurfewError(newAPIError) {
-			until := loadbalancer.CurfewEndTime(time.Now())
-			tripped := tripModelScope(newAPIError, until)
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 宵禁中，已熔断到 %s", channel.Id, scopeLabel(tripped), until.Format("15:04")))
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游推理水合失败 (Encrypted content cannot be decrypted)，已标记后续重试自动清洗加密项并自愈", channel.Id, relayInfo.OriginModelName))
 		}
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -729,16 +637,16 @@ func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIErr
 	}
 	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
 	if isUpstreamChannelError && newAPIError.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
-			if loadbalancer.IsEOLError(newAPIError) ||
-				loadbalancer.IsUpstreamPermissionError(newAPIError) ||
-				loadbalancer.IsUpstreamQuotaError(newAPIError) ||
-				loadbalancer.IsUpstreamRoutingError(newAPIError) ||
-				loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
-				loadbalancer.IsUpstreamRelayError(newAPIError) ||
-				loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
-				loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) ||
-				loadbalancer.IsReasoningHydrationError(newAPIError) ||
-				newAPIError.StatusCode == http.StatusForbidden ||
+		if loadbalancer.IsEOLError(newAPIError) ||
+			loadbalancer.IsUpstreamPermissionError(newAPIError) ||
+			loadbalancer.IsUpstreamQuotaError(newAPIError) ||
+			loadbalancer.IsUpstreamRoutingError(newAPIError) ||
+			loadbalancer.IsUpstreamModelUnavailableError(newAPIError) ||
+			loadbalancer.IsUpstreamRelayError(newAPIError) ||
+			loadbalancer.IsThinkingModeHistoryError(newAPIError) ||
+			loadbalancer.IsUpstreamToolCallStateLostError(newAPIError) ||
+			loadbalancer.IsReasoningHydrationError(newAPIError) ||
+			newAPIError.StatusCode == http.StatusForbidden ||
 			newAPIError.StatusCode == http.StatusUnauthorized ||
 			newAPIError.StatusCode == http.StatusGone ||
 			newAPIError.StatusCode == http.StatusBadRequest {
@@ -815,6 +723,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		// 重试轮选不出任何渠道：与首轮 SelectChannelForRequest 的 channel==nil
+		// 分支同源，记一条 MODEL_EXHAUSTED 聚合证据。全部渠道在首轮之后才被
+		// 熔断/打满的场景，此前在这里是安静的——「模型对外已不可用」没有任何
+		// 可 grep 的信号，夜间全池挂掉只能等客户端报障。
+		loadbalancer.RecordModelExhausted(info.OriginModelName, fmt.Sprintf("retry group=%s", selectGroup))
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
@@ -830,6 +743,166 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	service.ProcessChannelError(c, channelError, err, relayInfo)
+}
+
+// applyUpstreamFailureEffects 在一轮尝试失败后，把这次失效记到正确的熔断
+// 作用域上。熔断（本函数）与自动禁用（processChannelError）在此分流：熔断
+// 可逆、按 (渠道, 模型) 粒度快速绕开；账号级整体下线由 AutomaticDisable
+// 兜底，两者互不替代。lbAttempt 是本次尝试的句柄（必传）：常规冷却路径
+// 依据它的 failureTripped 标记与 End 的阈值/半开熔断去重，一次失败至多
+// 一次 tripCount 递增。
+//
+// 分支必须是**严格的 if/else-if 链**，一次失败至多一次 tripBreaker。
+// 原因有二：
+//
+//  1. 错误分类器之间存在**有意的重叠**：IsUpstreamRelayError 会把
+//     permission / thinking 类也认下（中转站常把它们包成自己的报错格式），
+//     宵禁的 403 同时命中 IsUpstreamPermissionError，上游 new-api 家族包装
+//     的额度错误（type=new_api_error）也会命中 relay 分类。若用并列 if，
+//     同一次失败会触发多次 tripBreaker，tripCount 一次涨 2-3——递增退避在
+//     **首次失败**就跳到 2-3 倍冷却、cap 提前触顶，故障渠道退出轮转的速度
+//     比设计快一倍以上（2026-10 review 实证：一次权限错误 tripCount=3）。
+//  2. 并列结构无法对「一次失败恰好一次 trip」写回归测试，重叠面一旦变化
+//     只能在生产上发现。
+//
+// 链序 = 特异性序：处置最特殊的在前（宵禁要绝对到期时间、429 要短避让、
+// EOL/quota 是确定性失效），兜底的 relay 分类在最后。调整顺序前先想清楚
+// 上游报文的实际形状——同一个错误命中前后两个分支时，日志与冷却语义都会变。
+//
+// 每条熔断日志都必须打出作用域：按模型熔断之后，只打渠道 id 的日志无法
+// 归因「到底是哪个模型把它熔了」。scopeOf 与 tracker.scopeKey 同源
+// （loadbalancer.EffectiveModelName），per_model 关闭时标签自动落回渠道级。
+func applyUpstreamFailureEffects(c *gin.Context, channel *model.Channel, relayInfo *relaycommon.RelayInfo, lbAttempt *loadbalancer.RequestHandle, newAPIError *types.NewAPIError) {
+	if newAPIError == nil {
+		return
+	}
+	modelName := relayInfo.OriginModelName
+	scopeOf := func(err *types.NewAPIError) string {
+		return loadbalancer.EffectiveModelName(channel.Id, modelName, err)
+	}
+	scopeLabel := func(model string) string {
+		if model == "" {
+			return "全部模型"
+		}
+		return model
+	}
+	// tripModelScope 熔断「实际作用域为模型级」的那一把键，并连带熔掉
+	// 映射到同一上游模型的兄弟客户端模型。
+	//
+	// until 传零值表示走常规冷却（相对 openedAt 递增退避），非零走定时
+	// 熔断（绝对 blockedUntil，如宵禁）——两者语义不同，不能互相替代。
+	//
+	// 返回实际生效的模型名（空串=渠道级）。开关关闭时 effective 为空，
+	// 键已折叠成渠道级，兄弟一并被渠道级熔断覆盖，这里直接返回空即可。
+	tripModelScope := func(err *types.NewAPIError, until time.Time) string {
+		effective := scopeOf(err)
+		trip := func(m string) {
+			if until.IsZero() {
+				loadbalancer.GlobalTracker().TripBreaker(channel.Id, m)
+			} else {
+				loadbalancer.GlobalTracker().TripBreakerUntil(channel.Id, m, until)
+			}
+		}
+		// 常规冷却路径尊重句柄标记：End 的阈值/半开路径已为本次失败熔断过时，
+		// 这里只留日志不重复递增 tripCount（一次失败至多一次熔断，见
+		// RequestHandle.failureTripped）。blockedUntil 路径（宵禁）不查标记，
+		// 它改写的是绝对到期时间，必须无条件执行。
+		if until.IsZero() && lbAttempt.FailureTripped() {
+			logger.LogInfo(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 本次失败已由连续失败阈值触发熔断，显式分类不重复递增退避", channel.Id, scopeLabel(effective)))
+		} else {
+			trip(effective)
+			lbAttempt.MarkFailureTripped()
+		}
+		if effective == "" {
+			return ""
+		}
+		for _, sibling := range loadbalancer.SiblingModelsFromMapping(channel.GetModelMapping(), modelName) {
+			trip(sibling)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 与 %s 映射到同一上游模型，一并熔断", channel.Id, scopeLabel(sibling), modelName))
+		}
+		return effective
+	}
+
+	// 智能负载：上游限流或并发超限（429 / RPM / 并发限制），采用短周期熔断冷却（默认 30 秒），避免整池因瞬时限流假死。
+	// v29.14：429 一律按 (渠道, 模型) 避让，不再整渠道退出轮转。
+	// 限流通常是账号级 RPM 造成的，改为模型级后每个模型各自累计频次，
+	// 但冷却仍只有 30s，代价远小于「一次 429 让上百个健康模型消失」。
+	if loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+		effective := scopeOf(newAPIError)
+		loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id, effective)
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游限流/并发超限 (429/RPM/Concurrency)，已设置短期避让冷却: %s", channel.Id, scopeLabel(effective), newAPIError.Error()))
+		for _, sibling := range loadbalancer.SiblingModelsFromMapping(channel.GetModelMapping(), modelName) {
+			loadbalancer.GlobalTracker().TripBreakerForRateLimit(channel.Id, sibling)
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 与 %s 映射到同一上游模型，一并避让", channel.Id, scopeLabel(sibling), modelName))
+		}
+		return
+	}
+	// 智能负载宵禁处理：00:00-8:00 服务不可用的渠道，熔断到早 8 点。
+	// 403 本身已会触发换渠道重试，这里加的是超长熔断。
+	// v29.14 起按模型粒度：宵禁是账号的时段限制，但把它摊到每个模型上
+	// 最多让上游多接 failure_threshold 次无效请求，而整渠道退出期间
+	// 该渠道所有模型都不可用，代价大得多。
+	// 宵禁错误也是 403，必须排在 IsUpstreamPermissionError 之前——它要的是
+	// 绝对到期时间（blockedUntil），常规冷却会被它整体覆盖。
+	if loadbalancer.IsCurfewError(newAPIError) {
+		until := loadbalancer.CurfewEndTime(time.Now())
+		tripped := tripModelScope(newAPIError, until)
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 宵禁中，已熔断到 %s", channel.Id, scopeLabel(tripped), until.Format("15:04")))
+		return
+	}
+	// 智能负载：模型 EOL (410 等) 属于该模型自身的确定性失效，只熔这一个模型。
+	if loadbalancer.IsEOLError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型已 EOL/下线 (410)，已立即熔断", channel.Id, scopeLabel(tripped)))
+		return
+	}
+	// 智能负载：上游流传输中断（RST_STREAM / connection reset 等）。这是单次请求的
+	// 传输故障而非账号失效，只熔该模型；若它其实是系统性的，每个模型会各自
+	// 熔断并各自升级退避，最终收敛到全渠道退出，只是慢 N 步。
+	if loadbalancer.IsStreamBroken(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游流传输中断 (%s)，已立即熔断并触发重试", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：上游额度耗尽。v29.14 起熔断按模型粒度；账号级的整体下线
+	// 仍由自动下线（AutomaticDisableChannelEnabled）兜底。
+	if loadbalancer.IsUpstreamQuotaError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游额度已耗尽，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：会话路由失败是上游网关自身的问题，与具体哪个模型无关，熔整个渠道。
+	if loadbalancer.IsUpstreamRoutingError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游会话路由失败 (缺失 x-opencode-session)，已立即熔断该渠道: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：上游思考模式历史消息不兼容，是这个模型的请求形状问题，只熔该模型。
+	if loadbalancer.IsThinkingModeHistoryError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游思考模式历史消息不兼容 (reasoning_content must be passed back)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：上游模型不可用/已禁用/未配置。
+	// 立即对该模型熔断，并将机会让渡给重试池中的其他可用渠道。
+	if loadbalancer.IsUpstreamModelUnavailableError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游模型不可用/已禁用，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：上游渠道权限受限/分组无权访问/TokenPlan不支持。
+	// v29.14 起同样按模型粒度，令牌整体失效由自动下线兜底。
+	// 排在 IsUpstreamRelayError 之前：后者会把 permission 类也认下。
+	if loadbalancer.IsUpstreamPermissionError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游权限受限/分组无权访问/模型不支持，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+		return
+	}
+	// 智能负载：上游中继代理异常 (bad response status code / 渠道出错)，兜底分类。
+	if loadbalancer.IsUpstreamRelayError(newAPIError) {
+		tripped := tripModelScope(newAPIError, time.Time{})
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("渠道 #%d [%s] 上游中继代理异常 (bad response status code / 渠道出错)，已立即熔断: %s", channel.Id, scopeLabel(tripped), newAPIError.Error()))
+	}
 }
 
 // recordRequestErrorLogSafely 把这次请求的失败补记成一条 type=5 行，否则通用日志页
@@ -1099,7 +1172,11 @@ func executeTaskSubmissionWith(
 		c.Set(loadbalancer.ContextKeyAttempt, lbAttempt)
 		// panic 兜底，理由见 Relay 中的同名注释。任务提交路径没有自己的
 		// recover，panic 由 gin 的 Recovery 中间件接住，所以这条更必要。
-		defer lbAttempt.End(false, false)
+		// 必须用 EndCancelled 而不是 End(false,false)：panic 是「没有结论的
+		// 尝试」，End(false,false) 会走成功分支把 consecutiveFailures 与
+		// tripCount 清零、把半开/打开的熔断器直接关闭——正在累积失败的渠道
+		// 被任务路径的 panic 反复洗白，熔断被无限推迟。
+		defer lbAttempt.EndCancelled()
 		service.AppendUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
@@ -1109,7 +1186,9 @@ func executeTaskSubmissionWith(
 			} else {
 				taskErr = service.TaskErrorWrapperLocal(bodyErr, "read_request_body_failed", http.StatusBadRequest)
 			}
-			lbAttempt.End(false, false)
+			// 读请求体失败发生在请求上游之前，渠道无过错：EndCancelled 只归还
+			// inflight，不洗白该渠道已累积的失败计数（End(false,false) 会清零）。
+			lbAttempt.EndCancelled()
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
@@ -1119,7 +1198,9 @@ func executeTaskSubmissionWith(
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
-			lbAttempt.End(false, false)
+			// 客户端取消是下游行为：EndCancelled 归还 inflight 且不触碰
+			// 熔断计数器——取消既不证明渠道恢复（洗白），也不是渠道故障。
+			lbAttempt.EndCancelled()
 			break
 		}
 		if taskErr == nil {

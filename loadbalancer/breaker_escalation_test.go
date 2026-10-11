@@ -132,9 +132,9 @@ func TestBreakerExemptChannelNeverTrips(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		tracker.TripBreaker(id, testModel)
 	}
-	tracker.RecordEmptyStream(id, testModel)
-	tracker.RecordEmptyStream(id, testModel)
-	tracker.RecordEmptyStream(id, testModel)
+	tracker.RecordEmptyStream(nil, id, testModel)
+	tracker.RecordEmptyStream(nil, id, testModel)
+	tracker.RecordEmptyStream(nil, id, testModel)
 
 	if state := breakerState(statsFor(tracker, id).state.Load()); state != breakerClosed {
 		t.Fatalf("豁免渠道熔断状态 = %v，期望始终 closed", state)

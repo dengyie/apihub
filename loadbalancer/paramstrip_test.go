@@ -234,4 +234,3 @@ func TestAnyRouterLoadSaturationIsRateLimit(t *testing.T) {
 	assert.True(t, IsUpstreamRateLimitError(errSaturated), "AnyRouter 负载达到上限必须识别为瞬时限流而非硬熔断")
 	assert.False(t, IsUpstreamRelayError(errSaturated), "限流/负载饱和错误不得被误判为中继故障而触发级联硬熔断")
 }
-

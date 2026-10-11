@@ -95,21 +95,21 @@ func TestMultiKeyEnableRestoresOnlyExhaustedChannels(t *testing.T) {
 						require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
 						require.True(t, result.Success, recorder.Body.String())
 					}
-						loaded, err := model.GetChannelById(channel.Id, true)
-						require.NoError(t, err)
-						assert.Equal(t, tc.wantStatus, loaded.Status)
-						assert.NotContains(t, loaded.ChannelInfo.MultiKeyStatusList, 0)
-						assert.NotContains(t, loaded.ChannelInfo.MultiKeyDisabledReason, 0)
-						assert.NotContains(t, loaded.ChannelInfo.MultiKeyDisabledTime, 0)
-						var ability model.Ability
-						require.NoError(t, database.Where("channel_id = ?", channel.Id).First(&ability).Error)
-						assert.Equal(t, tc.wantStatus == common.ChannelStatusEnabled, ability.Enabled)
-					})
-				}
+					loaded, err := model.GetChannelById(channel.Id, true)
+					require.NoError(t, err)
+					assert.Equal(t, tc.wantStatus, loaded.Status)
+					assert.NotContains(t, loaded.ChannelInfo.MultiKeyStatusList, 0)
+					assert.NotContains(t, loaded.ChannelInfo.MultiKeyDisabledReason, 0)
+					assert.NotContains(t, loaded.ChannelInfo.MultiKeyDisabledTime, 0)
+					var ability model.Ability
+					require.NoError(t, database.Where("channel_id = ?", channel.Id).First(&ability).Error)
+					assert.Equal(t, tc.wantStatus == common.ChannelStatusEnabled, ability.Enabled)
+				})
 			}
 		}
+	}
 
-		t.Run("update_key_proxy requires sensitive write and records audit", func(t *testing.T) {
+	t.Run("update_key_proxy requires sensitive write and records audit", func(t *testing.T) {
 		channel := &model.Channel{
 			Name: "test-proxy-authz", Type: 1, Key: "key-0\nkey-1", Status: common.ChannelStatusEnabled, Models: "test-model", Group: "default",
 			ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeySize: 2},

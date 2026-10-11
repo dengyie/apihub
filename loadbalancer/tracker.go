@@ -68,6 +68,11 @@ const maxTTFTSamples = 100
 //
 // 取值与熔断冷却同量级：远大于任何一次真实探测的时长（首字超时默认 5s），
 // 不会误伤正常探测；又足够短，泄漏后渠道能在一分钟内自愈。
+//
+// 已知边界：探测是长流（ End 要等整个流结束）时，租约会先于 End 到期并被
+// reclaimExpiredProbes 作废，配额重新放出——半开渠道因此以约每租约期 1 个的
+// 速率累积并发。量级有界（首个探测 End 即关闭熔断器、清空配额），且能在
+// 半开期持续跑长流的渠道大概率已经恢复，接受这个软化。
 const halfOpenProbeLease = 60 * time.Second
 
 // ContextKeyAttempt carries the inflight handle of the relay attempt in
@@ -222,7 +227,12 @@ func (t *Tracker) TripBreakerUntil(channelID int, model string, until time.Time)
 
 // RecordEmptyStream 记一次该条目的空流。连续达到阈值则熔断（只熔断不禁用）。
 // 阈值 ≤0 时关闭。成功一次非空流应调用 ClearEmptyStream。
-func (t *Tracker) RecordEmptyStream(channelID int, model string) {
+//
+// h 是本次尝试的句柄（可为 nil，如测试/无句柄调用方）：达到阈值时若本次
+// 失败已被 End 的阈值/半开路径熔断过（h.FailureTripped()），则只复位计数
+// 不重复递增 tripCount——同一次失败事件至多一次熔断，见 RequestHandle
+// 的 failureTripped 注释。无论是否熔断，计数都归零重新起算，节奏与既往一致。
+func (t *Tracker) RecordEmptyStream(h *RequestHandle, channelID int, model string) {
 	if !Enabled() || channelID <= 0 {
 		return
 	}
@@ -235,10 +245,15 @@ func (t *Tracker) RecordEmptyStream(channelID int, model string) {
 	}
 	s := t.getBreaker(scopeKey(channelID, model))
 	n := s.consecutiveEmptyStreams.Add(1)
-	if int(n) >= threshold {
-		t.TripBreaker(channelID, model)
-		s.consecutiveEmptyStreams.Store(0)
+	if int(n) < threshold {
+		return
 	}
+	s.consecutiveEmptyStreams.Store(0)
+	if h != nil && h.FailureTripped() {
+		return
+	}
+	t.TripBreaker(channelID, model)
+	h.MarkFailureTripped()
 }
 
 // ClearEmptyStream 一次非空流成功后清零连续空流计数。
@@ -247,14 +262,6 @@ func (t *Tracker) ClearEmptyStream(channelID int, model string) {
 		return
 	}
 	t.getBreaker(scopeKey(channelID, model)).consecutiveEmptyStreams.Store(0)
-}
-
-// EmptyStreamStreak 返回该条目当前连续空流次数（测试用）。
-func (t *Tracker) EmptyStreamStreak(channelID int, model string) int {
-	if channelID <= 0 {
-		return 0
-	}
-	return int(t.getBreaker(scopeKey(channelID, model)).consecutiveEmptyStreams.Load())
 }
 
 // TripBreaker 立即熔断（开启常规冷却周期）。
@@ -283,6 +290,28 @@ func (t *Tracker) TripBreakerForRateLimit(channelID int, model string) {
 		cooldown = 30
 	}
 	t.TripBreakerUntil(channelID, model, time.Now().Add(time.Duration(cooldown)*time.Second))
+}
+
+// ResetChannelBreakers 清掉某渠道的全部熔断条目（渠道级 + 各模型级）。
+//
+// 渠道被人工或测活恢复时调用：恢复意味着有人验证过它回来了，旧的熔断状态
+// （打开中的冷却、递增退避计数）留着会让刚恢复的渠道继续空转剩余冷却——
+// 佐证计数在 UpdateChannelStatus 里统一复位，熔断状态必须同点复位，否则
+// 「人工恢复了但渠道迟迟没流量」的排障又要绕一圈。
+//
+// inflight 并发计数不受影响：在途请求仍由各自的句柄归还。被删除条目上
+// 尚未 End 的旧句柄会写进孤儿对象，与淘汰清扫同语义，无害。
+func (t *Tracker) ResetChannelBreakers(channelID int) {
+	if channelID <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k := range t.breakers {
+		if k.channelID == channelID {
+			delete(t.breakers, k)
+		}
+	}
 }
 
 // IsDegraded 判断条目是否处于降级状态（慢 3 次后的 10 分钟软降级）。
@@ -385,6 +414,32 @@ type RequestHandle struct {
 	start     time.Time
 	firstByte time.Time
 	done      atomic.Bool
+	// failureTripped 本次尝试的失败**已经触发过一次熔断**。
+	//
+	// 同一次失败事件有四个独立的熔断决策点：End 的连续失败阈值、End 的
+	// 半开探测失败、applyUpstreamFailureEffects 的显式分类熔断、
+	// RecordEmptyStream 的空流阈值。它们读到的状态各不相同，若不加关联，
+	// 同一次失败可能触发多次 tripBreaker——tripCount 一次涨 2-3，递增退避
+	// 在单次失败上就翻倍（2026-10 review 两轮实证：3 次权限失败
+	// tripCount=4，冷却 240s vs 设计语义 180s）。句柄是「同一次尝试」的
+	// 唯一关联点（controller 与 scanner 本就共享它），标记挂在这里：
+	// 各决策点先查后熔，保证一次失败至多一次 tripCount 递增。
+	//
+	// 限流/宵禁的 blockedUntil 熔断（TripBreakerUntil 系）**不查此标记**：
+	// 它们不递增 tripCount，且语义是改写绝对到期时间，必须无条件执行。
+	failureTripped atomic.Bool
+}
+
+// MarkFailureTripped 登记本次失败已熔断，供后续同失败的决策点让位。
+func (h *RequestHandle) MarkFailureTripped() {
+	if h != nil {
+		h.failureTripped.Store(true)
+	}
+}
+
+// FailureTripped 报告本次失败是否已经熔断过。
+func (h *RequestHandle) FailureTripped() bool {
+	return h != nil && h.failureTripped.Load()
 }
 
 // MarkFirstByte 记录首字到达时间
@@ -434,6 +489,9 @@ func (h *RequestHandle) End(slow, failed bool) {
 		if !policy.BreakerExempt &&
 			(currentState == breakerHalfOpen || (policy.Breaker.FailureThreshold > 0 && int(n) >= policy.Breaker.FailureThreshold)) {
 			h.stats.tripBreaker()
+			// 同一次失败事件的其余决策点（显式分类熔断、空流阈值）据此让位，
+			// 见 failureTripped 字段注释。
+			h.MarkFailureTripped()
 			// 阈值驱动的熔断此前**完全没有日志**：tripBreaker 里没有、这里也没有。
 			// 被自动摘掉的那 5 分钟里，运维在日志上唯一能看到的线索是渠道没流量了
 			// —— 而「熔断了」和「上游就是没人用」在日志里长得一模一样。
@@ -446,8 +504,17 @@ func (h *RequestHandle) End(slow, failed bool) {
 		// 失败也重置慢计数（失败已硬处理，不再叠加软降级）
 		h.stats.consecutiveSlowCount.Store(0)
 	} else if slow {
-		// 慢请求（非硬失败）：只软降级，不触发硬熔断。
-		// 连续 3 次慢则降级 10 分钟，降级渠道仍可用（排最后），避免雪崩。
+		// 慢信号（非硬失败）：只软降级，不触发硬熔断。
+		//
+		// 当前唯一的生产入口是「TTFT 定时器已触发 + 客户端先行断开」
+		// （stream_scanner 的 defer：IsClientAbort 把这次流排除在上游故障之外，
+		// 但 TTFT 窗口内无首字是真实的上游慢证据）。连续 3 次慢则降级 10 分钟，
+		// 降级渠道仍可用（选路时排最后），避免一个被证实的慢渠道继续排前面。
+		//
+		// 注意：客户端**没有**断开的 TTFT 超时走上面的 failed 分支按硬失败计数
+		// （failed 分支优先于 slow，本分支对它不可达）。TTFT 事件的完整口径见
+		// service/classifyAutoDisable 的同事件分流：熔断可逆地按模型冷却，
+		// 自动禁用绝不据此摘渠道。
 		if sn := h.stats.consecutiveSlowCount.Add(1); sn >= 3 {
 			h.stats.degradedUntil.Store(time.Now().Add(10 * time.Minute).Unix())
 			h.stats.consecutiveSlowCount.Store(0)
@@ -701,7 +768,7 @@ func (t *Tracker) peekBreaker(k breakerKey, policy ChannelPolicy) string {
 	return ""
 }
 
-	// checkBreaker 对单把键做熔断状态机检查。
+// checkBreaker 对单把键做熔断状态机检查。
 // 返回 reason 非空表示不可用；returned took 为 true 表示本次调用预占了
 // 一个半开探测配额，调用方放弃时必须归还。
 func (t *Tracker) checkBreaker(k breakerKey, policy ChannelPolicy) (reason string, took bool) {

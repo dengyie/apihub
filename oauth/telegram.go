@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/model"
 	"github.com/dengyie/apihub/setting/system_setting"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
 )

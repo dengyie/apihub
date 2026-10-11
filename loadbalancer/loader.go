@@ -148,7 +148,14 @@ func reload() error {
 		log.Printf("loadbalancer: policy load recovered, auto-disable judgments re-enabled")
 	}
 	policyReloadFailures.Store(0)
-	// 同步重试次数到全局：失败后换渠道重试，而不是直接报错
+	// 同步重试次数到全局：失败后换渠道重试，而不是直接报错。
+	//
+	// ⚠️ 有意的耦合：换渠道重试的预算属于智能负载特性，common.RetryTimes
+	// 只在这里被写入。enabled=false 时 RetryTimes 归零（与包默认值相同），
+	// 即**关闭策略总开关会同时关闭换渠道重试**；enabled=true 时 max_retries
+	// 覆盖之。想「只关熔断、保留重试」是不存在的档位——把 max_retries 设为
+	// 期望值并保持 enabled=true 即可（熔断强度可另用 failure_threshold /
+	// cooldown_seconds 调到近似旁路）。
 	if p.Enabled && p.MaxRetries > 0 {
 		common.RetryTimes = p.MaxRetries
 	} else if !p.Enabled {

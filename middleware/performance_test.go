@@ -58,23 +58,23 @@ func TestSystemPerformanceCheck(t *testing.T) {
 	wOpenAI := httptest.NewRecorder()
 	reqOpenAI := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	router.ServeHTTP(wOpenAI, reqOpenAI)
-		assert.Equal(t, http.StatusServiceUnavailable, wOpenAI.Code)
-		assert.Contains(t, wOpenAI.Body.String(), "system cpu overloaded")
-		assert.Contains(t, wOpenAI.Body.String(), `"code":"system_cpu_overloaded"`)
+	assert.Equal(t, http.StatusServiceUnavailable, wOpenAI.Code)
+	assert.Contains(t, wOpenAI.Body.String(), "system cpu overloaded")
+	assert.Contains(t, wOpenAI.Body.String(), `"code":"system_cpu_overloaded"`)
 
-		// 3. 内存超阈值拦截 Claude 路径，返回 Claude 错误格式
-		common.SetSystemStatus(common.SystemStatus{
-			CPUUsage:    20.0,
-			MemoryUsage: 92.0,
-			DiskUsage:   40.0,
-		})
+	// 3. 内存超阈值拦截 Claude 路径，返回 Claude 错误格式
+	common.SetSystemStatus(common.SystemStatus{
+		CPUUsage:    20.0,
+		MemoryUsage: 92.0,
+		DiskUsage:   40.0,
+	})
 
-		wClaude := httptest.NewRecorder()
-		reqClaude := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-		router.ServeHTTP(wClaude, reqClaude)
-		assert.Equal(t, http.StatusServiceUnavailable, wClaude.Code)
-		assert.Contains(t, wClaude.Body.String(), "system memory overloaded")
-		assert.Contains(t, wClaude.Body.String(), `"type":"new_api_error"`)
+	wClaude := httptest.NewRecorder()
+	reqClaude := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	router.ServeHTTP(wClaude, reqClaude)
+	assert.Equal(t, http.StatusServiceUnavailable, wClaude.Code)
+	assert.Contains(t, wClaude.Body.String(), "system memory overloaded")
+	assert.Contains(t, wClaude.Body.String(), `"type":"new_api_error"`)
 
 	// 4. 监控关闭时，高负载依然放行
 	common.SetPerformanceMonitorConfig(common.PerformanceMonitorConfig{

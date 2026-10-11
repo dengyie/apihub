@@ -75,25 +75,30 @@ func TestTTFTTimeoutNeverAutoDisables(t *testing.T) {
 	assert.False(t, classifyAutoDisable(channelID, err).Disable)
 }
 
-// TestTTFTTimeoutAgreesWithBreaker 两套机制对同一个事件必须给同一个答案。
+// TestTTFTTimeoutAgreesWithBreaker 两套机制对同一个事件的**终局答案**必须一致。
 //
-// 不一致本身就是缺陷：熔断器说「这只是慢，不计失败」，自动禁用说
-// 「渠道级失效，攒够就摘」。谁对谁错不重要，重要的是**同一个信号在两处
-// 得到相反结论**，于是「熔断没动」会被误读成「系统认为它没问题」。
+// 不一致本身就是缺陷：自动禁用若把 TTFT 超时当渠道级失效，攒够佐证就把一条
+// 只是慢的渠道永久摘掉。统一后的口径（2026-10 review P1）：
+//   - 熔断侧：TTFT 超时计入 (渠道, 模型) 的硬失败计数（End 传 failed=true，
+//     scanner 的流故障口径与之一致，被 TestTrackerPreStreamTTFTTimeoutTripsBreaker
+//     钉死），按模型冷却、可自愈；
+//   - 自动禁用侧：绝不据此摘渠道——不可逆动作不拿延迟抖动当确定性失效。
+//
+// 即：两边都不做「不可逆摘除」，这是它们必须一致的那一个答案。
 func TestTTFTTimeoutAgreesWithBreaker(t *testing.T) {
 	newCorroborationFixture(t, 3)
 	const channelID = 9202
 	defer loadbalancer.ResetCorroborationForChannel(channelID)
 
 	err := ttftTimeoutError()
-	// 熔断侧的口径：IsTTFTTimeout 为真 → End 传 failed=false → 不计失败
-	notCountedByBreaker := loadbalancer.IsTTFTTimeout(err.Err)
-	// 自动禁用侧的口径：classifyAutoDisable 必须给出一致的结论
+	// 熔断侧的口径：IsTTFTTimeout 为真 → 计入熔断失败计数（可逆、按模型冷却）
+	countedByBreaker := loadbalancer.IsTTFTTimeout(err.Err)
+	// 自动禁用侧的口径：classifyAutoDisable 必须给出「不摘」的结论
 	verdict := classifyAutoDisable(channelID, err)
 
-	assert.True(t, notCountedByBreaker)
+	assert.True(t, countedByBreaker)
 	assert.False(t, verdict.Disable,
-		"熔断器不计的失败，自动禁用侧也不该拿它当确定性失效的证据")
+		"熔断器按可逆冷却处理的延迟信号，自动禁用侧也不该拿它当确定性失效的证据")
 }
 
 // TestCorroborationGateLogsWhenItOpens 闸门打开的那一刻必须留痕。

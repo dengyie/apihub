@@ -969,6 +969,9 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	// 它回来了，旧计数留着会让佐证窗口内的下一次失败**第一次**就顶到阈值被摘，
 	// 佐证退化成「一次即禁」，恰好是它存在的理由的反面。
 	//
+	// 熔断状态同点复位（ResetChannelBreakers）：恢复的语义是「验证过它回来了」，
+	// 打开中的冷却与递增退避计数留着会让刚恢复的渠道继续空转剩余冷却。
+	//
 	// 放在这一层而不是各 controller 调用点，是因为「谁把 status 置为启用」
 	// 有三条互不相干的路径：service.EnableChannel（自动恢复）、面板的
 	// UpdateChannelStatus、BatchUpdateChannelStatus —— 后两条直接调本函数，
@@ -977,6 +980,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 	// 漏一个就复发一次。
 	if status == common.ChannelStatusEnabled {
 		loadbalancer.ResetCorroborationForChannel(channelId)
+		loadbalancer.GlobalTracker().ResetChannelBreakers(channelId)
 	}
 
 	if common.MemoryCacheEnabled {

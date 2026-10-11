@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/dengyie/apihub/constant"
 	"github.com/andybalholm/brotli"
+	"github.com/dengyie/apihub/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 )

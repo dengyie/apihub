@@ -57,8 +57,13 @@ func TestRecordAutoDisableSignalRequiresRepeatedEvidence(t *testing.T) {
 }
 
 // TestCorroborationKeyedByChannelModelClass 是这个设计里最容易做错的一处。
-// 三条正交性各自钉死：不同渠道、不同模型、不同判据类别都不该互相佐证。
-// 合起来的意思是「必须是**同一条渠道、同一个模型、同一种失效**重复发生」。
+// 正交性按判据的作用域分两层钉死：
+//   - 渠道、类别两个维度对所有类别都正交：不同渠道、不同类别不互相佐证。
+//   - 模型维度只对 model_unavailable 正交——它是「这条凭据没有这个模型」的
+//     模型级事实。channel_error / status_code / keyword 判定的是账号级失效，
+//     禁用动作是整条渠道，证据按模型分桶会被客户端模型名稀释成每个桶
+//     各 1/N，永远凑不齐阈值（2026-10 review P2 的根因），因此它们跨模型
+//     共用渠道桶——**这是有意行为，不是缺陷**。
 func TestCorroborationKeyedByChannelModelClass(t *testing.T) {
 	defer resetCorroborationForTest()()
 	prev := GetPolicy()
@@ -71,8 +76,8 @@ func TestCorroborationKeyedByChannelModelClass(t *testing.T) {
 	ready, _ = RecordAutoDisableSignal(2, "m", CorroborationClassChannelError)
 	assert.False(t, ready, "别的渠道的失败不算这条渠道的佐证")
 
-	// 模型维度
-	ready, _ = RecordAutoDisableSignal(1, "other", CorroborationClassChannelError)
+	// 模型维度：仅 model_unavailable 按模型分桶
+	ready, _ = RecordAutoDisableSignal(1, "other", CorroborationClassModelUnavailable)
 	assert.False(t, ready, "别的模型的失败不算这个模型的佐证")
 
 	// 类别维度
@@ -83,6 +88,32 @@ func TestCorroborationKeyedByChannelModelClass(t *testing.T) {
 	ready, count := RecordAutoDisableSignal(1, "m", CorroborationClassChannelError)
 	assert.Equal(t, 2, count)
 	assert.True(t, ready)
+}
+
+// TestCorroborationChannelLevelClassesPoolAcrossModels 钉住分桶归一的主干行为：
+// 渠道级判据（status_code 等）的证据跨客户端模型名共用渠道桶。
+// 这是「多模型渠道的 401 攒不齐阈值」缺陷的回归防护——若谁把归一改回
+// 按模型分桶，这个用例会先红。
+func TestCorroborationChannelLevelClassesPoolAcrossModels(t *testing.T) {
+	defer resetCorroborationForTest()()
+	prev := GetPolicy()
+	SetPolicy(corroborationPolicyForTest(3, 600))
+	t.Cleanup(func() { SetPolicy(prev) })
+
+	ready, count := RecordAutoDisableSignal(1, "model-a", CorroborationClassStatusCode)
+	require.False(t, ready)
+	require.Equal(t, 1, count)
+	ready, count = RecordAutoDisableSignal(1, "model-b", CorroborationClassStatusCode)
+	require.False(t, ready)
+	require.Equal(t, 2, count, "渠道级判据的证据跨模型累积——同一账号级失效")
+	ready, count = RecordAutoDisableSignal(1, "model-c", CorroborationClassStatusCode)
+	assert.True(t, ready, "第 3 次无论来自哪个客户端模型都达阈值")
+	assert.Equal(t, 3, count)
+
+	// model_unavailable 不参与归一：模型间仍然隔离
+	_, _ = RecordAutoDisableSignal(2, "model-a", CorroborationClassModelUnavailable)
+	ready, _ = RecordAutoDisableSignal(2, "model-b", CorroborationClassModelUnavailable)
+	assert.False(t, ready, "模型级判据的证据不跨模型累积")
 }
 
 // TestCorroborationIgnoresWordingVariants 锁住「不按报文原文分桶」这个决定。
@@ -138,10 +169,11 @@ func TestCorroborationWindowExpiry(t *testing.T) {
 	require.Equal(t, 2, count)
 
 	// 窗口边界：恰好等于窗口长度时算过期（st.count 在 now-window 之后才重置）
+	// status_code 是渠道级判据，分桶归一后模型名不进键，桶是 "9||status_code"。
 	st := &corroborationState{count: 1, windowStart: time.Now().Add(-601 * time.Second)}
 	corroborationRegistry.mu.Lock()
 	corroborationRegistry.m = map[string]*corroborationState{
-		"9|m|" + CorroborationClassStatusCode: st,
+		"9||" + CorroborationClassStatusCode: st,
 	}
 	corroborationRegistry.mu.Unlock()
 
@@ -251,7 +283,9 @@ func TestCorroborationDisabledPolicySkipsGate(t *testing.T) {
 }
 
 // TestCorroborationRegistryBounded 验证无界模型名撑不爆这张表。
-// 模型名来自客户端，是无界输入；不淘汰就是别人用随机模型名把内存吃光。
+// model_unavailable 的键含客户端给的模型名，是无界输入；不淘汰就是别人用
+// 随机模型名把内存吃光。（渠道级三类归一后模型名不进键，天然单桶，
+// 无界输入问题只存在于模型级判据。）
 func TestCorroborationRegistryBounded(t *testing.T) {
 	defer resetCorroborationForTest()()
 	prev := GetPolicy()
@@ -263,7 +297,7 @@ func TestCorroborationRegistryBounded(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _ = RecordAutoDisableSignal(1, string(rune('a'+i%26))+"-random-model-name", CorroborationClassStatusCode)
+			_, _ = RecordAutoDisableSignal(1, string(rune('a'+i%26))+"-random-model-name", CorroborationClassModelUnavailable)
 		}(i)
 	}
 	wg.Wait()
@@ -274,10 +308,10 @@ func TestCorroborationRegistryBounded(t *testing.T) {
 	assert.LessOrEqual(t, size, 4096, "佐证表必须有界")
 }
 
-// 佐证表的键含客户端给的模型名。已有并发用例只覆盖了「有界」这个结论，
-// 没有覆盖触发它的机制：并发下每条 key 各不相同，靠的是过期清扫那条路径。
-// 这里钉住第二道闸门 —— 一个窗口之内涌入的互不相同的键一条也过期不了，
-// 过期清扫等于没做，必须有总量硬上限兜底。
+// 佐证表的键含客户端给的模型名（model_unavailable 判据）。已有并发用例只覆盖
+// 了「有界」这个结论，没有覆盖触发它的机制：并发下每条 key 各不相同，靠的是
+// 过期清扫那条路径。这里钉住第二道闸门 —— 一个窗口之内涌入的互不相同的键
+// 一条也过期不了，过期清扫等于没做，必须有总量硬上限兜底。
 func TestCorroborationRegistryHardCap(t *testing.T) {
 	defer resetCorroborationForTest()()
 	prev := GetPolicy()
@@ -287,7 +321,7 @@ func TestCorroborationRegistryHardCap(t *testing.T) {
 
 	flood := corroborationCap + 2000
 	for i := 0; i < flood; i++ {
-		RecordAutoDisableSignal(1, fmt.Sprintf("flood-model-%d", i), CorroborationClassStatusCode)
+		RecordAutoDisableSignal(1, fmt.Sprintf("flood-model-%d", i), CorroborationClassModelUnavailable)
 	}
 
 	corroborationRegistry.mu.Lock()
@@ -298,4 +332,16 @@ func TestCorroborationRegistryHardCap(t *testing.T) {
 		"未过期的键也必须有硬上限，否则随机模型名可以把佐证表撑爆")
 	assert.Greater(t, size, corroborationCap/2,
 		"硬上限不应误伤正常规模的条目")
+}
+
+// TestCorroborationEveryClassHasExplicitScope 是登记表的守卫：判据全集里
+// 的每一个类别都必须在 corroborationScopeByClass 里显式登记过作用域。
+// 漏登记的类别会静默回落到渠道级——对模型级判据而言，那意味着证据跨模型
+// 共享、不可逆禁用更容易被别的模型顶到阈值（两个方向错误的代价不对称，
+// 见 corroborationScopeByClass 注释）。新增类别忘了想这件事，这条先红。
+func TestCorroborationEveryClassHasExplicitScope(t *testing.T) {
+	for _, class := range corroborationClasses {
+		_, ok := corroborationScopeByClass[class]
+		require.True(t, ok, "类别 %q 未在 corroborationScopeByClass 登记作用域——先想清楚它的证据按模型还是按渠道分桶，再回来加", class)
+	}
 }

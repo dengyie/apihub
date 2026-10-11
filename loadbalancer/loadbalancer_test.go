@@ -826,6 +826,18 @@ func TestIsUpstreamRateLimitError(t *testing.T) {
 	assert.False(t, IsUpstreamRateLimitError(nil))
 	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{StatusCode: 500, Err: errors.New("server error")}))
 	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{StatusCode: 400, Err: errors.New("bad request")}))
+
+	// rpm/tpm 必须是独立词（非 429 状态码下靠报文措辞判别）：
+	// 独立词命中（400 包装的限流报文）
+	assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("inference exceeds tpm/rpm limit"),
+	}))
+	// token 内嵌字母序列不得命中（request id / base64 碰巧含 rpm）
+	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("bad gateway, trace id a1rpm2x9k"),
+	}))
 }
 
 func TestRateLimitBreakerShortCooldown(t *testing.T) {
@@ -1175,18 +1187,18 @@ func TestEmptyStreamPolicyAndTracker(t *testing.T) {
 	chID := 55
 
 	assert.Equal(t, 0, tr.EmptyStreamStreak(chID, testModel))
-	tr.RecordEmptyStream(chID, testModel)
+	tr.RecordEmptyStream(nil, chID, testModel)
 	assert.Equal(t, 1, tr.EmptyStreamStreak(chID, testModel))
 	ok, _ := tr.IsAvailable(chID, testModel)
 	assert.True(t, ok)
 
-	tr.RecordEmptyStream(chID, testModel)
+	tr.RecordEmptyStream(nil, chID, testModel)
 	assert.Equal(t, 2, tr.EmptyStreamStreak(chID, testModel))
 	ok, _ = tr.IsAvailable(chID, testModel)
 	assert.True(t, ok)
 
 	// 达到阈值 3：触发硬熔断，streak 重置为 0
-	tr.RecordEmptyStream(chID, testModel)
+	tr.RecordEmptyStream(nil, chID, testModel)
 	assert.Equal(t, 0, tr.EmptyStreamStreak(chID, testModel))
 	ok, reason := tr.IsAvailable(chID, testModel)
 	assert.False(t, ok, "达到阈值后应立即熔断")
@@ -1194,7 +1206,7 @@ func TestEmptyStreamPolicyAndTracker(t *testing.T) {
 
 	// 清零方法验证
 	chID2 := 56
-	tr.RecordEmptyStream(chID2, testModel)
+	tr.RecordEmptyStream(nil, chID2, testModel)
 	assert.Equal(t, 1, tr.EmptyStreamStreak(chID2, testModel))
 	tr.ClearEmptyStream(chID2, testModel)
 	assert.Equal(t, 0, tr.EmptyStreamStreak(chID2, testModel))
@@ -1257,4 +1269,47 @@ func TestStreamBrokenError_UnwrapPreservesUnderlyingTTFT(t *testing.T) {
 	assert.True(t, IsStreamBroken(brokenErr))
 	assert.True(t, IsTTFTTimeout(brokenErr), "StreamBrokenError 必须能正确 Unwrap 并被 IsTTFTTimeout 解包识别")
 	assert.Equal(t, ttftErr, errors.Unwrap(brokenErr))
+}
+
+// TestOneFailureOneTrip 钉住跨决策点的去重不变式：同一次失败事件有四个
+// 熔断决策点（End 阈值、End 半开、显式分类、空流阈值），句柄上的
+// failureTripped 标记保证它们对同一次失败至多递增一次 tripCount。
+// 2026-10 review 实证：3 次权限失败曾 tripCount=4（阈值跨越那次 +2）。
+func TestOneFailureOneTrip(t *testing.T) {
+	usePolicy(t, testPolicy()) // FailureThreshold=3
+	tr := newTestTracker()
+
+	// 连续失败计数在共享 stats 上，句柄每尝试一个：第 3 次失败是第 3 个
+	// 句柄的 End，它在这次失败上熔断并登记自己的句柄。
+	h1 := tr.Begin(42, testModel)
+	h1.End(false, true)
+	h2 := tr.Begin(42, testModel)
+	h2.End(false, true)
+	assert.Equal(t, int32(0), statsFor(tr, 42).tripCount.Load(), "未到阈值不熔断")
+	assert.False(t, h2.FailureTripped())
+
+	h3 := tr.Begin(42, testModel)
+	h3.End(false, true) // n=3 → 阈值熔断
+	assert.True(t, h3.FailureTripped(), "阈值熔断必须在句柄上登记")
+	assert.False(t, h2.FailureTripped(), "标记只属于触发熔断的那次尝试")
+	assert.Equal(t, int32(1), statsFor(tr, 42).tripCount.Load())
+	// 显式分类分支在生产中先查 h3.FailureTripped() 再决定是否 TripBreaker
+	// （让位组合在 controller.applyUpstreamFailureEffects，由
+	// TestBreakerTripChainYieldsToThresholdTrip 端到端钉住）。
+
+	// 空流阈值决策点：同一次失败已被 End 熔断 → 只累计，达到阈值时复位但不
+	// 重复熔断（h3 的标记仍在）。
+	tr.RecordEmptyStream(h3, 42, testModel) // 1/3
+	assert.Equal(t, 1, tr.EmptyStreamStreak(42, testModel))
+	tr.RecordEmptyStream(h3, 42, testModel) // 2/3
+	tr.RecordEmptyStream(h3, 42, testModel) // 3/3 → 阈值到：复位 + 让位
+	assert.Equal(t, int32(1), statsFor(tr, 42).tripCount.Load(), "空流阈值不得对已熔断的失败重复递增")
+	assert.Equal(t, 0, tr.EmptyStreamStreak(42, testModel), "复位节奏与既往一致")
+
+	// 未被接管的失败（nil 句柄 = 无去重信息的调用方）：空流阈值照常熔断
+	tr.RecordEmptyStream(nil, 42, testModel) // 1/3
+	tr.RecordEmptyStream(nil, 42, testModel) // 2/3
+	assert.Equal(t, int32(1), statsFor(tr, 42).tripCount.Load())
+	tr.RecordEmptyStream(nil, 42, testModel) // 3/3 → 熔断
+	assert.Equal(t, int32(2), statsFor(tr, 42).tripCount.Load(), "未被接管时空流阈值照常熔断")
 }

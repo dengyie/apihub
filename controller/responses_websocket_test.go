@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/i18n"
@@ -27,7 +28,6 @@ import (
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/dengyie/apihub/setting"
 	"github.com/dengyie/apihub/setting/config"
-	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/websocket"
@@ -1026,12 +1026,12 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 	// 2026-10-10：盾标从 502 改成 503 —— Cloudflare 会把源站 502 的响应体换成它
 	// 自己的纯文本 "error code: 502"，我们写的失败原因到不了客户端。
 	for _, tc := range []struct {
-		name, code            string
-		firstStatus           int
-		clientStatus          int
-		attempts              int
-		success               bool
-		ignored               bool
+		name, code   string
+		firstStatus  int
+		clientStatus int
+		attempts     int
+		success      bool
+		ignored      bool
 	}{
 		{name: "business rejection", code: "context_length_exceeded", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: true},
 		{name: "credentials rejected as 400", code: "invalid_api_key", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: false},

@@ -2,6 +2,9 @@
 # 修改后 5 秒内自动热加载生效，无需重启服务。
 #
 # enabled: 总开关，false 时全部逻辑旁路，行为与原生 new-api 一致
+# ⚠️ 注意：enabled=false 会同时把换渠道重试次数归零（common.RetryTimes，
+# 见 loadbalancer/loader.go 的注释）——重试预算与总开关是有意绑定的；
+# enabled=true 时由下方 max_retries 接管。
 
 enabled: false
 

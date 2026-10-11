@@ -53,6 +53,53 @@ const (
 	CorroborationClassKeyword          = "keyword"
 )
 
+// corroborationScopeByClass 判据类别 → 证据是否按模型分桶（true = 模型级）。
+//
+// **新增类别必须在此登记**，TestCorroborationEveryClassHasExplicitScope
+// 会拦下漏登记——这不是风格要求，是安全要求：两个方向错误的代价不对称，
+//
+//   - 模型级判据漏登记（按渠道级兜底）：证据跨模型共享，其它模型的失败
+//     会把本模型的不可逆禁用顶到阈值 —— 过度禁用，不可逆；
+//   - 渠道级判据漏登记（若按模型兜底）：证据被客户端模型名稀释，禁用
+//     攒不齐 —— 禁用不足，有可自愈的熔断兜底。
+//
+// 因此缺省回落到渠道级（上界有界的那一侧），而登记表 + 测试保证没人能
+// 「忘了想这件事」。当前只有 model_unavailable 是模型级事实（「这条凭据
+// 没有这个模型」）；channel_error / status_code / keyword 判定的是账号/
+// 凭据级失效，禁用动作是整条渠道，证据必须同样落在渠道级。
+var corroborationScopeByClass = map[string]bool{
+	CorroborationClassModelUnavailable: true,
+	CorroborationClassChannelError:     false,
+	CorroborationClassStatusCode:       false,
+	CorroborationClassKeyword:          false,
+}
+
+// corroborationScopeModel 判定一个判据类别的证据是否按模型分桶。
+// 未登记的类别按渠道级兜底（见 corroborationScopeByClass 的代价分析）。
+func corroborationScopeModel(class string) bool {
+	return corroborationScopeByClass[class]
+}
+
+// CorroborationClassIsModelScoped 报告一个判据类别的证据是否按模型分桶。
+// 供 service 层的日志归因使用：渠道级类别的佐证跨模型共享，日志不得把它
+// 归因到触发请求的那个模型名上。
+func CorroborationClassIsModelScoped(class string) bool {
+	return corroborationScopeModel(class)
+}
+
+// corroborationBucketModel 把 (渠道, 模型, 类别) 归一成实际的分桶模型名。
+//
+// 渠道级类别返回空模型名（折叠进渠道桶）。不归一的后果：一个 401 失效的
+// 多模型渠道，流量分散在 N 个客户端模型上时每个桶各 1/阈值，永远凑不齐
+// 佐证，渠道永远不会被自动禁用——判据在为「动作」收集证据，两者作用域
+// 必须一致。
+func corroborationBucketModel(class, modelName string) string {
+	if corroborationScopeModel(class) {
+		return modelName
+	}
+	return ""
+}
+
 // RecordAutoDisableSignal 记录一次「命中了自动禁用判据」的信号，
 // 返回是否已达阈值（调用方才可以执行不可逆的禁用）与当前累计次数。
 //
@@ -76,7 +123,7 @@ func RecordAutoDisableSignal(channelID int, modelName, class string) (ready bool
 		window = 10 * time.Minute
 	}
 
-	key := corroborationKey(channelID, modelName, class)
+	key := corroborationKey(channelID, corroborationBucketModel(class, modelName), class)
 	now := time.Now()
 
 	corroborationRegistry.mu.Lock()
@@ -129,6 +176,9 @@ func RecordAutoDisableSignal(channelID int, modelName, class string) (ready bool
 // "channel_disable_requested"。计数挪到咽喉点之后，那条标签就成了假话 ——
 // 明明最终没禁用，日志里却写着「已请求禁用」。这里让它能在不打扰计数的前提下
 // 提前知道结论。
+//
+// 分桶归一必须与 RecordAutoDisableSignal 同源，否则 peek 与 record 读的
+// 不是同一个桶，事件流标签又会说反话。
 func PeekAutoDisableCorroboration(channelID int, modelName, class string) bool {
 	policy := GetPolicy()
 	if !policy.Enabled {
@@ -138,7 +188,7 @@ func PeekAutoDisableCorroboration(channelID int, modelName, class string) bool {
 	if threshold <= 1 {
 		return true
 	}
-	return CorroborationCount(channelID, modelName, class)+1 >= threshold
+	return CorroborationCount(channelID, corroborationBucketModel(class, modelName), class)+1 >= threshold
 }
 
 // corroborationClasses 是判据类别的全集 —— 封闭集合，不是可扩展的。
@@ -170,11 +220,14 @@ func corroborationKey(channelID int, modelName, class string) string {
 // 不能只由时间窗回答。原先只有测活与人工恢复会复位，于是「攒到 2/3 → 渠道
 // 自行恢复并成功跑了几十次 → 窗口内再来一次失败仍到 3/3 被摘」是可能的：
 // 计数器只在时间流逝时衰减，不被恢复本身抵消。
+//
+// 清谁由分桶归一决定：model_unavailable 清该模型自己的桶；渠道级三类清的
+// 是渠道桶——一次成功证明凭据能用，渠道级的失效证据随之作废，与模型无关。
 func ResetCorroboration(channelID int, modelName string) {
 	corroborationRegistry.mu.Lock()
 	defer corroborationRegistry.mu.Unlock()
 	for _, class := range corroborationClasses {
-		delete(corroborationRegistry.m, corroborationKey(channelID, modelName, class))
+		delete(corroborationRegistry.m, corroborationKey(channelID, corroborationBucketModel(class, modelName), class))
 	}
 }
 
@@ -195,8 +248,9 @@ func ResetCorroborationForChannel(channelID int) {
 }
 
 // CorroborationCount 返回当前累计次数，仅供日志与测试观察。
+// 与 Record/Peek 走同一份分桶归一，保证三方读到同一个桶。
 func CorroborationCount(channelID int, modelName, class string) int {
-	key := corroborationKey(channelID, modelName, class)
+	key := corroborationKey(channelID, corroborationBucketModel(class, modelName), class)
 	corroborationRegistry.mu.Lock()
 	defer corroborationRegistry.mu.Unlock()
 	if st := corroborationRegistry.m[key]; st != nil {

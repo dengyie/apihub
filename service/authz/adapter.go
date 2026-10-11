@@ -3,10 +3,10 @@ package authz
 import (
 	"fmt"
 
-	"github.com/dengyie/apihub/common"
-	"github.com/dengyie/apihub/model"
 	casbinmodel "github.com/casbin/casbin/v2/model"
 	"github.com/casbin/casbin/v2/persist"
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
