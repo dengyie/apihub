@@ -1266,6 +1266,13 @@ func respondPluginProtocolSubmissionError(c *gin.Context, taskErr *dto.TaskError
 	if taskErr != nil && taskErr.StatusCode >= 400 && taskErr.StatusCode <= 599 {
 		status = taskErr.StatusCode
 	}
+	// 提交失败的出口此前**零日志**：2026-10-12 生产排查「一个词一个思考块」
+	// 同窗的 /v1/responses 400 时，桥的两个提交失败出口一行痕迹都没有，
+	// 插件身份、上游报文、耗时全部不可知。400 出口必须留痕——它不透传
+	// taskErr.Message 之外的上游细节，但没有这行日志连「哪个插件、哪个
+	// 模型、多久」都无从对账。
+	logger.LogWarn(c, fmt.Sprintf("task_plugin subsystem=protocol event=submission_failed status=%d code=%q message=%q",
+		status, taskErrCodeOrEmpty(taskErr), taskErrMessageOrEmpty(taskErr)))
 	switch status {
 	case http.StatusBadRequest:
 		message := "Invalid task protocol request"
@@ -1282,6 +1289,20 @@ func respondPluginProtocolSubmissionError(c *gin.Context, taskErr *dto.TaskError
 	default:
 		respondPluginProtocolError(c, status, "task_protocol_error", "Task protocol request failed")
 	}
+}
+
+func taskErrCodeOrEmpty(taskErr *dto.TaskError) string {
+	if taskErr == nil {
+		return ""
+	}
+	return taskErr.Code
+}
+
+func taskErrMessageOrEmpty(taskErr *dto.TaskError) string {
+	if taskErr == nil {
+		return ""
+	}
+	return taskErr.Message
 }
 
 func respondPluginProtocolError(c *gin.Context, status int, code, message string) {

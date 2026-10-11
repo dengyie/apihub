@@ -326,6 +326,9 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		modelRequest, err := getModelFromRequest(c)
 		if err != nil {
 			if _, _, protocolPath := pluginruntime.LookupHostProtocolOperation(c.Request.Method, c.Request.URL.Path); protocolPath {
+				// 400 出口必须留痕：该错误在 2026-10-12 排障时因零日志无法
+				// 区分「body 解析失败」与「插件桥上游拒绝」，多耗一轮取证
+				logger.LogWarn(c, fmt.Sprintf("task_plugin subsystem=endpoint event=pin_rejected reason=model_parse_error err=%q path=%s", err.Error(), c.Request.URL.Path))
 				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
 				return
 			}
@@ -369,6 +372,7 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		}
 		if rewriteTo != "" {
 			if rewriteErr := rewriteTaskPluginJSONModel(c, rewriteTo); rewriteErr != nil {
+				logger.LogWarn(c, fmt.Sprintf("task_plugin subsystem=endpoint event=pin_rejected reason=model_rewrite_failed err=%q from=%q to=%q", rewriteErr.Error(), claimedModel, rewriteTo))
 				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
 				return
 			}
