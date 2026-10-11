@@ -234,3 +234,51 @@ func TestAnyRouterLoadSaturationIsRateLimit(t *testing.T) {
 	assert.True(t, IsUpstreamRateLimitError(errSaturated), "AnyRouter 负载达到上限必须识别为瞬时限流而非硬熔断")
 	assert.False(t, IsUpstreamRelayError(errSaturated), "限流/负载饱和错误不得被误判为中继故障而触发级联硬熔断")
 }
+
+func TestParamStripReasoningContentAndRelayErrorHardening(t *testing.T) {
+	// 1. Pydantic style without loc: messages.1.reasoning_content: extra fields not permitted
+	err1 := &types.NewAPIError{
+		StatusCode: http.StatusBadRequest,
+		Err:        errors.New("messages.1.reasoning_content: extra fields not permitted"),
+	}
+	p1, ok1 := IsParamNotSupportedError(err1)
+	assert.True(t, ok1)
+	assert.Equal(t, "reasoning_content", p1)
+
+	// 2. Wrapped in 5xx: loc: ['body', 'messages', 1, 'reasoning_content']
+	err2 := wrappedParamError(http.StatusInternalServerError,
+		"Validation error: extra fields not permitted, loc: ['body', 'messages', 1, 'reasoning_content']")
+	p2, ok2 := IsParamNotSupportedError(err2)
+	assert.True(t, ok2)
+	assert.Equal(t, "reasoning_content", p2)
+
+	// 3. Generic reasoning unsupported
+	err3 := &types.NewAPIError{
+		StatusCode: http.StatusBadRequest,
+		Err:        errors.New("parameter reasoning is not supported"),
+	}
+	p3, ok3 := IsParamNotSupportedError(err3)
+	assert.True(t, ok3)
+	assert.Equal(t, "reasoning", p3)
+
+	// 4. Plain Bad Request from upstream relay
+	err4 := &types.NewAPIError{
+		StatusCode: http.StatusBadRequest,
+		Err:        errors.New("status_code=400, Bad Request"),
+	}
+	assert.True(t, IsUpstreamRelayError(err4))
+
+	// 5. Upstream relay vendor error types
+	for _, errType := range []string{"pm_api_error", "new_api_error", "provider_error", "channel_error", "relay_error", "router_error"} {
+		errRelay := &types.NewAPIError{
+			StatusCode: http.StatusBadRequest,
+			Err:        errors.New("upstream failed"),
+			RelayError: types.OpenAIError{
+				Message: "upstream failed",
+				Type:    errType,
+				Code:    400,
+			},
+		}
+		assert.True(t, IsUpstreamRelayError(errRelay), "error type %s must be recognized as upstream relay error", errType)
+	}
+}

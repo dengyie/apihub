@@ -91,7 +91,8 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 
-	return request, nil
+	openaiAdaptor := openai.Adaptor{}
+	return openaiAdaptor.ConvertOpenAIRequest(c, info, request)
 }
 
 func applyDeepSeekV4OpenAIThinkingSuffix(info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) error {

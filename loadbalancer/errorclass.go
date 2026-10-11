@@ -325,25 +325,65 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "model not available") ||
 		strings.Contains(msg, "model is not supported") ||
 		strings.Contains(msg, "model not supported") ||
-		strings.Contains(msg, "channel is not available") {
+		strings.Contains(msg, "channel is not available") ||
+		strings.Contains(msg, "upstream error") ||
+		strings.Contains(msg, "upstream failure") ||
+		strings.Contains(msg, "upstream connect error") ||
+		strings.Contains(msg, "upstream reset") ||
+		strings.Contains(msg, "upstream connection error") ||
+		strings.Contains(msg, "provider error") ||
+		strings.Contains(msg, "provider returned error") ||
+		strings.Contains(msg, "channel error") ||
+		strings.Contains(msg, "relay error") ||
+		strings.Contains(msg, "proxy error") ||
+		strings.Contains(msg, "gateway error") ||
+		strings.Contains(msg, "channel timeout") ||
+		strings.Contains(msg, "service temporarily unavailable") ||
+		strings.Contains(msg, "upstream service unavailable") ||
+		strings.EqualFold(strings.TrimSpace(msg), "bad request") ||
+		strings.EqualFold(strings.TrimSpace(msg), "status_code=400, bad request") ||
+		strings.HasSuffix(msg, ", bad request") {
 		return true
 	}
 	if oe, ok := err.RelayError.(types.OpenAIError); ok {
 		typeStr := strings.ToLower(oe.Type)
-		if strings.Contains(typeStr, "upstream_error") ||
-			strings.Contains(typeStr, "one_api_error") ||
-			strings.Contains(typeStr, "new_api_error") ||
-			strings.Contains(typeStr, "pm_api_error") ||
-			strings.Contains(typeStr, "gateway_error") {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", oe.Code))
+		if isRelayErrorTypeOrCode(typeStr, codeStr) {
 			return true
 		}
 	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
 		typeStr := strings.ToLower(poe.Type)
-		if strings.Contains(typeStr, "upstream_error") ||
-			strings.Contains(typeStr, "one_api_error") ||
-			strings.Contains(typeStr, "new_api_error") ||
-			strings.Contains(typeStr, "pm_api_error") ||
-			strings.Contains(typeStr, "gateway_error") {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", poe.Code))
+		if isRelayErrorTypeOrCode(typeStr, codeStr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRelayErrorTypeOrCode(typeStr, codeStr string) bool {
+	relayKeywords := []string{
+		"upstream_relay_error",
+		"upstream_error",
+		"upstream_failure",
+		"one_api_error",
+		"new_api_error",
+		"pm_api_error",
+		"gateway_error",
+		"provider_error",
+		"channel_error",
+		"relay_error",
+		"proxy_error",
+		"router_error",
+		"upstream_unavailable",
+		"upstream_status_error",
+		"channel_status_error",
+	}
+	for _, kw := range relayKeywords {
+		if typeStr != "" && strings.Contains(typeStr, kw) {
+			return true
+		}
+		if codeStr != "" && codeStr != string(types.ErrorCodeBadResponseStatusCode) && codeStr != string(types.ErrorCodeBadResponse) && strings.Contains(codeStr, kw) {
 			return true
 		}
 	}

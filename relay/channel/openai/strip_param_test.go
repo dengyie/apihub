@@ -242,9 +242,122 @@ func TestConvertOpenAIRequest_NormalizesReasoningEffortMaxAndXHigh(t *testing.T)
 			converted, err := adaptor.ConvertOpenAIRequest(nil, info, origRequest)
 			require.NoError(t, err)
 			convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
-			require.True(t, ok)
-			assert.Equal(t, "high", convertedReq.ReasoningEffort)
-			assert.Equal(t, effort, origRequest.ReasoningEffort, "original must not be mutated")
-		})
+				require.True(t, ok)
+				assert.Equal(t, "high", convertedReq.ReasoningEffort)
+				assert.Equal(t, effort, origRequest.ReasoningEffort, "original must not be mutated")
+			})
+		}
 	}
+
+func TestConvertOpenAIRequest_CrossModelMapping_DeepSeekClientModelToGLM_DoesNotInjectReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	// Client requests "deepseek-v4-flash", but channel #97 maps it to "z-ai/glm-5.3-flash"
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         97,
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "z-ai/glm-5.3-flash",
+		},
+		OriginModelName: "deepseek-v4-flash",
+	}
+
+	origMessages := []dto.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"}, // ReasoningContent is nil
+		{Role: "user", Content: "what is next?"},
+	}
+
+	origRequest := &dto.GeneralOpenAIRequest{
+		Model:    "deepseek-v4-flash",
+		Messages: origMessages,
+	}
+
+	adaptor := &Adaptor{}
+	converted, err := adaptor.ConvertOpenAIRequest(c, info, origRequest)
+	require.NoError(t, err)
+
+	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+
+	// Upstream target is GLM, so reasoning_content must NOT be injected as empty string!
+	assert.Nil(t, convertedReq.Messages[1].ReasoningContent, "mapped GLM upstream target must not have reasoning_content injected")
+}
+
+func TestConvertOpenAIRequest_CrossModelMapping_ClaudeClientModelToDeepSeek_InjectsReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	// Client requests "claude-opus-4-8", but channel maps it to "deepseek-reasoner"
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         88,
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "deepseek-reasoner",
+		},
+		OriginModelName: "claude-opus-4-8",
+	}
+
+	origMessages := []dto.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"}, // ReasoningContent is nil
+		{Role: "user", Content: "what is next?"},
+	}
+
+	origRequest := &dto.GeneralOpenAIRequest{
+		Model:    "claude-opus-4-8",
+		Messages: origMessages,
+	}
+
+	adaptor := &Adaptor{}
+	converted, err := adaptor.ConvertOpenAIRequest(c, info, origRequest)
+	require.NoError(t, err)
+
+	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+
+	// Upstream target is DeepSeek, so reasoning_content MUST be injected as empty string
+	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "mapped DeepSeek upstream target must have reasoning_content injected")
+	assert.Equal(t, "", *convertedReq.Messages[1].ReasoningContent)
+}
+
+func TestStripOpenAIParam_MaxTokensFallback(t *testing.T) {
+	maxTokensVal := uint(4096)
+
+	// Test 1: strip max_completion_tokens falls back to max_tokens
+	req1 := &dto.GeneralOpenAIRequest{
+		MaxCompletionTokens: &maxTokensVal,
+	}
+	stripOpenAIParam(req1, "max_completion_tokens")
+	assert.Nil(t, req1.MaxCompletionTokens)
+	require.NotNil(t, req1.MaxTokens)
+	assert.Equal(t, maxTokensVal, *req1.MaxTokens)
+
+	// Test 2: strip max_tokens falls back to max_completion_tokens
+	req2 := &dto.GeneralOpenAIRequest{
+		MaxTokens: &maxTokensVal,
+	}
+	stripOpenAIParam(req2, "max_tokens")
+	assert.Nil(t, req2.MaxTokens)
+	require.NotNil(t, req2.MaxCompletionTokens)
+	assert.Equal(t, maxTokensVal, *req2.MaxCompletionTokens)
+}
+
+func TestStripOpenAIParam_ReasoningContent(t *testing.T) {
+	reasoningVal := "some thoughts"
+	req := &dto.GeneralOpenAIRequest{
+		Messages: []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "response", ReasoningContent: &reasoningVal, Reasoning: &reasoningVal},
+		},
+	}
+	stripOpenAIParam(req, "reasoning_content")
+	assert.Nil(t, req.Messages[1].ReasoningContent)
+	assert.Nil(t, req.Messages[1].Reasoning)
+	assert.Equal(t, "response", req.Messages[1].Content)
 }
