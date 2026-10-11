@@ -2,6 +2,7 @@ package model
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/setting/ratio_setting"
@@ -27,7 +28,18 @@ func IsChannelEnabledForGroupModel(group string, modelName string, channelID int
 	}
 	normalized := ratio_setting.RoutingMatchModelName(modelName)
 	if normalized != "" && normalized != modelName {
-		return isChannelIDInList(group2model2channels[group][normalized], channelID)
+		if isChannelIDInList(group2model2channels[group][normalized], channelID) {
+			return true
+		}
+	}
+	if group2model2channels[group] != nil {
+		for m, list := range group2model2channels[group] {
+			if strings.EqualFold(m, modelName) || (normalized != "" && strings.EqualFold(m, normalized)) {
+				if isChannelIDInList(list, channelID) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -53,14 +65,30 @@ func isChannelEnabledForGroupModelDB(group string, modelName string, channelID i
 		return true
 	}
 	normalized := ratio_setting.RoutingMatchModelName(modelName)
-	if normalized == "" || normalized == modelName {
-		return false
+	if normalized != "" && normalized != modelName {
+		count = 0
+		err = DB.Model(&Ability{}).
+			Where(commonGroupCol()+" = ? and model = ? and channel_id = ? and enabled = ?", group, normalized, channelID, true).
+			Count(&count).Error
+		if err == nil && count > 0 {
+			return true
+		}
 	}
 	count = 0
 	err = DB.Model(&Ability{}).
-		Where(commonGroupCol()+" = ? and model = ? and channel_id = ? and enabled = ?", group, normalized, channelID, true).
+		Where(commonGroupCol()+" = ? and LOWER(model) = LOWER(?) and channel_id = ? and enabled = ?", group, modelName, channelID, true).
 		Count(&count).Error
-	return err == nil && count > 0
+	if err == nil && count > 0 {
+		return true
+	}
+	if normalized != "" && normalized != modelName {
+		count = 0
+		err = DB.Model(&Ability{}).
+			Where(commonGroupCol()+" = ? and LOWER(model) = LOWER(?) and channel_id = ? and enabled = ?", group, normalized, channelID, true).
+			Count(&count).Error
+		return err == nil && count > 0
+	}
+	return false
 }
 
 func isChannelIDInList(list []int, channelID int) bool {

@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/rand"
 	"slices"
+	"sort"
+	"strings"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/dto"
@@ -185,6 +187,34 @@ func cachedChannelCandidates(group string, modelName string, filters []dto.Chann
 			ids, _ = filterCandidateIDs(group2model2channels[group][normalized], modelName, filters)
 		}
 	}
+	if len(ids) == 0 && group2model2channels != nil && group2model2channels[group] != nil {
+		normalized := ratio_setting.RoutingMatchModelName(modelName)
+		seen := make(map[int]struct{})
+		for k, candidateIDs := range group2model2channels[group] {
+			if strings.EqualFold(k, modelName) || (normalized != "" && strings.EqualFold(k, normalized)) {
+				filtered, _ := filterCandidateIDs(candidateIDs, modelName, filters)
+				for _, cid := range filtered {
+					if _, dup := seen[cid]; !dup {
+						seen[cid] = struct{}{}
+						ids = append(ids, cid)
+					}
+				}
+			}
+		}
+		if len(ids) > 1 {
+			sort.Slice(ids, func(i, j int) bool {
+				chI, okI := channelsIDM[ids[i]]
+				chJ, okJ := channelsIDM[ids[j]]
+				if okI && okJ {
+					if chI.GetPriority() != chJ.GetPriority() {
+						return chI.GetPriority() > chJ.GetPriority()
+					}
+					return chI.GetWeight() > chJ.GetWeight()
+				}
+				return ids[i] < ids[j]
+			})
+		}
+	}
 	channels := make([]*Channel, 0, len(ids))
 	for _, id := range ids {
 		channel, ok := channelsIDM[id]
@@ -243,7 +273,8 @@ func dbChannelCandidates(group string, modelName string, filters []dto.ChannelFi
 }
 
 // loadEnabledAbilities reads the enabled abilities of a model, falling back to
-// the routing-normalized model name when the exact name has no rows.
+// the routing-normalized model name when the exact name has no rows, and further
+// falling back to case-insensitive matching if neither exact match produces rows.
 func loadEnabledAbilities(group string, modelName string) ([]Ability, error) {
 	var abilities []Ability
 	err := DB.Where(commonGroupCol()+" = ? and model = ? and enabled = ?", group, modelName, true).
@@ -255,13 +286,31 @@ func loadEnabledAbilities(group string, modelName string) ([]Ability, error) {
 		return abilities, nil
 	}
 	normalized := ratio_setting.RoutingMatchModelName(modelName)
-	if normalized == "" || normalized == modelName {
-		return nil, nil
+	if normalized != "" && normalized != modelName {
+		err = DB.Where(commonGroupCol()+" = ? and model = ? and enabled = ?", group, normalized, true).
+			Order("priority DESC, weight DESC").Find(&abilities).Error
+		if err != nil {
+			return nil, err
+		}
+		if len(abilities) > 0 {
+			return abilities, nil
+		}
 	}
-	err = DB.Where(commonGroupCol()+" = ? and model = ? and enabled = ?", group, normalized, true).
+	// Case-insensitive fallback
+	err = DB.Where(commonGroupCol()+" = ? and LOWER(model) = LOWER(?) and enabled = ?", group, modelName, true).
 		Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err
+	}
+	if len(abilities) > 0 {
+		return abilities, nil
+	}
+	if normalized != "" && normalized != modelName {
+		err = DB.Where(commonGroupCol()+" = ? and LOWER(model) = LOWER(?) and enabled = ?", group, normalized, true).
+			Order("priority DESC, weight DESC").Find(&abilities).Error
+		if err != nil {
+			return nil, err
+		}
 	}
 	return abilities, nil
 }

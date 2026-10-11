@@ -454,6 +454,37 @@ func TestSelectChannelForRequestFallsBackToNormalizedModelName(t *testing.T) {
 	assert.Equal(t, 7401, selected.Id)
 }
 
+func TestSelectChannelForRequestFallsBackToCaseInsensitiveModelName(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	oldMemoryCache := common.MemoryCacheEnabled
+	defer func() {
+		common.MemoryCacheEnabled = oldMemoryCache
+	}()
+
+	const requested = "space-bunny"
+	const registered = "Space-Bunny"
+
+	// 1. Database mode
+	common.MemoryCacheEnabled = false
+	createTestChannelForSelect(t, db, 7402, "default", registered)
+
+	c, retry := newSelectRetryParam(requested, nil)
+	selected, _, err := SelectChannelForRequest(c, requested, retry)
+	require.Nil(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 7402, selected.Id)
+
+	// 2. Memory cache mode
+	common.MemoryCacheEnabled = true
+	model.InitChannelCache()
+
+	c2, retry2 := newSelectRetryParam(requested, nil)
+	selected2, _, err := SelectChannelForRequest(c2, requested, retry2)
+	require.Nil(t, err)
+	require.NotNil(t, selected2)
+	assert.Equal(t, 7402, selected2.Id)
+}
+
 // The retry path is what "fail over to another channel" actually means, and it
 // used to run the bare CacheGetRandomSatisfiedChannel. That helper only resolves
 // by group/priority/weight: it never read use_channel and never consulted the

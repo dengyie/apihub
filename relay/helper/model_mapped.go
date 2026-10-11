@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	rootcommon "github.com/dengyie/apihub/common"
 	relaycommon "github.com/dengyie/apihub/relay/common"
@@ -35,6 +36,24 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 			baseModel := hostreasoning.BaseModelName(currentModel)
 			if (!exists || mappedModel == "") && baseModel != currentModel {
 				mappedModel, exists = modelMap[baseModel]
+			}
+			if !exists || mappedModel == "" {
+				for k, v := range modelMap {
+					if strings.EqualFold(k, currentModel) {
+						mappedModel = v
+						exists = true
+						break
+					}
+				}
+				if (!exists || mappedModel == "") && baseModel != currentModel {
+					for k, v := range modelMap {
+						if strings.EqualFold(k, baseModel) {
+							mappedModel = v
+							exists = true
+							break
+						}
+					}
+				}
 			}
 			if exists && mappedModel != "" {
 				// 模型重定向循环检测，避免无限循环
