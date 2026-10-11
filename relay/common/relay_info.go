@@ -30,6 +30,15 @@ type ThinkingContentInfo struct {
 	HasSentThinkingContent  bool
 }
 
+// ThinkTagSplitState 是 `<think>...</think>` 标签从 content 流拆入
+// reasoning_content 的跨帧状态机（think_tag_to_reasoning 渠道开关）。
+// 标签可能被上游切在两帧之间，carry 保存可能是标签前缀的尾巴，
+// 在 finish_reason 帧冲刷。
+type ThinkTagSplitState struct {
+	Phase int8 // 0=等 <think> 1=思考段内 2=思考结束
+	Carry string
+}
+
 const (
 	LastMessageTypeNone     = convmeta.LastMessageTypeNone
 	LastMessageTypeText     = convmeta.LastMessageTypeText
@@ -221,6 +230,10 @@ type RelayInfo struct {
 	conversionDiagnosticsTruncated bool
 
 	ThinkingContentInfo
+	// ThinkTagSplit 是 think_tag_to_reasoning 渠道开关的跨帧状态机
+	// （`<think>...</think>` 从 content 拆入 reasoning_content），
+	// 每次尝试开始时必须归零（换渠道重试不得继承上一渠道的相位）。
+	ThinkTagSplit ThinkTagSplitState
 	TokenCountMeta
 	*ClaudeConvertInfo
 	*RerankerInfo

@@ -30,6 +30,9 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		if reasoningAsContent {
 			data = reasoningAsContentFrame(data)
 		}
+		if info != nil && info.ChannelSetting.ThinkTagToReasoning {
+			data = applyThinkTagSplit(info, data)
+		}
 		return helper.StringData(c, stripEmptyContentOnReasoningFrame(data))
 	}
 

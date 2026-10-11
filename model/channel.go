@@ -790,6 +790,24 @@ func (channel *Channel) Insert() error {
 }
 
 func (channel *Channel) Update() error {
+	// 面板保存渠道时会用它认识的字段**整体重写** setting JSON。后端已认识
+	// 但前端不渲染的开关（dto.PanelHiddenSettingKeys，如 v29.31 的
+	// reasoning_as_content）不在面板字段里，一次面板编辑就会把它们静默
+	// 抹掉——2026-10-11 生产实证：v29.31 手工 json_set 的开关全部蒸发，
+	// 「思考被逐词切块」复发。这里在写库前从库中旧值回填这些键；调用方
+	// 显式提供新值时以新值为准（API/SQL 仍可正常改写或关闭）。
+	if channel.Setting != nil && *channel.Setting != "" {
+		if existing, err := GetChannelById(channel.Id, true); err == nil && existing != nil &&
+			existing.Setting != nil && *existing.Setting != "" {
+			merged, mergeErr := mergePanelHiddenSettingKeys(*channel.Setting, *existing.Setting)
+			if mergeErr != nil {
+				// 合并失败宁可保留原样也不能吞掉更新：旧值不可解析时新值照写
+				common.SysLog(fmt.Sprintf("channel #%d setting hidden-key merge failed, writing incoming setting as-is: %v", channel.Id, mergeErr))
+			} else {
+				channel.Setting = &merged
+			}
+		}
+	}
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
 		var keyStr string
@@ -1437,6 +1455,41 @@ func (channel *Channel) SetSetting(setting dto.ChannelSettings) {
 		return
 	}
 	channel.Setting = common.GetPointer[string](string(settingBytes))
+}
+
+// mergePanelHiddenSettingKeys 把旧 setting JSON 里「面板不渲染的后端开关」
+// （dto.PanelHiddenSettingKeys）回填进新 setting JSON：新 JSON **缺键**才回填，
+// 显式提供的值（哪怕 false）一律以新值为准——API/SQL 的改写与关闭必须仍然
+// 有效。两侧的未知键（前后端都不认识的）原样保留，不做任何清理。
+//
+// 两端都必须按 map 解析而不是 dto.ChannelSettings 结构体：结构体往返会丢弃
+// 双方不在 struct 里的键，等于换一种方式丢配置。
+func mergePanelHiddenSettingKeys(newSetting, oldSetting string) (string, error) {
+	var newMap, oldMap map[string]any
+	if err := common.UnmarshalJsonStr(newSetting, &newMap); err != nil {
+		return newSetting, fmt.Errorf("incoming setting is not a JSON object: %w", err)
+	}
+	if err := common.UnmarshalJsonStr(oldSetting, &oldMap); err != nil {
+		return newSetting, fmt.Errorf("stored setting is not a JSON object: %w", err)
+	}
+	changed := false
+	for _, key := range dto.PanelHiddenSettingKeys {
+		if _, incoming := newMap[key]; incoming {
+			continue
+		}
+		if oldVal, ok := oldMap[key]; ok {
+			newMap[key] = oldVal
+			changed = true
+		}
+	}
+	if !changed {
+		return newSetting, nil
+	}
+	merged, err := common.Marshal(newMap)
+	if err != nil {
+		return newSetting, err
+	}
+	return string(merged), nil
 }
 
 func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {

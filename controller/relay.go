@@ -209,6 +209,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		relayInfo.StreamStatus = nil
+		// think_tag_to_reasoning 的跨帧状态机按渠道开关生效，换渠道重试
+		// 不得继承上一渠道的相位
+		relayInfo.ThinkTagSplit = relaycommon.ThinkTagSplitState{}
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()

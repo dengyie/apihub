@@ -11,6 +11,22 @@ import (
 	"github.com/dengyie/apihub/relaykit/types"
 )
 
+// PanelHiddenSettingKeys 渠道 setting 里**后端已认识、但管理面板前端不渲染**
+// 的键。前端保存渠道时会用它认识的字段整体重写 setting JSON——不在这个列表
+// 里的键（包括运维手工 json_set 进去的）会被静默抹掉；这里的键由
+// model.Channel.Update 在整行更新时从库中旧值回填（显式提供新值时仍以新值
+// 为准，API/SQL 可以正常改写或关闭）。
+//
+// ⚠️ 新增后端开关而前端没有控件时，**必须**把它的 JSON 键登记到这里：
+// v29.31 的 reasoning_as_content 就是没登记，被面板编辑蒸发，2026-10-11
+// 在生产复发（全库 69 条 deepseek 渠道只剩 1 条开关存活）。守卫测试
+// TestPanelHiddenSettingKeysAreRealFields 保证列表里的键都是 struct 的
+// 真实字段，防手误。
+var PanelHiddenSettingKeys = []string{
+	"reasoning_as_content",
+	"think_tag_to_reasoning",
+}
+
 type ChannelSettings struct {
 	TaskPluginKey     string `json:"task_plugin_key,omitempty"`
 	ForceFormat       bool   `json:"force_format,omitempty"`
@@ -25,7 +41,14 @@ type ChannelSettings struct {
 	// by the time content turns out to be absent, and any automatic threshold
 	// would also flatten legitimate long reasoning from real reasoner models.
 	// So it is an explicit per-channel opt-in, default off.
-	ReasoningAsContent        bool   `json:"reasoning_as_content,omitempty"`
+	ReasoningAsContent bool `json:"reasoning_as_content,omitempty"`
+	// ThinkTagToReasoning extracts a literal `<think>...</think>` segment from
+	// the content stream into reasoning_content deltas (third variant of the
+	// word-per-thinking-block family: some upstreams wrap thinking in think
+	// markup inside content instead of using the reasoning_content field).
+	// Per-channel opt-in, default off — see ReasoningAsContent for why this
+	// cannot be automatic.
+	ThinkTagToReasoning       bool   `json:"think_tag_to_reasoning,omitempty"`
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
