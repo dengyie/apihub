@@ -105,3 +105,26 @@ func settingKeyExistsInJSON(key string) bool {
 	_, ok := m[key]
 	return ok
 }
+
+// TestUnbindTaskPluginPreservesHiddenSettingKeys 钉住任务插件解绑路径的
+// 同一防蒸发语义：SetSetting 的 struct 序列化会丢弃不在 struct 里的键，
+// 解绑写回时必须把登记的隐藏键从旧值回填（面板/手工设置的
+// reasoning_as_content 不得因一次插件解绑而蒸发）。
+func TestUnbindTaskPluginPreservesHiddenSettingKeys(t *testing.T) {
+	setupChannelStatusTest(t)
+
+	channel := Channel{Name: "unbind-preserves", Key: "k", Status: common.ChannelStatusEnabled, Type: 60,
+		Setting: common.GetPointer(`{"task_plugin_key":"muse","reasoning_as_content":true,"think_tag_to_reasoning":true}`)}
+	require.NoError(t, DB.Create(&channel).Error)
+
+	changed, err := UnbindTaskPlugin(channel.Id, "muse")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var row Channel
+	require.NoError(t, DB.First(&row, "id = ?", channel.Id).Error)
+	setting := row.GetSetting()
+	assert.Empty(t, setting.TaskPluginKey, "解绑的插件必须真的移除")
+	assert.True(t, setting.ReasoningAsContent, "隐藏键不得随 struct 序列化蒸发")
+	assert.True(t, setting.ThinkTagToReasoning, "隐藏键不得随 struct 序列化蒸发")
+}

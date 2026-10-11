@@ -154,3 +154,70 @@ func TestThinkTagSplitOnlyWithinTagSegment(t *testing.T) {
 		t.Fatalf("标签内内容必须进 reasoning: %q", got)
 	}
 }
+
+// 生产帧实测形：上游把 `<` 转义成 `\u003cthink\u003e`（渠道 #262 原样抓帧）。
+// json 解码后状态机必须照样识别标签。
+func TestThinkTagSplitEscapedUnicodeProductionFrame(t *testing.T) {
+	info := splitPolicy()
+	// 原始字节：content 是 "\u003cthink\u003e\n分析" 的转义形
+	frame := `{"choices":[{"delta":{"content":"\u003cthink\u003e\n分析用户要求。","role":"assistant"},"finish_reason":null,"index":0}]}`
+	out := applyThinkTagSplit(info, frame)
+	var obj struct {
+		Choices []struct {
+			Delta struct {
+				Content          *string `json:"content"`
+				ReasoningContent *string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v (%s)", err, out)
+	}
+	if strings.Contains(out, "think") {
+		t.Fatalf("标签必须被剥掉: %s", out)
+	}
+	if obj.Choices[0].Delta.ReasoningContent == nil ||
+		!strings.Contains(*obj.Choices[0].Delta.ReasoningContent, "分析用户要求") {
+		t.Fatalf("思考段必须进 reasoning_content: %s", out)
+	}
+	if obj.Choices[0].Delta.Content != nil && *obj.Choices[0].Delta.Content != "" {
+		t.Fatalf("content 应被删掉（拆空后留空串=自己制造 v29.30 触发帧）: %s", out)
+	}
+}
+
+// n>1 多 choice 帧：状态机是单序列的，整帧跳过原样透传（不污染相位）。
+func TestThinkTagSplitSkipsMultiChoiceFrames(t *testing.T) {
+	info := splitPolicy()
+	frame := `{"choices":[{"index":0,"delta":{"content":"<think>分支甲"}},{"index":1,"delta":{"content":"分支乙"}}],"finish_reason":null}`
+	out := applyThinkTagSplit(info, frame)
+	if out != frame {
+		t.Fatalf("多 choice 帧必须整帧原样透传: %s", out)
+	}
+	// 相位不得被多 choice 帧推进：后续无标签普通帧仍应原样
+	plain := `{"choices":[{"delta":{"content":"普通正文"},"finish_reason":null}]}`
+	if out := applyThinkTagSplit(info, plain); out != plain {
+		t.Fatalf("多 choice 帧不得污染后续帧的相位: %s", out)
+	}
+}
+
+// 无 </think> 收尾的流：finish_reason 帧把 carry 按相位冲刷，
+// 相位 0 的尾巴回到 content（不得丢字）。
+func TestThinkTagSplitFlushesCarryOnFinish(t *testing.T) {
+	info := splitPolicy()
+	// 相位 0：正文以 "<thi" 结尾（疑似标签前缀被扣住），流随即正常结束
+	applyThinkTagSplit(info, `{"choices":[{"delta":{"content":"正文开头<thi"},"finish_reason":null}]}`)
+	out := applyThinkTagSplit(info, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	var obj struct {
+		Choices []struct {
+			Delta struct {
+				Content *string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		t.Fatalf("输出不是合法 JSON: %v (%s)", err, out)
+	}
+	if obj.Choices[0].Delta.Content == nil || !strings.Contains(*obj.Choices[0].Delta.Content, "<thi") {
+		t.Fatalf("finish 冲刷必须把相位 0 的尾巴还给 content（不丢字）: %s", out)
+	}
+}

@@ -115,6 +115,13 @@ func rewriteStreamWithThinkSplit(info *relaycommon.RelayInfo, data string) (stri
 		if err := json.Unmarshal(top[i].raw, &choices); err != nil {
 			continue
 		}
+		// 多 choice（n>1）帧整体跳过：状态机是单序列的，多路候选的 content
+		// 交错喂入会互相污染相位。n>1 与 think 标签渠道的组合未见真实流量
+		// （生产探针与面板测试均为单 choice），跳过 = 该帧原样透传，不会
+		// 制造错误输出，只是该帧不走拆分。
+		if len(choices) > 1 {
+			continue
+		}
 		choiceChanged := false
 		for j := range choices {
 			var choice orderedMembers

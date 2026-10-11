@@ -54,7 +54,19 @@ func UnbindTaskPlugin(channelID int, key string) (bool, error) {
 		setting.TaskPluginKey = ""
 	}
 	setting.TaskExtendPluginKeys = slices.DeleteFunc(setting.TaskExtendPluginKeys, func(bound string) bool { return bound == key })
+	// SetSetting 走 struct 序列化，会把不在 ChannelSettings 里的键丢掉；
+	// 与 Channel.Update 同一防蒸发语义：后端已认识但面板不渲染的键
+	// （dto.PanelHiddenSettingKeys，如 reasoning_as_content）从旧值回填。
+	oldRaw := ""
+	if channel.Setting != nil {
+		oldRaw = *channel.Setting
+	}
 	channel.SetSetting(setting)
+	if oldRaw != "" {
+		if merged, mergeErr := mergePanelHiddenSettingKeys(*channel.Setting, oldRaw); mergeErr == nil {
+			channel.Setting = &merged
+		}
+	}
 	return true, DB.Model(&Channel{}).Where("id = ?", channelID).Update("setting", channel.Setting).Error
 }
 
