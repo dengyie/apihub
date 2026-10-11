@@ -2,13 +2,16 @@ package common
 
 import (
 	"bytes"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dengyie/apihub/constant"
@@ -31,6 +34,46 @@ func IsRequestBodyTooLargeError(err error) bool {
 	}
 	var mbe *http.MaxBytesError
 	return errors.As(err, &mbe)
+}
+
+// IsRequestBodyIncompleteError reports whether err means the client's upload
+// was cut off before the declared body was fully received — a transport abort
+// (unexpected EOF, connection reset, broken pipe), not a fully received but
+// malformed payload. Such failures must not be answered with 400
+// invalid_request: the request never got a fair parse, and clients treat 400
+// as non-retryable while the honest classification (408) invites a retry.
+// http.ErrBodyReadAfterClose counts too: GetBodyStorage only reaches the
+// closed request body when a previous read attempt failed without caching
+// storage, so its cause is that earlier transport failure.
+func IsRequestBodyIncompleteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, io.ErrUnexpectedEOF) || stderrors.Is(err, io.ErrShortWrite) {
+		return true
+	}
+	if stderrors.Is(err, http.ErrBodyReadAfterClose) {
+		return true
+	}
+	if stderrors.Is(err, syscall.ECONNRESET) || stderrors.Is(err, syscall.EPIPE) || stderrors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	var opErr *net.OpError
+	return stderrors.As(err, &opErr)
+}
+
+// WrapRequestBodyReadError annotates a transport-level body read failure with
+// how many bytes arrived versus how many were declared, so the WARN/ERR log
+// line alone can separate "client gave up mid-upload" from a broken upstream
+// proxy. Non-transport errors are returned unchanged.
+func WrapRequestBodyReadError(err error, received int64, declared int64) error {
+	if err == nil || !IsRequestBodyIncompleteError(err) {
+		return err
+	}
+	if declared > 0 {
+		return fmt.Errorf("request body incomplete: received %d of %d declared bytes: %w", received, declared, err)
+	}
+	return fmt.Errorf("request body incomplete: interrupted after %d received bytes: %w", received, err)
 }
 
 func GetRequestBody(c *gin.Context) (io.Seeker, error) {

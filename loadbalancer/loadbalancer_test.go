@@ -656,6 +656,29 @@ func TestIsUpstreamRelayError(t *testing.T) {
 		Err:        errors.New("当前分组无可用渠道服务该模型"),
 	}
 	assert.True(t, IsUpstreamRelayError(errNoAvailableChannel))
+
+	// PM-API / pmcat.top 等中继返回的 pm_api_error 必须识别为中继失效并换渠道重试
+	errPmApi := &types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("Bad Request"),
+		RelayError: types.OpenAIError{
+			Message: "Bad Request",
+			Type:    "pm_api_error",
+			Code:    400,
+		},
+	}
+	assert.True(t, IsUpstreamRelayError(errPmApi))
+
+	errGatewayError := &types.NewAPIError{
+		StatusCode: 500,
+		Err:        errors.New("upstream failed"),
+		RelayError: &types.OpenAIError{
+			Message: "internal failure",
+			Type:    "gateway_error",
+			Code:    500,
+		},
+	}
+	assert.True(t, IsUpstreamRelayError(errGatewayError))
 }
 
 // TestIsUpstreamRelayErrorExcludesParamErrorOn5xx 钉住 5xx 参数错误**不**熔断。

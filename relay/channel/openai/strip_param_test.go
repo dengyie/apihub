@@ -183,6 +183,46 @@ func TestConvertOpenAIRequest_NonDeepSeekWithoutReasoningKeepsNil(t *testing.T) 
 	assert.Nil(t, convertedReq.Messages[1].ReasoningContent, "non-deepseek request without reasoning should leave reasoning_content nil")
 }
 
+func TestConvertOpenAIRequest_NonDeepSeekStripsReasoningContentFromAssistant(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         97,
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "z-ai/glm-5.3-flash",
+		},
+		OriginModelName: "glm-5.3-flash",
+	}
+
+	reasoningStr := "thinking process from prior turn"
+	origMessages := []dto.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi", ReasoningContent: &reasoningStr, Reasoning: &reasoningStr},
+		{Role: "user", Content: "what is next?"},
+	}
+
+	origRequest := &dto.GeneralOpenAIRequest{
+		Model:           "glm-5.3-flash",
+		ReasoningEffort: "max",
+		Messages:        origMessages,
+	}
+
+	adaptor := &Adaptor{}
+	converted, err := adaptor.ConvertOpenAIRequest(c, info, origRequest)
+	require.NoError(t, err)
+
+	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+	assert.Nil(t, convertedReq.Messages[1].ReasoningContent, "non-deepseek model must strip reasoning_content to avoid upstream 400")
+	assert.Nil(t, convertedReq.Messages[1].Reasoning, "non-deepseek model must strip reasoning to avoid upstream 400")
+	// Original messages slice must not be modified
+	assert.NotNil(t, origRequest.Messages[1].ReasoningContent)
+}
+
 func TestConvertOpenAIRequest_NormalizesReasoningEffortMaxAndXHigh(t *testing.T) {
 	for _, effort := range []string{"max", "MAX", "xhigh", "XHigh"} {
 		t.Run(effort, func(t *testing.T) {

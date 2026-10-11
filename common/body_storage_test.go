@@ -1,8 +1,13 @@
 package common
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,4 +39,52 @@ func TestNewReplayableBodyReaderKeepsStorageLifecycleWithCaller(t *testing.T) {
 	require.NoError(t, storage.Close())
 	_, err = body.NewReader()
 	require.ErrorIs(t, err, ErrStorageClosed)
+}
+
+// truncatedBodyReader reproduces the production shape of a client upload cut
+// off mid-body: some bytes arrive, then the stream dies with
+// io.ErrUnexpectedEOF instead of a clean EOF.
+type truncatedBodyReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *truncatedBodyReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestCreateBodyStorageFromReaderWrapsTruncationWithByteCounts(t *testing.T) {
+	content := []byte(`{"model":"glm-5.3-flash","messages":[`)
+	storage, err := CreateBodyStorageFromReader(&truncatedBodyReader{data: content}, int64(len(content)+4096), 1<<20)
+	require.Error(t, err)
+	require.Nil(t, storage)
+
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.True(t, IsRequestBodyIncompleteError(err))
+	assert.Contains(t, err.Error(), "received ")
+	assert.Contains(t, err.Error(), fmt.Sprintf("received %d of %d declared bytes", len(content), len(content)+4096))
+}
+
+func TestCreateBodyStorageFromReaderKeepsMalformedBodyUntagged(t *testing.T) {
+	// A complete-but-garbage stream (clean EOF) must NOT be classified as a
+	// transport abort: it is a genuine 400 invalid_request.
+	storage, err := CreateBodyStorageFromReader(strings.NewReader("not json"), 8, 1<<20)
+	require.NoError(t, err)
+	require.NotNil(t, storage)
+	require.NoError(t, storage.Close())
+}
+
+func TestIsRequestBodyIncompleteErrorShapes(t *testing.T) {
+	assert.True(t, IsRequestBodyIncompleteError(io.ErrUnexpectedEOF))
+	assert.True(t, IsRequestBodyIncompleteError(http.ErrBodyReadAfterClose))
+	assert.True(t, IsRequestBodyIncompleteError(fmt.Errorf("wrapped: %w", io.ErrUnexpectedEOF)))
+	assert.True(t, IsRequestBodyIncompleteError(&net.OpError{Op: "read", Err: syscall.ECONNRESET}))
+	assert.False(t, IsRequestBodyIncompleteError(nil))
+	assert.False(t, IsRequestBodyIncompleteError(io.EOF))
+	assert.False(t, IsRequestBodyIncompleteError(errors.New("invalid JSON request body")))
 }

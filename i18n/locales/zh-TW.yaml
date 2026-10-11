@@ -275,6 +275,7 @@ common.invalid_input: "輸入不合法"
 
 # Distributor messages
 distributor.invalid_request: "無效的請求，{{.Error}}"
+distributor.request_body_incomplete: "請求體未完整接收（客戶端上傳中斷），請重試：{{.Error}}"
 distributor.invalid_channel_id: "無效的管道 Id"
 distributor.channel_disabled: "該管道已被禁用"
 distributor.affinity_channel_disabled: "管道親和性命中的管道已被禁用，已按規則停止重試，請聯絡管理員處理"

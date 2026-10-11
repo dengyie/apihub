@@ -275,6 +275,7 @@ common.invalid_input: "输入不合法"
 
 # Distributor messages
 distributor.invalid_request: "无效的请求，{{.Error}}"
+distributor.request_body_incomplete: "请求体未完整接收（客户端上传中断），请重试：{{.Error}}"
 distributor.invalid_channel_id: "无效的渠道 Id"
 distributor.channel_disabled: "该渠道已被禁用"
 distributor.affinity_channel_disabled: "渠道亲和性命中的渠道已被禁用，已按规则停止重试，请联系管理员处理"

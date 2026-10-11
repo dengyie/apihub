@@ -301,6 +301,20 @@ func stripOpenAIParam(request *dto.GeneralOpenAIRequest, param string) {
 		request.ExtraBody = nil
 	case "verbosity":
 		request.Verbosity = nil
+	case "reasoning_content":
+		copied := false
+		for i, msg := range request.Messages {
+			if msg.Role == "assistant" && (msg.ReasoningContent != nil || msg.Reasoning != nil) {
+				if !copied {
+					messagesCopy := make([]dto.Message, len(request.Messages))
+					copy(messagesCopy, request.Messages)
+					request.Messages = messagesCopy
+					copied = true
+				}
+				request.Messages[i].ReasoningContent = nil
+				request.Messages[i].Reasoning = nil
+			}
+		}
 	}
 }
 
@@ -532,20 +546,17 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		request.LogProbs = nil
 		request.TopLogProbs = nil
 	}
-	// 针对 DeepSeek 系列模型或启用了思考/推理模式的请求，检查历史中的 assistant 消息。
+	// 针对 DeepSeek 系列模型（如 deepseek-reasoner / R1），检查历史中的 assistant 消息。
 	// 部分上游（如 SiliconFlow / 硅基流动）在多轮对话中严格校验：若存在 assistant 消息，必须包含 reasoning_content。
 	// 标准客户端 SDK（如 ZCode、OpenCode 等）在多轮历史中通常仅保留 role 与 content，未持久化回传 reasoning_content。
 	// 为避免上游报 400 "The `reasoning_content` in the thinking mode must be passed back to the API"，
 	// 对缺少 reasoning_content 的 assistant 消息填充空字符串 ""（经实测符合上游校验规范且不影响上下文生成）。
-	isDeepSeekOrThinking := strings.Contains(strings.ToLower(info.UpstreamModelName), "deepseek") ||
+	isDeepSeekModel := strings.Contains(strings.ToLower(info.UpstreamModelName), "deepseek") ||
 		strings.Contains(strings.ToLower(request.Model), "deepseek") ||
 		strings.Contains(strings.ToLower(info.UpstreamModelName), "r1") ||
-		strings.Contains(strings.ToLower(request.Model), "r1") ||
-		request.ReasoningEffort != "" ||
-		request.THINKING != nil ||
-		len(request.Reasoning) > 0
+		strings.Contains(strings.ToLower(request.Model), "r1")
 
-	if isDeepSeekOrThinking && len(request.Messages) > 0 {
+	if isDeepSeekModel && len(request.Messages) > 0 {
 		var messagesCopy []dto.Message
 		for i, msg := range request.Messages {
 			if msg.Role == "assistant" && msg.ReasoningContent == nil {
@@ -559,6 +570,25 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 					emptyStr := ""
 					messagesCopy[i].ReasoningContent = &emptyStr
 				}
+			}
+		}
+		if messagesCopy != nil {
+			request.Messages = messagesCopy
+		}
+	} else if !isDeepSeekModel && len(request.Messages) > 0 {
+		// 非 DeepSeek 模型（如 GLM、GPT、Claude 等）：OpenAI 标准规范中 assistant 消息
+		// 不包含 reasoning_content 字段。若客户端在多轮对话中回传了该字段，部分严格校验
+		// 的上游（如 GLM、Zhipu API、部分中继站等）会直接报 400 Bad Request。
+		// 必须清理历史 assistant 消息中的 reasoning_content 与 reasoning，确保符合标准 OpenAI 规范。
+		var messagesCopy []dto.Message
+		for i, msg := range request.Messages {
+			if msg.Role == "assistant" && (msg.ReasoningContent != nil || msg.Reasoning != nil) {
+				if messagesCopy == nil {
+					messagesCopy = make([]dto.Message, len(request.Messages))
+					copy(messagesCopy, request.Messages)
+				}
+				messagesCopy[i].ReasoningContent = nil
+				messagesCopy[i].Reasoning = nil
 			}
 		}
 		if messagesCopy != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/dto"
+	"github.com/dengyie/apihub/i18n"
 	"github.com/dengyie/apihub/logger"
 	"github.com/dengyie/apihub/model"
 	pluginruntime "github.com/dengyie/apihub/pkg/jsplugin"
@@ -327,7 +328,13 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 		if err != nil {
 			if _, _, protocolPath := pluginruntime.LookupHostProtocolOperation(c.Request.Method, c.Request.URL.Path); protocolPath {
 				// 400 出口必须留痕：该错误在 2026-10-12 排障时因零日志无法
-				// 区分「body 解析失败」与「插件桥上游拒绝」，多耗一轮取证
+				// 区分「body 解析失败」与「插件桥上游拒绝」，多耗一轮取证。
+				// 客户端上传中断（unexpected EOF 等）另归 408，不算请求缺陷。
+				if isRequestBodyAbort(c, err) {
+					logger.LogWarn(c, fmt.Sprintf("task_plugin subsystem=endpoint event=pin_rejected reason=client_upload_aborted err=%q path=%s", err.Error(), c.Request.URL.Path))
+					abortWithOpenAiMessage(c, http.StatusRequestTimeout, i18n.T(c, i18n.MsgDistributorRequestBodyIncomplete, map[string]any{"Error": err.Error()}), types.ErrorCodeClientAborted)
+					return
+				}
 				logger.LogWarn(c, fmt.Sprintf("task_plugin subsystem=endpoint event=pin_rejected reason=model_parse_error err=%q path=%s", err.Error(), c.Request.URL.Path))
 				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
 				return

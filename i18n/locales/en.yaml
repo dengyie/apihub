@@ -274,6 +274,7 @@ common.invalid_input: "Invalid input"
 
 # Distributor messages
 distributor.invalid_request: "Invalid request: {{.Error}}"
+distributor.request_body_incomplete: "The request body was cut off before it was fully received (client upload interrupted), please retry: {{.Error}}"
 distributor.invalid_channel_id: "Invalid channel ID"
 distributor.channel_disabled: "This channel has been disabled"
 distributor.affinity_channel_disabled: "The channel selected by channel affinity has been disabled, and retry was stopped by rule. Please contact the administrator"

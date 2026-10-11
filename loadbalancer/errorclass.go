@@ -332,14 +332,18 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 		typeStr := strings.ToLower(oe.Type)
 		if strings.Contains(typeStr, "upstream_error") ||
 			strings.Contains(typeStr, "one_api_error") ||
-			strings.Contains(typeStr, "new_api_error") {
+			strings.Contains(typeStr, "new_api_error") ||
+			strings.Contains(typeStr, "pm_api_error") ||
+			strings.Contains(typeStr, "gateway_error") {
 			return true
 		}
 	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
 		typeStr := strings.ToLower(poe.Type)
 		if strings.Contains(typeStr, "upstream_error") ||
 			strings.Contains(typeStr, "one_api_error") ||
-			strings.Contains(typeStr, "new_api_error") {
+			strings.Contains(typeStr, "new_api_error") ||
+			strings.Contains(typeStr, "pm_api_error") ||
+			strings.Contains(typeStr, "gateway_error") {
 			return true
 		}
 	}

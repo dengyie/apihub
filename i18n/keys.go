@@ -323,6 +323,7 @@ const (
 // Distributor related messages
 const (
 	MsgDistributorInvalidRequest               = "distributor.invalid_request"
+	MsgDistributorRequestBodyIncomplete        = "distributor.request_body_incomplete"
 	MsgDistributorInvalidChannelId             = "distributor.invalid_channel_id"
 	MsgDistributorChannelDisabled              = "distributor.channel_disabled"
 	MsgDistributorAffinityChannelDisabled      = "distributor.affinity_channel_disabled"

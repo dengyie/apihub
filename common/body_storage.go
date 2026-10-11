@@ -156,7 +156,7 @@ func newDiskStorage(data []byte, cachePath string) (*diskStorage, error) {
 	}, nil
 }
 
-func newDiskStorageFromReader(reader io.Reader, maxBytes int64, cachePath string) (*diskStorage, error) {
+func newDiskStorageFromReader(reader io.Reader, maxBytes int64, contentLength int64, cachePath string) (*diskStorage, error) {
 	// 使用统一的缓存目录管理
 	filePath, file, err := CreateDiskCacheFile(DiskCacheTypeBody)
 	if err != nil {
@@ -168,7 +168,7 @@ func newDiskStorageFromReader(reader io.Reader, maxBytes int64, cachePath string
 	if err != nil {
 		file.Close()
 		os.Remove(filePath)
-		return nil, fmt.Errorf("failed to write to temp file: %w", err)
+		return nil, WrapRequestBodyReadError(err, written, contentLength)
 	}
 
 	if written > maxBytes {
@@ -312,7 +312,7 @@ func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes
 		contentLength > 0 &&
 		contentLength >= threshold &&
 		IsDiskCacheAvailable(contentLength) {
-		storage, err := newDiskStorageFromReader(reader, maxBytes, GetDiskCachePath())
+		storage, err := newDiskStorageFromReader(reader, maxBytes, contentLength, GetDiskCachePath())
 		if err != nil {
 			if IsRequestBodyTooLargeError(err) {
 				return nil, err
@@ -325,11 +325,14 @@ func CreateBodyStorageFromReader(reader io.Reader, contentLength int64, maxBytes
 		return storage, nil
 	}
 
-	// 使用内存读取
-	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
-	if err != nil {
-		return nil, err
+	// 使用内存读取。io.ReadAll 在出错时丢弃已读数据，而截断诊断（收到多少
+	// / 声明多少）恰恰依赖那部分字节，因此用带计数的拷贝替代。
+	var buffer bytes.Buffer
+	received, readErr := io.Copy(&buffer, io.LimitReader(reader, maxBytes+1))
+	if readErr != nil {
+		return nil, WrapRequestBodyReadError(readErr, received, contentLength)
 	}
+	data := buffer.Bytes()
 	if int64(len(data)) > maxBytes {
 		return nil, ErrRequestBodyTooLarge
 	}
