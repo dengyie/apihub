@@ -236,3 +236,37 @@ func TestBreakerTripChainYieldsToThresholdTrip(t *testing.T) {
 	assert.Equal(t, 1, f.tripLogCount(), "阈值已熔断，显式分支让位：不产生第二次常规熔断")
 	assert.Contains(t, f.logs.String(), "不重复递增退避", "让位必须留痕，否则 tripCount 的账目无法对账")
 }
+
+// TestBreakerNonHardFailureDoesNotResetBreakerCounters 钉住：
+// 400 参数格式错误或 429 短暂限流不属于硬故障，但决不能调用 End(false, false)
+// 将渠道已累积的连续失败计数与递增退避倍数清零（洗白）。
+func TestBreakerNonHardFailureDoesNotResetBreakerCounters(t *testing.T) {
+	ch := 7795
+	p := breakerTripTestPolicy()
+	p.Default.Breaker.FailureThreshold = 3
+	loadbalancer.SetPolicy(p)
+	t.Cleanup(func() {
+		loadbalancer.SetPolicy(breakerTripTestPolicy())
+		loadbalancer.GlobalTracker().ResetChannelBreakers(ch)
+	})
+
+	tr := loadbalancer.GlobalTracker()
+	modelName := "trip-test-model"
+
+	// 模拟已发生 2 次真实硬失败（阈值为 3）
+	tr.Begin(ch, modelName).End(false, true)
+	tr.Begin(ch, modelName).End(false, true)
+
+	// 第 3 次请求遭遇 400 参数格式错误：应走 EndCancelled 归还资源
+	h := tr.Begin(ch, modelName)
+	assert.Equal(t, 1, tr.Inflight(ch))
+	h.EndCancelled()
+	assert.Equal(t, 0, tr.Inflight(ch))
+
+	// 再来一次硬故障，此时累计失败达到 3 次，必须立即触发熔断
+	tr.Begin(ch, modelName).End(false, true)
+	ok, reason := tr.IsAvailable(ch, modelName)
+	assert.False(t, ok, "累积 3 次硬失败后渠道必须熔断，中间的 400 绝不能洗白此前累积的 2 次失败")
+	assert.Equal(t, loadbalancer.ReasonCircuitOpen, reason)
+}
+

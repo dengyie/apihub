@@ -313,9 +313,10 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 		param.ExcludedIDs = excluded
 	}
 
+	candidates := newChannelCandidates(param)
 	tracker := loadbalancer.GlobalTracker()
 	for {
-		channel, selectGroup, err := CacheGetRandomSatisfiedChannel(param)
+		channel, selectGroup, err := candidates.resolve()
 		if err != nil {
 			return nil, selectGroup, err
 		}

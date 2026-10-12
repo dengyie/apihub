@@ -442,6 +442,11 @@ func (h *RequestHandle) FailureTripped() bool {
 	return h != nil && h.failureTripped.Load()
 }
 
+// Done 报告句柄是否已经完成（已调用 End 或 EndCancelled）。
+func (h *RequestHandle) Done() bool {
+	return h != nil && h.done.Load()
+}
+
 // MarkFirstByte 记录首字到达时间
 func (h *RequestHandle) MarkFirstByte() {
 	if h.firstByte.IsZero() {

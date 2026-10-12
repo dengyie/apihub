@@ -392,3 +392,93 @@ func TestDecideRelayRetryReasoningHydrationError(t *testing.T) {
 	assert.Equal(t, "retry", got.Action)
 	assert.Equal(t, "reasoning_hydration_failed", got.Reason)
 }
+
+func TestEvaluateRelayFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("nil error gives request_completed and breaker_none", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		decision := EvaluateRelayFailure(c, nil, 3)
+		assert.Equal(t, "stop", decision.PolicyDecision.Action)
+		assert.Equal(t, "request_completed", decision.PolicyDecision.Reason)
+		assert.Equal(t, BreakerNone, decision.BreakerEffect)
+	})
+
+	t.Run("rate limit 429 produces breaker_rate_limit and retry", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("rate limit reached"), types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, BreakerRateLimit, decision.BreakerEffect)
+		assert.False(t, decision.IsPreStreamNonTTFT, "rate limit is not treated as pre-stream non-TTFT failure")
+	})
+
+	t.Run("curfew 403 sets BreakerCurfew and CurfewUntil", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("system_curfew: 00:00-8:00 账号宵禁"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, BreakerCurfew, decision.BreakerEffect)
+		assert.False(t, decision.CurfewUntil.IsZero())
+	})
+
+	t.Run("unsupported param extracts learned param and retries", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("unsupported parameter: reasoning_effort"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, "reasoning_effort", decision.LearnedParam)
+		assert.False(t, decision.IsPreStreamNonTTFT, "400 is excluded from pre-stream non-TTFT failure")
+	})
+
+	t.Run("max completion tokens limit extracts learned limit", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("max_completion_tokens is too large: 384000. This model supports at most 262144 completion tokens."), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, "max_completion_tokens_clamped", decision.PolicyDecision.Reason)
+		assert.Equal(t, uint(262144), decision.LearnedLimit)
+	})
+
+	t.Run("reasoning hydration error flags StripResponsesReasoning", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("reasoning hydration failed: Encrypted content could not be decrypted"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.True(t, decision.StripResponsesReasoning)
+	})
+
+	t.Run("stream broken sets BreakerStreamBroken and IsPreStreamNonTTFT false", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewErrorWithStatusCode(&loadbalancer.StreamBrokenError{ChannelID: 10, Reason: "connection reset"}, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, BreakerStreamBroken, decision.BreakerEffect)
+		assert.False(t, decision.IsPreStreamNonTTFT)
+	})
+
+	t.Run("upstream quota exhausted sets BreakerQuota", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("credit insufficient balance: balance=0"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, BreakerQuota, decision.BreakerEffect)
+	})
+
+	t.Run("pre-stream non-TTFT 502 correctly identified", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("upstream gateway crashed"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.True(t, decision.IsPreStreamNonTTFT)
+	})
+}
+
+func TestDecideTaskRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	assert.Equal(t, "request_completed", DecideTaskRetry(c, nil, 3).Reason)
+	assert.Equal(t, "task_accepted", DecideTaskRetry(c, &dto.TaskError{NoRetry: true}, 3).Reason)
+	assert.Equal(t, "retry", DecideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusTooManyRequests}, 3).Action)
+	assert.Equal(t, "retry", DecideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusBadGateway}, 3).Action)
+	assert.Equal(t, "curfew_retry", DecideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusForbidden, Message: "system_curfew"}, 3).Reason)
+	assert.Equal(t, "attempt_budget_exhausted", DecideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusForbidden, Message: "system_curfew"}, 0).Reason)
+}

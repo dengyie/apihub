@@ -818,7 +818,60 @@ func TestStreamScannerHandler_SSEKeepAliveCommentsIgnored(t *testing.T) {
 		receivedData = append(receivedData, data)
 	})
 
-	assert.Equal(t, 1, info.ReceivedResponseCount, "心跳注释帧不得计入有效响应块数")
-	assert.Equal(t, []string{"{\"text\":\"hi\"}"}, receivedData, "心跳注释帧不得分发给业务 handler")
-	assert.True(t, info.StreamStatus.IsNormalEnd())
-}
+		assert.Equal(t, 1, info.ReceivedResponseCount, "心跳注释帧不得计入有效响应块数")
+		assert.Equal(t, []string{"{\"text\":\"hi\"}"}, receivedData, "心跳注释帧不得分发给业务 handler")
+		assert.True(t, info.StreamStatus.IsNormalEnd())
+	}
+
+	func TestStreamScannerHandler_ClientAbortDoesNotResetBreakerCounters(t *testing.T) {
+		prevPolicy := loadbalancer.GetPolicy()
+		p := loadbalancer.DefaultPolicy()
+		p.Enabled = true
+		p.Default.Breaker.FailureThreshold = 3
+		loadbalancer.SetPolicy(p)
+		t.Cleanup(func() { loadbalancer.SetPolicy(prevPolicy) })
+
+		testChannelID := 9988
+		testModel := "gpt-4"
+
+		// 模拟该渠道此前已有 2 次硬故障
+		loadbalancer.GlobalTracker().Begin(testChannelID, testModel).End(false, true)
+		loadbalancer.GlobalTracker().Begin(testChannelID, testModel).End(false, true)
+
+		// 验证前置状态：连续失败计数为 2
+		avail, _ := loadbalancer.GlobalTracker().IsAvailable(testChannelID, testModel)
+		require.True(t, avail)
+
+		c, resp, info := setupBlockingStreamTest(t)
+		info.ChannelId = testChannelID
+		info.OriginModelName = testModel
+
+		// 模拟外层 controller 传入的 lbAttempt
+		controllerAttempt := loadbalancer.GlobalTracker().Begin(testChannelID, testModel)
+		c.Set(loadbalancer.ContextKeyAttempt, controllerAttempt)
+
+		ctx, cancel := context.WithCancel(c.Request.Context())
+		c.Request = c.Request.WithContext(ctx)
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+
+		err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+		require.NoError(t, err)
+		assert.True(t, info.StreamStatus.IsClientAbort())
+
+		// scanner 结束之后，外层 controller 句柄绝不能已被 End(false, false) 误标记为完成，
+		// 必须交由 controller 判定
+		assert.False(t, controllerAttempt.Done(), "由 controller 托管的句柄在客户端断开时不得被 scanner 抢先关闭")
+
+		// 模拟外层 controller 对普通取消调用 EndCancelled
+		controllerAttempt.EndCancelled()
+
+		// 再次触发一次硬故障（第 3 次），应当成功触发阈值熔断（因为历史 2 次失败绝不能被洗白）
+		loadbalancer.GlobalTracker().Begin(testChannelID, testModel).End(false, true)
+		availAfter, reason := loadbalancer.GlobalTracker().IsAvailable(testChannelID, testModel)
+		assert.False(t, availAfter, "历史失败未被洗白，第 3 次硬故障必须如期触发熔断")
+		assert.Equal(t, loadbalancer.ReasonCircuitOpen, reason)
+	}
+

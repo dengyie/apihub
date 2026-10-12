@@ -11,12 +11,10 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
-	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
 	"github.com/dengyie/apihub/relay/channel"
 	"github.com/dengyie/apihub/relay/channel/ai360"
@@ -34,7 +32,6 @@ import (
 	"github.com/dengyie/apihub/service"
 	"github.com/dengyie/apihub/setting/model_setting"
 	"github.com/dengyie/apihub/setting/reasoning"
-	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -250,82 +247,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 }
 
 // stripOpenAIParam 按参数名裁剪 GeneralOpenAIRequest 的对应字段。
-// 用于上游不支持某些可选参数的渠道，避免 400 透传给客户端。
+// 转发至 StripOpenAIParam。
 func stripOpenAIParam(request *dto.GeneralOpenAIRequest, param string) {
-	switch param {
-	case "thinking":
-		request.THINKING = nil
-	case "reasoning_effort":
-		request.ReasoningEffort = ""
-	case "reasoning":
-		request.Reasoning = nil
-	case "stream_options":
-		request.StreamOptions = nil
-	case "response_format":
-		request.ResponseFormat = nil
-	case "tools":
-		request.Tools = nil
-	case "tool_choice":
-		request.ToolChoice = nil
-	case "parallel_tool_calls":
-		request.ParallelTooCalls = nil
-	case "logprobs":
-		request.LogProbs = nil
-	case "top_logprobs":
-		request.TopLogProbs = nil
-	case "seed":
-		request.Seed = nil
-	case "user":
-		request.User = nil
-	case "metadata":
-		request.Metadata = nil
-	case "store":
-		request.Store = nil
-	case "service_tier":
-		request.ServiceTier = nil
-	case "safety_identifier":
-		request.SafetyIdentifier = nil
-	case "enable_thinking":
-		request.EnableThinking = nil
-	case "thinking_budget":
-		request.ThinkingBudget = nil
-	case "web_search_options":
-		request.WebSearchOptions = nil
-	case "modalities":
-		request.Modalities = nil
-	case "audio":
-		request.Audio = nil
-	case "prediction":
-		request.Prediction = nil
-		case "extra_body":
-			request.ExtraBody = nil
-		case "verbosity":
-			request.Verbosity = nil
-		case "max_completion_tokens":
-			if request.MaxCompletionTokens != nil && request.MaxTokens == nil {
-				request.MaxTokens = request.MaxCompletionTokens
-			}
-			request.MaxCompletionTokens = nil
-		case "max_tokens":
-			if request.MaxTokens != nil && request.MaxCompletionTokens == nil {
-				request.MaxCompletionTokens = request.MaxTokens
-			}
-			request.MaxTokens = nil
-		case "reasoning_content":
-		copied := false
-		for i, msg := range request.Messages {
-			if msg.Role == "assistant" && (msg.ReasoningContent != nil || msg.Reasoning != nil) {
-				if !copied {
-					messagesCopy := make([]dto.Message, len(request.Messages))
-					copy(messagesCopy, request.Messages)
-					request.Messages = messagesCopy
-					copied = true
-				}
-				request.Messages[i].ReasoningContent = nil
-				request.Messages[i].Reasoning = nil
-			}
-		}
-	}
+	StripOpenAIParam(request, param)
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
@@ -336,27 +260,13 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	reqCopy := *request
 	request = &reqCopy
 
-	// 规范化 reasoning_effort：标准 OpenAI 仅支持 low / medium / high（以及部分模型的 minimal）。
-	// 客户端（如 ZCode 的 Thought Level Max）常传入 max 或 xhigh，统一规范化为 high，
-	// 避免上游渠道报 400 (level "max" not supported, valid levels: low, medium, high)。
-	if request.ReasoningEffort != "" {
-		effort := strings.ToLower(strings.TrimSpace(request.ReasoningEffort))
-		switch effort {
-		case "max", "xhigh":
-			request.ReasoningEffort = "high"
-		default:
-			request.ReasoningEffort = effort
-		}
-	}
+		// 规范化 reasoning_effort：标准 OpenAI 仅支持 low / medium / high（以及部分模型的 minimal）。
+		NormalizeReasoningEffort(request)
 
-	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
-	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
-	for _, param := range loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName) {
-		stripOpenAIParam(request, param)
-	}
-	if info.ChannelType != constant.ChannelTypeOpenAI && info.ChannelType != constant.ChannelTypeAzure {
-		request.StreamOptions = nil
-	}
+		// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
+		// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
+		StripUnsupportedParams(request, info.ChannelId, info.OriginModelName, info)
+		SanitizeProtocolStreamOptions(request, info.ChannelType)
 	// Nested reasoning is an OpenRouter-compatible input dialect and needs
 	// projection even without a protocol conversion hop. Native top-level
 	// reasoning_effort stays untouched unless a modifier or conversion applies.
@@ -519,118 +429,14 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			request.ReasoningEffort = effortStr
 			info.SetReasoningEffort(effortStr)
 		}
-		if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
-			request.Reasoning = nil
-		}
-	}
-
-	capabilities := dto.GetOpenAIChatCapabilities(info.UpstreamModelName, info.ReasoningEffort)
-	if capabilities.UseMaxCompletionTokens {
-		if lo.FromPtrOr(request.MaxCompletionTokens, uint(0)) == 0 && lo.FromPtrOr(request.MaxTokens, uint(0)) != 0 {
-			request.MaxCompletionTokens = request.MaxTokens
-			request.MaxTokens = nil
-		}
-	}
-	// 把 max_completion_tokens / max_tokens 钳到该渠道该上游模型的已知上限。
-	//
-	// 上游对超限一律回 400，上游自述的上限已在 service.ProcessChannelError 里
-	// 学到手（那里拿得到实际发出去的模型名）。上限未知时完全不动作，已知且
-	// 请求更大时才钳，因此正常请求的出站报文不受影响。
-	//
-	// 键必须是 info.UpstreamModelName（映射/后缀剥离之后的名字），与记录侧
-	// 是同一个字符串；换成 OriginModelName 或客户端请求名就会与记录侧分叉，
-	// 钳制永远命中不了。
-	if v := lo.FromPtrOr(request.MaxCompletionTokens, uint(0)); v > 0 {
-		request.MaxCompletionTokens = lo.ToPtr(loadbalancer.ClampMaxCompletionTokens(info.ChannelId, info.UpstreamModelName, v))
-	}
-	if v := lo.FromPtrOr(request.MaxTokens, uint(0)); v > 0 {
-		request.MaxTokens = lo.ToPtr(loadbalancer.ClampMaxCompletionTokens(info.ChannelId, info.UpstreamModelName, v))
-	}
-	if !capabilities.SupportsTemperature {
-		request.Temperature = nil
-	}
-	if !capabilities.SupportsTopP {
-		request.TopP = nil
-	}
-	if !capabilities.SupportsLogProbs {
-		request.LogProbs = nil
-		request.TopLogProbs = nil
-	}
-		// 针对 DeepSeek 系列模型（如 deepseek-reasoner / R1），检查历史中的 assistant 消息。
-		// 部分上游（如 SiliconFlow / 硅基流动）在多轮对话中严格校验：若存在 assistant 消息，必须包含 reasoning_content。
-		// 标准客户端 SDK（如 ZCode、OpenCode 等）在多轮历史中通常仅保留 role 与 content，未持久化回传 reasoning_content。
-		// 为避免上游报 400 "The `reasoning_content` in the thinking mode must be passed back to the API"，
-		// 对缺少 reasoning_content 的 assistant 消息填充空字符串 ""（经实测符合上游校验规范且不影响上下文生成）。
-		//
-		// 注意：判据必须以**最终发往上游的目标模型** (info.UpstreamModelName) 为准！
-		// 若渠道配置了模型映射（如 deepseek-v4-flash 映射到 z-ai/glm-5.3-flash 或 gpt-4o），
-		// 上游接收端并非 DeepSeek，绝不能依据客户端请求名误判注入 reasoning_content，
-		// 否则 GLM/Claude/GPT 等严格校验的上游会直接报 400 Bad Request（2026-10 实证）。
-		targetModel := request.Model
-		if info != nil && info.UpstreamModelName != "" {
-			targetModel = info.UpstreamModelName
-		}
-		targetModelLower := strings.ToLower(targetModel)
-		isDeepSeekModel := strings.Contains(targetModelLower, "deepseek") || strings.Contains(targetModelLower, "r1")
-
-	if isDeepSeekModel && len(request.Messages) > 0 {
-		var messagesCopy []dto.Message
-		for i, msg := range request.Messages {
-			if msg.Role == "assistant" && msg.ReasoningContent == nil {
-				if messagesCopy == nil {
-					messagesCopy = make([]dto.Message, len(request.Messages))
-					copy(messagesCopy, request.Messages)
-				}
-				if msg.Reasoning != nil {
-					messagesCopy[i].ReasoningContent = msg.Reasoning
-				} else {
-					emptyStr := ""
-					messagesCopy[i].ReasoningContent = &emptyStr
-				}
+			if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
+				request.Reasoning = nil
 			}
 		}
-		if messagesCopy != nil {
-			request.Messages = messagesCopy
-		}
-	} else if !isDeepSeekModel && len(request.Messages) > 0 {
-		// 非 DeepSeek 模型（如 GLM、GPT、Claude 等）：OpenAI 标准规范中 assistant 消息
-		// 不包含 reasoning_content 字段。若客户端在多轮对话中回传了该字段，部分严格校验
-		// 的上游（如 GLM、Zhipu API、部分中继站等）会直接报 400 Bad Request。
-		// 必须清理历史 assistant 消息中的 reasoning_content 与 reasoning，确保符合标准 OpenAI 规范。
-		var messagesCopy []dto.Message
-		for i, msg := range request.Messages {
-			if msg.Role == "assistant" && (msg.ReasoningContent != nil || msg.Reasoning != nil) {
-				if messagesCopy == nil {
-					messagesCopy = make([]dto.Message, len(request.Messages))
-					copy(messagesCopy, request.Messages)
-				}
-				messagesCopy[i].ReasoningContent = nil
-				messagesCopy[i].Reasoning = nil
-			}
-		}
-		if messagesCopy != nil {
-			request.Messages = messagesCopy
-		}
-	}
 
-	if capabilities.UseDeveloperRole && len(request.Messages) > 0 && request.Messages[0].Role == "system" {
-		messagesCopy := make([]dto.Message, len(request.Messages))
-		copy(messagesCopy, request.Messages)
-		messagesCopy[0].Role = "developer"
-		request.Messages = messagesCopy
+		PostIntentSanitizeRequest(request, info)
+		return request, nil
 	}
-
-	// 智能负载参数裁剪：确保在所有推理意图/前缀推导完成后，
-	// 若该渠道需要裁剪参数（如 reasoning_effort、thinking 等），最终出站请求必定已裁剪。
-	for _, param := range loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName) {
-		stripOpenAIParam(request, param)
-	}
-	if slices.Contains(loadbalancer.GetStripParams(info.ChannelId, info.OriginModelName), "reasoning_effort") {
-		info.SetReasoningEffort("")
-	}
-
-	return request, nil
-}
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
 	return request, nil

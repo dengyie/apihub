@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/dto"
 	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
 	"github.com/dengyie/apihub/model"
@@ -18,6 +21,154 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 )
+
+// BreakerEffectType 表示失败对熔断器产生的显式效应类型。
+type BreakerEffectType string
+
+const (
+	BreakerNone             BreakerEffectType = "none"
+	BreakerRateLimit        BreakerEffectType = "rate_limit"
+	BreakerCurfew           BreakerEffectType = "curfew"
+	BreakerEOL              BreakerEffectType = "eol"
+	BreakerStreamBroken     BreakerEffectType = "stream_broken"
+	BreakerQuota            BreakerEffectType = "quota"
+	BreakerRouting          BreakerEffectType = "routing"
+	BreakerThinkingHistory  BreakerEffectType = "thinking_history"
+	BreakerModelUnavailable BreakerEffectType = "model_unavailable"
+	BreakerPermission       BreakerEffectType = "permission"
+	BreakerRelay            BreakerEffectType = "relay"
+)
+
+// FailureDecision 是网关层对单次上游失败的完整结构化评定结果：
+// 包含重试决策 (PolicyDecision)、熔断效应 (BreakerEffect)、自愈参数信息与预流硬故障标志。
+type FailureDecision struct {
+	PolicyDecision          PolicyDecision
+	BreakerEffect           BreakerEffectType
+	CurfewUntil             time.Time
+	LearnedParam            string
+	LearnedLimit            uint
+	StripResponsesReasoning bool
+	IsPreStreamNonTTFT      bool
+}
+
+// ClassifyBreakerEffect 对上游错误执行严格特异性排序的熔断分类（防多重熔断）。
+func ClassifyBreakerEffect(err *types.NewAPIError) (BreakerEffectType, time.Time) {
+	if err == nil {
+		return BreakerNone, time.Time{}
+	}
+	if loadbalancer.IsUpstreamRateLimitError(err) {
+		return BreakerRateLimit, time.Time{}
+	}
+	if loadbalancer.IsCurfewError(err) {
+		return BreakerCurfew, loadbalancer.CurfewEndTime(time.Now())
+	}
+	if loadbalancer.IsEOLError(err) {
+		return BreakerEOL, time.Time{}
+	}
+	if loadbalancer.IsStreamBroken(err) {
+		return BreakerStreamBroken, time.Time{}
+	}
+	if loadbalancer.IsUpstreamQuotaError(err) {
+		return BreakerQuota, time.Time{}
+	}
+	if loadbalancer.IsUpstreamRoutingError(err) {
+		return BreakerRouting, time.Time{}
+	}
+	if loadbalancer.IsThinkingModeHistoryError(err) {
+		return BreakerThinkingHistory, time.Time{}
+	}
+	if loadbalancer.IsUpstreamModelUnavailableError(err) {
+		return BreakerModelUnavailable, time.Time{}
+	}
+	if loadbalancer.IsUpstreamPermissionError(err) {
+		return BreakerPermission, time.Time{}
+	}
+	if loadbalancer.IsUpstreamRelayError(err) {
+		return BreakerRelay, time.Time{}
+	}
+	return BreakerNone, time.Time{}
+}
+
+// EvaluateRelayFailure 执行单次评定、多维输出的完整容灾评定。
+func EvaluateRelayFailure(c *gin.Context, err *types.NewAPIError, retryTimes int) FailureDecision {
+	decision := FailureDecision{
+		PolicyDecision: DecideRelayRetry(c, err, retryTimes),
+		BreakerEffect:  BreakerNone,
+	}
+	if err == nil {
+		return decision
+	}
+
+	decision.BreakerEffect, decision.CurfewUntil = ClassifyBreakerEffect(err)
+
+	if param, ok := loadbalancer.IsParamNotSupportedError(err); ok {
+		decision.LearnedParam = param
+	}
+	if limit, ok := loadbalancer.ParseMaxCompletionTokensLimit(err); ok {
+		decision.LearnedLimit = limit
+	}
+	if loadbalancer.IsReasoningHydrationError(err) {
+		decision.StripResponsesReasoning = true
+	}
+
+	decision.IsPreStreamNonTTFT = err.StatusCode != 400 &&
+		!loadbalancer.IsTTFTTimeout(err) &&
+		!loadbalancer.IsEmptyStream(err) &&
+		!loadbalancer.IsEmptyStreamBudget(err) &&
+		!loadbalancer.IsStreamBroken(err) &&
+		!loadbalancer.IsUpstreamRateLimitError(err) &&
+		!types.IsClientAbortedError(err)
+
+	return decision
+}
+
+// DecideTaskRetry is the single retry decision for task submissions.
+func DecideTaskRetry(c *gin.Context, taskErr *dto.TaskError, retryTimes int) PolicyDecision {
+	stop := PolicyDecision{Action: "stop", Source: "system"}
+	retry := PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "system"}
+	switch {
+	// 宵禁 403 换渠道重试（不能直接返回给客户端），但仍受重试预算约束，
+	// 避免所有渠道都宵禁时无限循环。
+	case taskErr != nil && taskErr.StatusCode == 403 &&
+		(strings.Contains(taskErr.Message, "system_curfew") || strings.Contains(taskErr.Message, "宵禁")):
+		if retryTimes <= 0 {
+			stop.Reason, stop.Source = "attempt_budget_exhausted", "global"
+			return stop
+		}
+		retry.Reason = "curfew_retry"
+		return retry
+	case taskErr == nil:
+		stop.Reason = "request_completed"
+	case taskErr.NoRetry:
+		stop.Reason = "task_accepted"
+	case ShouldSkipRetryAfterChannelAffinityFailure(c):
+		stop.Reason, stop.Source = "strict_session", "session_rule"
+		if source := RequestPolicy(c).SessionModeSource; source != "" {
+			stop.Source = source
+		}
+	case retryTimes <= 0:
+		stop.Reason, stop.Source = "attempt_budget_exhausted", "global"
+	case GetChannelConstraints(c).SuppressesRetry():
+		stop.Reason, stop.Source = "pinned_channel", "channel_constraint"
+	case taskErr.StatusCode == http.StatusTooManyRequests, taskErr.StatusCode == 307:
+		return retry
+	case taskErr.StatusCode/100 == 5:
+		if operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) {
+			stop.Reason = "system_retry_exclusion"
+			break
+		}
+		return retry
+	case taskErr.StatusCode == http.StatusBadRequest, taskErr.StatusCode == 408:
+		stop.Reason = "status_not_retryable"
+	case taskErr.LocalError:
+		stop.Reason = "local_rejection"
+	case taskErr.StatusCode/100 == 2:
+		stop.Reason = "system_retry_exclusion"
+	default:
+		return retry
+	}
+	return stop
+}
 
 // IsClientAbort 判断本次失败是否由客户端主动断开引起。
 //
