@@ -240,28 +240,43 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 	}
 
-	forceFormat := false
-	if info.ChannelSetting.ForceFormat {
-		forceFormat = true
-	}
+		forceFormat := false
+		if info.ChannelSetting.ForceFormat {
+			forceFormat = true
+		}
 
-	usageModified := false
-	if simpleResponse.Usage.PromptTokens == 0 {
-		completionTokens := simpleResponse.Usage.CompletionTokens
-		if completionTokens == 0 {
-			for _, choice := range simpleResponse.Choices {
-				ctkm := service.CountTextToken(choice.Message.StringContent()+choice.Message.GetReasoningContent(), info.UpstreamModelName)
-				completionTokens += ctkm
+		usageModified := false
+		if simpleResponse.Usage.PromptTokens == 0 {
+			completionTokens := simpleResponse.Usage.CompletionTokens
+			if completionTokens == 0 {
+				for _, choice := range simpleResponse.Choices {
+					ctkm := service.CountTextToken(choice.Message.StringContent()+choice.Message.GetReasoningContent(), info.UpstreamModelName)
+					completionTokens += ctkm
+				}
+			}
+			fallbackUsage := &dto.Usage{
+				PromptTokens:     info.GetEstimatePromptTokens(),
+				CompletionTokens: completionTokens,
+				TotalTokens:      info.GetEstimatePromptTokens() + completionTokens,
+			}
+			simpleResponse.Usage = *fallbackUsage
+			usageModified = true
+		}
+
+		if ShouldApplyReasoningAsContent(info) {
+			for i := range simpleResponse.Choices {
+				msg := &simpleResponse.Choices[i].Message
+				reasoning := msg.GetReasoningContent()
+				if reasoning != "" {
+					msg.ReasoningContent = nil
+					msg.Reasoning = nil
+					if msg.StringContent() == "" {
+						msg.SetStringContent(reasoning)
+					}
+					forceFormat = true
+				}
 			}
 		}
-		fallbackUsage := &dto.Usage{
-			PromptTokens:     info.GetEstimatePromptTokens(),
-			CompletionTokens: completionTokens,
-			TotalTokens:      info.GetEstimatePromptTokens() + completionTokens,
-		}
-		simpleResponse.Usage = *fallbackUsage
-		usageModified = true
-	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
 

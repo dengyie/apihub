@@ -10,15 +10,79 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ShouldApplyReasoningAsContent 判定当前请求是否应当执行 reasoning 转 content 改写。
+// 核心防护不变式：
+//  1. 渠道必须开启了 ChannelSetting.ReasoningAsContent。
+//  2. 原生显式思维链推理模型（如 deepseek-v4-pro、deepseek-r1、deepseek-reasoner、kimi-k3、o1、o3、o4、qwq 等）恒定豁免，
+//     绝不强行将合法的 reasoning_content 拍扁进 content，彻底杜绝多模型聚合渠道中原生推理体验被破坏。
+func ShouldApplyReasoningAsContent(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.ChannelMeta == nil || !info.ChannelSetting.ReasoningAsContent {
+		return false
+	}
+	originModel := strings.ToLower(strings.TrimSpace(info.GetOriginModelName()))
+	upstreamModel := strings.ToLower(strings.TrimSpace(info.GetUpstreamModelName()))
+	if isNativeThinkingReasoningModel(originModel) || isNativeThinkingReasoningModel(upstreamModel) {
+		return false
+	}
+	return true
+}
+
+func isNativeThinkingReasoningModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	// 剥离可能存在的供应商/组织前缀（例如 "deepseek-ai/DeepSeek-V4-Pro" -> "deepseek-v4-pro"）
+	baseModel := model
+	if idx := strings.LastIndex(baseModel, "/"); idx != -1 {
+		baseModel = baseModel[idx+1:]
+	}
+
+	// 显式推理模型后缀（例如 "claude-3-7-sonnet:thinking", "gemini-2.5-flash-thinking-preview"）
+	if strings.HasSuffix(baseModel, "-thinking") ||
+		strings.HasSuffix(baseModel, ":thinking") ||
+		strings.Contains(baseModel, "-thinking-") ||
+		strings.Contains(baseModel, ":thinking-") {
+		return true
+	}
+
+	// DeepSeek 原生思维链系列
+	if strings.HasPrefix(baseModel, "deepseek-v4-pro") ||
+		strings.HasPrefix(baseModel, "deepseek-r1") ||
+		strings.HasPrefix(baseModel, "deepseek-reasoner") {
+		return true
+	}
+
+	// Kimi / Moonshot 思维链系列
+	if strings.HasPrefix(baseModel, "kimi-k3") ||
+		strings.HasPrefix(baseModel, "kimi-k2-thinking") ||
+		strings.HasPrefix(baseModel, "kimi-k2.5-thinking") ||
+		strings.HasPrefix(baseModel, "moonshot-v1-thinking") {
+		return true
+	}
+
+	// OpenAI 原生 o 系列推理模型 (o1, o3, o4 等)
+	if dto.IsOpenAIReasoningOModel(baseModel) {
+		return true
+	}
+
+	// Qwen QwQ 推理系列 (qwq-32b, qwen-qwq-32b, qwen2.5-qwq 等)
+	if strings.HasPrefix(baseModel, "qwq-") || baseModel == "qwq" ||
+		strings.Contains(baseModel, "-qwq-") || strings.HasSuffix(baseModel, "-qwq") {
+		return true
+	}
+
+	return false
+}
+
 // TransformPassthroughStreamFrame 对透传的原始 SSE 数据帧执行管道式链式处理：
-// 1. 若开启 ReasoningAsContent：将 reasoning 字段内容改写合并至 content
+// 1. 若开启 ReasoningAsContent 且当前模型不属于原生思维链模型：将 reasoning 字段内容改写合并至 content
 // 2. 若开启 ThinkTagToReasoning：将内嵌的 <think>...</think> 标签拆分并转为 reasoning_content
 // 3. 始终清洗思考帧上的空 content: "" 字段（防止客户端渲染成逐词独立块）
 func TransformPassthroughStreamFrame(info *relaycommon.RelayInfo, data string) string {
 	if data == "" {
 		return ""
 	}
-	if info != nil && info.ChannelSetting.ReasoningAsContent {
+	if ShouldApplyReasoningAsContent(info) {
 		data = reasoningAsContentFrame(data)
 	}
 	if info != nil && info.ChannelSetting.ThinkTagToReasoning {
@@ -110,7 +174,7 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !thinkToContent {
-		if info != nil && info.ChannelSetting.ReasoningAsContent {
+		if ShouldApplyReasoningAsContent(info) {
 			applyReasoningAsContentToDTO(&lastStreamResponse)
 		}
 		return helper.ObjectData(c, lastStreamResponse)

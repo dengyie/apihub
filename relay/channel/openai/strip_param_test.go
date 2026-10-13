@@ -242,12 +242,12 @@ func TestConvertOpenAIRequest_NormalizesReasoningEffortMaxAndXHigh(t *testing.T)
 			converted, err := adaptor.ConvertOpenAIRequest(nil, info, origRequest)
 			require.NoError(t, err)
 			convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
-				require.True(t, ok)
-				assert.Equal(t, "high", convertedReq.ReasoningEffort)
-				assert.Equal(t, effort, origRequest.ReasoningEffort, "original must not be mutated")
-			})
-		}
+			require.True(t, ok)
+			assert.Equal(t, "high", convertedReq.ReasoningEffort)
+			assert.Equal(t, effort, origRequest.ReasoningEffort, "original must not be mutated")
+		})
 	}
+}
 
 func TestConvertOpenAIRequest_CrossModelMapping_DeepSeekClientModelToGLM_DoesNotInjectReasoningContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)

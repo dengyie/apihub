@@ -131,11 +131,11 @@ func StripUnsupportedParams(request *dto.GeneralOpenAIRequest, channelID int, or
 }
 
 // SanitizeAssistantReasoningHistory 清洗与规范化多轮历史中的 assistant 消息：
-// 1. 针对 DeepSeek 系列模型：若缺少 reasoning_content，填充空字符串 ""，
-//    防止 SiliconFlow 等上游因多轮对话校验严格而报 400
-//    ("The `reasoning_content` in the thinking mode must be passed back to the API")。
-// 2. 针对非 DeepSeek 模型：移除历史 assistant 消息中的 reasoning_content 与 reasoning，
-//    防止 GLM / Claude / GPT 等上游因未定义该字段报 400 Bad Request。
+//  1. 针对 DeepSeek 系列模型：若缺少 reasoning_content，填充空字符串 ""，
+//     防止 SiliconFlow 等上游因多轮对话校验严格而报 400
+//     ("The `reasoning_content` in the thinking mode must be passed back to the API")。
+//  2. 针对非 DeepSeek 模型：移除历史 assistant 消息中的 reasoning_content 与 reasoning，
+//     防止 GLM / Claude / GPT 等上游因未定义该字段报 400 Bad Request。
 //
 // 判据以最终发往上游的目标模型 upstreamModelName 为准。
 func SanitizeAssistantReasoningHistory(request *dto.GeneralOpenAIRequest, upstreamModelName string) {
@@ -261,4 +261,3 @@ func PostIntentSanitizeRequest(request *dto.GeneralOpenAIRequest, info *relaycom
 	SanitizeProtocolStreamOptions(request, info.ChannelType)
 	StripUnsupportedParams(request, info.ChannelId, info.OriginModelName, info)
 }
-

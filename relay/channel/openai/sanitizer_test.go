@@ -241,7 +241,7 @@ func TestSanitizeModelCapabilitiesAndLimits(t *testing.T) {
 			UseMaxCompletionTokens: true,
 			SupportsTemperature:    false,
 			SupportsTopP:           false,
-			SupportsLogProbs:        false,
+			SupportsLogProbs:       false,
 		}
 		temp := 0.7
 		topP := 0.9
@@ -287,54 +287,54 @@ func TestPostIntentSanitizeRequest(t *testing.T) {
 		PostIntentSanitizeRequest(req, info)
 
 		// Non-deepseek removes reasoning_content
-			assert.Nil(t, req.Messages[2].ReasoningContent)
-			// gpt-4o keeps system role (not developer) and supports temperature
-			assert.Equal(t, "system", req.Messages[0].Role)
-			require.NotNil(t, req.Temperature)
-			assert.Equal(t, 0.5, *req.Temperature)
-		})
+		assert.Nil(t, req.Messages[2].ReasoningContent)
+		// gpt-4o keeps system role (not developer) and supports temperature
+		assert.Equal(t, "system", req.Messages[0].Role)
+		require.NotNil(t, req.Temperature)
+		assert.Equal(t, 0.5, *req.Temperature)
+	})
 
-		t.Run("strips stream_options for non-OpenAI non-Azure channels", func(t *testing.T) {
-			req := &dto.GeneralOpenAIRequest{
-				Model: "claude-3-5-sonnet",
-				StreamOptions: &dto.StreamOptions{
-					IncludeUsage: true,
-				},
-			}
-			info := &relaycommon.RelayInfo{
-				ChannelMeta: &relaycommon.ChannelMeta{
-					ChannelId:         300,
-					ChannelType:       constant.ChannelTypeAnthropic,
-					UpstreamModelName: "claude-3-5-sonnet",
-				},
-				OriginModelName: "claude-3-5-sonnet",
-			}
+	t.Run("strips stream_options for non-OpenAI non-Azure channels", func(t *testing.T) {
+		req := &dto.GeneralOpenAIRequest{
+			Model: "claude-3-5-sonnet",
+			StreamOptions: &dto.StreamOptions{
+				IncludeUsage: true,
+			},
+		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelId:         300,
+				ChannelType:       constant.ChannelTypeAnthropic,
+				UpstreamModelName: "claude-3-5-sonnet",
+			},
+			OriginModelName: "claude-3-5-sonnet",
+		}
 
-			PostIntentSanitizeRequest(req, info)
-			assert.Nil(t, req.StreamOptions, "非原生 OpenAI / Azure 渠道必须裁剪 StreamOptions")
-		})
+		PostIntentSanitizeRequest(req, info)
+		assert.Nil(t, req.StreamOptions, "非原生 OpenAI / Azure 渠道必须裁剪 StreamOptions")
+	})
 
-		t.Run("preserves stream_options for OpenAI channel", func(t *testing.T) {
-			req := &dto.GeneralOpenAIRequest{
-				Model: "gpt-4o",
-				StreamOptions: &dto.StreamOptions{
-					IncludeUsage: true,
-				},
-			}
-			info := &relaycommon.RelayInfo{
-				ChannelMeta: &relaycommon.ChannelMeta{
-					ChannelId:         301,
-					ChannelType:       constant.ChannelTypeOpenAI,
-					UpstreamModelName: "gpt-4o",
-				},
-				OriginModelName: "gpt-4o",
-			}
+	t.Run("preserves stream_options for OpenAI channel", func(t *testing.T) {
+		req := &dto.GeneralOpenAIRequest{
+			Model: "gpt-4o",
+			StreamOptions: &dto.StreamOptions{
+				IncludeUsage: true,
+			},
+		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelId:         301,
+				ChannelType:       constant.ChannelTypeOpenAI,
+				UpstreamModelName: "gpt-4o",
+			},
+			OriginModelName: "gpt-4o",
+		}
 
-			PostIntentSanitizeRequest(req, info)
-			require.NotNil(t, req.StreamOptions, "原生 OpenAI 渠道应保留 StreamOptions")
-			assert.True(t, req.StreamOptions.IncludeUsage)
-		})
-	}
+		PostIntentSanitizeRequest(req, info)
+		require.NotNil(t, req.StreamOptions, "原生 OpenAI 渠道应保留 StreamOptions")
+		assert.True(t, req.StreamOptions.IncludeUsage)
+	})
+}
 
 func TestSanitizeProtocolStreamOptions(t *testing.T) {
 	t.Run("nil request does not panic", func(t *testing.T) {
@@ -359,4 +359,3 @@ func TestSanitizeProtocolStreamOptions(t *testing.T) {
 		assert.NotNil(t, req.StreamOptions)
 	})
 }
-

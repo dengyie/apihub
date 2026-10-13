@@ -260,13 +260,13 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	reqCopy := *request
 	request = &reqCopy
 
-		// 规范化 reasoning_effort：标准 OpenAI 仅支持 low / medium / high（以及部分模型的 minimal）。
-		NormalizeReasoningEffort(request)
+	// 规范化 reasoning_effort：标准 OpenAI 仅支持 low / medium / high（以及部分模型的 minimal）。
+	NormalizeReasoningEffort(request)
 
-		// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
-		// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
-		StripUnsupportedParams(request, info.ChannelId, info.OriginModelName, info)
-		SanitizeProtocolStreamOptions(request, info.ChannelType)
+	// 智能负载参数裁剪：该渠道上游不支持某些可选参数时直接去掉，
+	// 而不是把 400 透传给客户端或禁用渠道（对标 CPA 的 payload.filter）。
+	StripUnsupportedParams(request, info.ChannelId, info.OriginModelName, info)
+	SanitizeProtocolStreamOptions(request, info.ChannelType)
 	// Nested reasoning is an OpenRouter-compatible input dialect and needs
 	// projection even without a protocol conversion hop. Native top-level
 	// reasoning_effort stays untouched unless a modifier or conversion applies.
@@ -429,14 +429,14 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			request.ReasoningEffort = effortStr
 			info.SetReasoningEffort(effortStr)
 		}
-			if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
-				request.Reasoning = nil
-			}
+		if info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeAzure {
+			request.Reasoning = nil
 		}
-
-		PostIntentSanitizeRequest(request, info)
-		return request, nil
 	}
+
+	PostIntentSanitizeRequest(request, info)
+	return request, nil
+}
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
 	return request, nil
