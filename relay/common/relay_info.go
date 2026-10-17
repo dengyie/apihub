@@ -68,6 +68,7 @@ type ResponsesUsageInfo struct {
 type ChannelMeta struct {
 	ChannelType          int
 	ChannelId            int
+	ChannelName          string
 	ChannelIsMultiKey    bool
 	ChannelMultiKeyIndex int
 	ChannelBaseUrl       string
@@ -312,6 +313,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelMeta := &ChannelMeta{
 		ChannelType:          channelType,
 		ChannelId:            channelId,
+		ChannelName:          common.GetContextKeyString(c, constant.ContextKeyChannelName),
 		ChannelIsMultiKey:    common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
 		ChannelMultiKeyIndex: common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
 		ChannelBaseUrl:       common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl),
@@ -337,6 +339,9 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if info.ChannelMeta != nil {
 		if channelMeta.ApiKey == "" && info.ChannelMeta.ApiKey != "" {
 			channelMeta.ApiKey = info.ChannelMeta.ApiKey
+		}
+		if channelMeta.ChannelName == "" && info.ChannelMeta.ChannelName != "" {
+			channelMeta.ChannelName = info.ChannelMeta.ChannelName
 		}
 		if channelMeta.ChannelBaseUrl == "" && info.ChannelMeta.ChannelBaseUrl != "" {
 			channelMeta.ChannelBaseUrl = info.ChannelMeta.ChannelBaseUrl

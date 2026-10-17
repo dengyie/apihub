@@ -104,12 +104,53 @@ func TestConvertOpenAIRequest_InjectsReasoningContentForDeepSeekAssistantMessage
 	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
 	require.True(t, ok)
 
-		// Converted request must have non-nil placeholder for assistant reasoning_content
-		require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "assistant message in converted request must have reasoning_content")
-		assert.Equal(t, "...", *convertedReq.Messages[1].ReasoningContent, "assistant reasoning_content should be placeholder string")
+	// Converted request must have non-nil empty string for assistant reasoning_content on standard channels
+	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "assistant message in converted request must have reasoning_content")
+	assert.Equal(t, "", *convertedReq.Messages[1].ReasoningContent, "assistant reasoning_content should be empty string on standard channels")
 
 	// Original request must NOT be mutated
 	assert.Nil(t, origRequest.Messages[1].ReasoningContent, "original request assistant message must remain nil")
+}
+
+func TestConvertOpenAIRequest_AgentRouter_InjectsPlaceholderReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId:         151,
+			ChannelType:       constant.ChannelTypeOpenAI,
+			ChannelName:       "cpa-agentrouter-1",
+			ChannelBaseUrl:    "https://agentrouter.org",
+			UpstreamModelName: "deepseek-v4-flash",
+		},
+		OriginModelName: "deepseek-v4-flash",
+	}
+
+	origMessages := []dto.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"}, // ReasoningContent is nil
+		{Role: "user", Content: "what is 2+2?"},
+	}
+
+	origRequest := &dto.GeneralOpenAIRequest{
+		Model:    "deepseek-v4-flash",
+		Messages: origMessages,
+	}
+
+	adaptor := &Adaptor{}
+	converted, err := adaptor.ConvertOpenAIRequest(c, info, origRequest)
+	require.NoError(t, err)
+	require.NotNil(t, converted)
+
+	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+
+	// AgentRouter upstream requires non-empty placeholder string "..."
+	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "assistant message on AgentRouter must have reasoning_content")
+	assert.Equal(t, "...", *convertedReq.Messages[1].ReasoningContent, "AgentRouter assistant reasoning_content should be placeholder string")
 }
 
 func TestConvertOpenAIRequest_PreservesExplicitReasoningContent(t *testing.T) {
@@ -321,9 +362,9 @@ func TestConvertOpenAIRequest_CrossModelMapping_ClaudeClientModelToDeepSeek_Inje
 	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
 	require.True(t, ok)
 
-		// Upstream target is DeepSeek, so reasoning_content MUST be injected as placeholder
-		require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "mapped DeepSeek upstream target must have reasoning_content injected")
-		assert.Equal(t, "...", *convertedReq.Messages[1].ReasoningContent)
+	// Upstream target is DeepSeek on standard channel, so reasoning_content MUST be injected as empty string
+	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "mapped DeepSeek upstream target must have reasoning_content injected")
+	assert.Equal(t, "", *convertedReq.Messages[1].ReasoningContent)
 }
 
 func TestStripOpenAIParam_MaxTokensFallback(t *testing.T) {

@@ -130,48 +130,98 @@ func StripUnsupportedParams(request *dto.GeneralOpenAIRequest, channelID int, or
 	}
 }
 
+// IsAgentRouterChannel 检查当前渠道是否为 AgentRouter（依据 BaseURL / 渠道名包含 agentrouter，或 param_override 显式声明）。
+func IsAgentRouterChannel(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	if info.ChannelMeta != nil {
+		if strings.Contains(strings.ToLower(info.ChannelMeta.ChannelBaseUrl), "agentrouter") {
+			return true
+		}
+		if strings.Contains(strings.ToLower(info.ChannelMeta.ChannelName), "agentrouter") {
+			return true
+		}
+		if info.ChannelMeta.ParamOverride != nil {
+			if v, ok := info.ChannelMeta.ParamOverride["agentrouter_thinking_placeholder"]; ok {
+				if b, ok := v.(bool); ok && b {
+					return true
+				}
+			}
+		}
+	}
+	if strings.Contains(strings.ToLower(info.ChannelBaseUrl), "agentrouter") {
+		return true
+	}
+	return false
+}
+
 // SanitizeAssistantReasoningHistory 清洗与规范化多轮历史中的 assistant 消息：
-//  1. 针对 DeepSeek 系列模型：若缺少有效非空 reasoning_content，填充占位字符串 "..."，
-//     防止 SiliconFlow / AgentRouter 等上游因多轮对话校验严格而报 400
-//     ("The `reasoning_content` in the thinking mode must be passed back to the API"
-//      或 "The `content[].thinking` in the thinking mode must be passed back to the API")。
+//  1. 针对 DeepSeek 系列模型：
+//     - 针对 AgentRouter 渠道：由于其内部将 DeepSeek 请求转为 Anthropic 协议并对 thinking 块严格校验非空，
+//     若缺少有效非空 reasoning_content，填充占位字符串 "..."，杜绝 400 校验报错。
+//     - 针对其他所有普通渠道：100% 保持原生既有逻辑，仅当 reasoning_content 为 nil 时注入空字符串 ""，
+//     绝不修改已有空字符串或注入占位符，确保完全不影响其他渠道的原生表现与思考链传输。
 //  2. 针对非 DeepSeek 模型：移除历史 assistant 消息中的 reasoning_content 与 reasoning，
 //     防止 GLM / Claude / GPT 等上游因未定义该字段报 400 Bad Request。
 //
 // 判据以最终发往上游的目标模型 upstreamModelName 为准。
-func SanitizeAssistantReasoningHistory(request *dto.GeneralOpenAIRequest, upstreamModelName string) {
+func SanitizeAssistantReasoningHistory(request *dto.GeneralOpenAIRequest, info *relaycommon.RelayInfo) {
 	if request == nil || len(request.Messages) == 0 {
 		return
 	}
 
 	targetModel := request.Model
-	if upstreamModelName != "" {
-		targetModel = upstreamModelName
+	if info != nil && info.UpstreamModelName != "" {
+		targetModel = info.UpstreamModelName
 	}
 	targetModelLower := strings.ToLower(targetModel)
 	isDeepSeekModel := strings.Contains(targetModelLower, "deepseek") || strings.Contains(targetModelLower, "r1")
 
 	if isDeepSeekModel {
-		var messagesCopy []dto.Message
-		for i, msg := range request.Messages {
-			if msg.Role == "assistant" {
-				hasValidReasoningContent := msg.ReasoningContent != nil && strings.TrimSpace(*msg.ReasoningContent) != ""
-				if !hasValidReasoningContent {
+		if IsAgentRouterChannel(info) {
+			// 仅在命中 AgentRouter 渠道时注入非空占位符
+			var messagesCopy []dto.Message
+			for i, msg := range request.Messages {
+				if msg.Role == "assistant" {
+					hasValidReasoningContent := msg.ReasoningContent != nil && strings.TrimSpace(*msg.ReasoningContent) != ""
+					if !hasValidReasoningContent {
+						if messagesCopy == nil {
+							messagesCopy = make([]dto.Message, len(request.Messages))
+							copy(messagesCopy, request.Messages)
+						}
+						if msg.Reasoning != nil && strings.TrimSpace(*msg.Reasoning) != "" {
+							messagesCopy[i].ReasoningContent = msg.Reasoning
+						} else {
+							placeholder := "..."
+							messagesCopy[i].ReasoningContent = &placeholder
+						}
+					}
+				}
+			}
+			if messagesCopy != nil {
+				request.Messages = messagesCopy
+			}
+		} else {
+			// 其他所有通用渠道：完全保留原生行为，仅在 nil 时填空字符串 ""
+			var messagesCopy []dto.Message
+			for i, msg := range request.Messages {
+				if msg.Role == "assistant" && msg.ReasoningContent == nil {
 					if messagesCopy == nil {
 						messagesCopy = make([]dto.Message, len(request.Messages))
 						copy(messagesCopy, request.Messages)
 					}
-					if msg.Reasoning != nil && strings.TrimSpace(*msg.Reasoning) != "" {
+					if msg.Reasoning != nil {
 						messagesCopy[i].ReasoningContent = msg.Reasoning
 					} else {
-						placeholder := "..."
-						messagesCopy[i].ReasoningContent = &placeholder
+						emptyStr := ""
+						messagesCopy[i].ReasoningContent = &emptyStr
 					}
 				}
 			}
-		}
-		if messagesCopy != nil {
-			request.Messages = messagesCopy
+			if messagesCopy != nil {
+				request.Messages = messagesCopy
+			}
 		}
 	} else {
 		var messagesCopy []dto.Message
@@ -260,7 +310,7 @@ func PostIntentSanitizeRequest(request *dto.GeneralOpenAIRequest, info *relaycom
 	}
 	capabilities := dto.GetOpenAIChatCapabilities(info.UpstreamModelName, info.ReasoningEffort)
 	SanitizeModelCapabilitiesAndLimits(request, info, capabilities)
-	SanitizeAssistantReasoningHistory(request, info.UpstreamModelName)
+	SanitizeAssistantReasoningHistory(request, info)
 	SanitizeDeveloperRole(request, capabilities.UseDeveloperRole)
 	SanitizeProtocolStreamOptions(request, info.ChannelType)
 	StripUnsupportedParams(request, info.ChannelId, info.OriginModelName, info)

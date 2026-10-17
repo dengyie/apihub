@@ -123,7 +123,7 @@ func TestStripOpenAIParam(t *testing.T) {
 }
 
 func TestSanitizeAssistantReasoningHistory(t *testing.T) {
-	t.Run("DeepSeek model injects placeholder reasoning_content if nil", func(t *testing.T) {
+	t.Run("AgentRouter channel injects placeholder reasoning_content if nil", func(t *testing.T) {
 		origMsgs := []dto.Message{
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "answer"},
@@ -133,14 +133,20 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 			Model:    "deepseek-chat",
 			Messages: origMsgs,
 		}
-		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelBaseUrl:    "https://agentrouter.org",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
 		require.NotNil(t, req.Messages[1].ReasoningContent)
 		assert.Equal(t, "...", *req.Messages[1].ReasoningContent)
 		// Check that original slice is not mutated
 		assert.Nil(t, origMsgs[1].ReasoningContent)
 	})
 
-	t.Run("DeepSeek model replaces empty reasoning_content with placeholder", func(t *testing.T) {
+	t.Run("AgentRouter channel replaces empty reasoning_content with placeholder", func(t *testing.T) {
 		emptyStr := ""
 		origMsgs := []dto.Message{
 			{Role: "user", Content: "hello"},
@@ -151,11 +157,65 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 			Model:    "deepseek-chat",
 			Messages: origMsgs,
 		}
-		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelName:       "cpa-agentrouter-1",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
 		require.NotNil(t, req.Messages[1].ReasoningContent)
 		assert.Equal(t, "...", *req.Messages[1].ReasoningContent)
 		// Check that original slice is not mutated
 		assert.Equal(t, "", *origMsgs[1].ReasoningContent)
+	})
+
+	t.Run("Other standard channels keep original empty string when nil and do not inject placeholder", func(t *testing.T) {
+		origMsgs := []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "answer"}, // nil
+			{Role: "user", Content: "next"},
+		}
+		req := &dto.GeneralOpenAIRequest{
+			Model:    "deepseek-chat",
+			Messages: origMsgs,
+		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelBaseUrl:    "https://api.siliconflow.cn",
+				ChannelName:       "siliconflow-main",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
+		require.NotNil(t, req.Messages[1].ReasoningContent)
+		// Standard channels MUST get empty string "", NOT "..." placeholder
+		assert.Equal(t, "", *req.Messages[1].ReasoningContent)
+		// Check that original slice is not mutated
+		assert.Nil(t, origMsgs[1].ReasoningContent)
+	})
+
+	t.Run("Other standard channels do NOT overwrite empty reasoning_content with placeholder", func(t *testing.T) {
+		emptyStr := ""
+		origMsgs := []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "answer", ReasoningContent: &emptyStr},
+			{Role: "user", Content: "next"},
+		}
+		req := &dto.GeneralOpenAIRequest{
+			Model:    "deepseek-chat",
+			Messages: origMsgs,
+		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelBaseUrl:    "https://api.deepseek.com",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
+		require.NotNil(t, req.Messages[1].ReasoningContent)
+		// Standard channels MUST preserve empty string "", NOT replace with "..."
+		assert.Equal(t, "", *req.Messages[1].ReasoningContent)
 	})
 
 	t.Run("DeepSeek model copies reasoning to reasoning_content if present", func(t *testing.T) {
@@ -168,7 +228,13 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 			Model:    "deepseek-reasoner",
 			Messages: origMsgs,
 		}
-		SanitizeAssistantReasoningHistory(req, "deepseek-r1")
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-r1",
+				ChannelBaseUrl:    "https://agentrouter.org",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
 		require.NotNil(t, req.Messages[1].ReasoningContent)
 		assert.Equal(t, "thought process", *req.Messages[1].ReasoningContent)
 	})
@@ -183,7 +249,13 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 			Model:    "deepseek-chat",
 			Messages: origMsgs,
 		}
-		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelBaseUrl:    "https://agentrouter.org",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
 		require.NotNil(t, req.Messages[1].ReasoningContent)
 		assert.Equal(t, "original thinking process", *req.Messages[1].ReasoningContent)
 	})
@@ -199,7 +271,13 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 			Model:    "gpt-4o",
 			Messages: origMsgs,
 		}
-		SanitizeAssistantReasoningHistory(req, "gpt-4o")
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "gpt-4o",
+				ChannelBaseUrl:    "https://api.openai.com",
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
 		assert.Nil(t, req.Messages[1].ReasoningContent)
 		assert.Nil(t, req.Messages[1].Reasoning)
 		// Original slice not mutated
