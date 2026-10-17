@@ -130,6 +130,27 @@ func StripUnsupportedParams(request *dto.GeneralOpenAIRequest, channelID int, or
 	}
 }
 
+// parseBoolParam 将 interface{} 参数兼容解析为布尔值（支持 bool, "true"/"1", 1 等形式）。
+func parseBoolParam(v any) bool {
+	if v == nil {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		s := strings.ToLower(strings.TrimSpace(val))
+		return s == "true" || s == "1" || s == "yes" || s == "on"
+	case int:
+		return val == 1
+	case int64:
+		return val == 1
+	case float64:
+		return val == 1.0
+	}
+	return false
+}
+
 // IsAgentRouterChannel 检查当前渠道是否为 AgentRouter（依据 BaseURL / 渠道名包含 agentrouter，或 param_override 显式声明）。
 func IsAgentRouterChannel(info *relaycommon.RelayInfo) bool {
 	if info == nil {
@@ -144,7 +165,7 @@ func IsAgentRouterChannel(info *relaycommon.RelayInfo) bool {
 		}
 		if info.ChannelMeta.ParamOverride != nil {
 			if v, ok := info.ChannelMeta.ParamOverride["agentrouter_thinking_placeholder"]; ok {
-				if b, ok := v.(bool); ok && b {
+				if parseBoolParam(v) {
 					return true
 				}
 			}

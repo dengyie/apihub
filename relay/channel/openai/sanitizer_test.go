@@ -239,6 +239,30 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 		assert.Equal(t, "thought process", *req.Messages[1].ReasoningContent)
 	})
 
+	t.Run("AgentRouter channel enabled via ParamOverride string or int", func(t *testing.T) {
+		origMsgs := []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "answer"},
+		}
+		req := &dto.GeneralOpenAIRequest{
+			Model:    "deepseek-chat",
+			Messages: origMsgs,
+		}
+		info := &relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName: "deepseek-ai/DeepSeek-V3",
+				ChannelBaseUrl:    "https://custom-gateway.internal",
+				ChannelName:       "custom-proxy",
+				ParamOverride: map[string]any{
+					"agentrouter_thinking_placeholder": "true",
+				},
+			},
+		}
+		SanitizeAssistantReasoningHistory(req, info)
+		require.NotNil(t, req.Messages[1].ReasoningContent)
+		assert.Equal(t, "...", *req.Messages[1].ReasoningContent)
+	})
+
 	t.Run("DeepSeek model preserves valid reasoning_content if already present", func(t *testing.T) {
 		existing := "original thinking process"
 		origMsgs := []dto.Message{
