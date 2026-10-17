@@ -123,7 +123,7 @@ func TestStripOpenAIParam(t *testing.T) {
 }
 
 func TestSanitizeAssistantReasoningHistory(t *testing.T) {
-	t.Run("DeepSeek model injects empty reasoning_content if nil", func(t *testing.T) {
+	t.Run("DeepSeek model injects placeholder reasoning_content if nil", func(t *testing.T) {
 		origMsgs := []dto.Message{
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "answer"},
@@ -135,9 +135,27 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 		}
 		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
 		require.NotNil(t, req.Messages[1].ReasoningContent)
-		assert.Equal(t, "", *req.Messages[1].ReasoningContent)
+		assert.Equal(t, "...", *req.Messages[1].ReasoningContent)
 		// Check that original slice is not mutated
 		assert.Nil(t, origMsgs[1].ReasoningContent)
+	})
+
+	t.Run("DeepSeek model replaces empty reasoning_content with placeholder", func(t *testing.T) {
+		emptyStr := ""
+		origMsgs := []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "answer", ReasoningContent: &emptyStr},
+			{Role: "user", Content: "next"},
+		}
+		req := &dto.GeneralOpenAIRequest{
+			Model:    "deepseek-chat",
+			Messages: origMsgs,
+		}
+		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
+		require.NotNil(t, req.Messages[1].ReasoningContent)
+		assert.Equal(t, "...", *req.Messages[1].ReasoningContent)
+		// Check that original slice is not mutated
+		assert.Equal(t, "", *origMsgs[1].ReasoningContent)
 	})
 
 	t.Run("DeepSeek model copies reasoning to reasoning_content if present", func(t *testing.T) {
@@ -153,6 +171,21 @@ func TestSanitizeAssistantReasoningHistory(t *testing.T) {
 		SanitizeAssistantReasoningHistory(req, "deepseek-r1")
 		require.NotNil(t, req.Messages[1].ReasoningContent)
 		assert.Equal(t, "thought process", *req.Messages[1].ReasoningContent)
+	})
+
+	t.Run("DeepSeek model preserves valid reasoning_content if already present", func(t *testing.T) {
+		existing := "original thinking process"
+		origMsgs := []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "answer", ReasoningContent: &existing},
+		}
+		req := &dto.GeneralOpenAIRequest{
+			Model:    "deepseek-chat",
+			Messages: origMsgs,
+		}
+		SanitizeAssistantReasoningHistory(req, "deepseek-ai/DeepSeek-V3")
+		require.NotNil(t, req.Messages[1].ReasoningContent)
+		assert.Equal(t, "original thinking process", *req.Messages[1].ReasoningContent)
 	})
 
 	t.Run("Non-DeepSeek model strips reasoning_content and reasoning", func(t *testing.T) {

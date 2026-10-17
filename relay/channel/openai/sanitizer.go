@@ -131,9 +131,10 @@ func StripUnsupportedParams(request *dto.GeneralOpenAIRequest, channelID int, or
 }
 
 // SanitizeAssistantReasoningHistory 清洗与规范化多轮历史中的 assistant 消息：
-//  1. 针对 DeepSeek 系列模型：若缺少 reasoning_content，填充空字符串 ""，
-//     防止 SiliconFlow 等上游因多轮对话校验严格而报 400
-//     ("The `reasoning_content` in the thinking mode must be passed back to the API")。
+//  1. 针对 DeepSeek 系列模型：若缺少有效非空 reasoning_content，填充占位字符串 "..."，
+//     防止 SiliconFlow / AgentRouter 等上游因多轮对话校验严格而报 400
+//     ("The `reasoning_content` in the thinking mode must be passed back to the API"
+//      或 "The `content[].thinking` in the thinking mode must be passed back to the API")。
 //  2. 针对非 DeepSeek 模型：移除历史 assistant 消息中的 reasoning_content 与 reasoning，
 //     防止 GLM / Claude / GPT 等上游因未定义该字段报 400 Bad Request。
 //
@@ -153,16 +154,19 @@ func SanitizeAssistantReasoningHistory(request *dto.GeneralOpenAIRequest, upstre
 	if isDeepSeekModel {
 		var messagesCopy []dto.Message
 		for i, msg := range request.Messages {
-			if msg.Role == "assistant" && msg.ReasoningContent == nil {
-				if messagesCopy == nil {
-					messagesCopy = make([]dto.Message, len(request.Messages))
-					copy(messagesCopy, request.Messages)
-				}
-				if msg.Reasoning != nil {
-					messagesCopy[i].ReasoningContent = msg.Reasoning
-				} else {
-					emptyStr := ""
-					messagesCopy[i].ReasoningContent = &emptyStr
+			if msg.Role == "assistant" {
+				hasValidReasoningContent := msg.ReasoningContent != nil && strings.TrimSpace(*msg.ReasoningContent) != ""
+				if !hasValidReasoningContent {
+					if messagesCopy == nil {
+						messagesCopy = make([]dto.Message, len(request.Messages))
+						copy(messagesCopy, request.Messages)
+					}
+					if msg.Reasoning != nil && strings.TrimSpace(*msg.Reasoning) != "" {
+						messagesCopy[i].ReasoningContent = msg.Reasoning
+					} else {
+						placeholder := "..."
+						messagesCopy[i].ReasoningContent = &placeholder
+					}
 				}
 			}
 		}

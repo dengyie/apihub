@@ -104,9 +104,9 @@ func TestConvertOpenAIRequest_InjectsReasoningContentForDeepSeekAssistantMessage
 	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
 	require.True(t, ok)
 
-	// Converted request must have non-nil empty string for assistant reasoning_content
-	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "assistant message in converted request must have reasoning_content")
-	assert.Equal(t, "", *convertedReq.Messages[1].ReasoningContent, "assistant reasoning_content should be empty string")
+		// Converted request must have non-nil placeholder for assistant reasoning_content
+		require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "assistant message in converted request must have reasoning_content")
+		assert.Equal(t, "...", *convertedReq.Messages[1].ReasoningContent, "assistant reasoning_content should be placeholder string")
 
 	// Original request must NOT be mutated
 	assert.Nil(t, origRequest.Messages[1].ReasoningContent, "original request assistant message must remain nil")
@@ -321,9 +321,9 @@ func TestConvertOpenAIRequest_CrossModelMapping_ClaudeClientModelToDeepSeek_Inje
 	convertedReq, ok := converted.(*dto.GeneralOpenAIRequest)
 	require.True(t, ok)
 
-	// Upstream target is DeepSeek, so reasoning_content MUST be injected as empty string
-	require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "mapped DeepSeek upstream target must have reasoning_content injected")
-	assert.Equal(t, "", *convertedReq.Messages[1].ReasoningContent)
+		// Upstream target is DeepSeek, so reasoning_content MUST be injected as placeholder
+		require.NotNil(t, convertedReq.Messages[1].ReasoningContent, "mapped DeepSeek upstream target must have reasoning_content injected")
+		assert.Equal(t, "...", *convertedReq.Messages[1].ReasoningContent)
 }
 
 func TestStripOpenAIParam_MaxTokensFallback(t *testing.T) {
