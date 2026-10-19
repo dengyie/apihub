@@ -405,7 +405,7 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "并发请求数限制") ||
+	if strings.Contains(msg, "并发请求数限制") ||
 		strings.Contains(msg, "最多同时处理") ||
 		strings.Contains(msg, "请求数限制") ||
 		strings.Contains(msg, "总请求数限制") ||
@@ -419,7 +419,49 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "超额临时冻结") ||
 		strings.Contains(msg, "负载已饱和") ||
 		strings.Contains(msg, "负载已经达到上限") ||
-		strings.Contains(msg, "负载已达到上限")
+		strings.Contains(msg, "负载已达到上限") ||
+		// 兼容 Codex / OpenAI / 各类反代算力满载与过载提示（即使以 400 状态码返回也触发换渠道重试，且仅触发短冷却）
+		strings.Contains(msg, "at capacity") ||
+		strings.Contains(msg, "capacity exceeded") ||
+		strings.Contains(msg, "model_at_capacity") ||
+		strings.Contains(msg, "model_capacity_exceeded") ||
+		strings.Contains(msg, "gateway_capacity") ||
+		strings.Contains(msg, "no capacity available") ||
+		strings.Contains(msg, "capacity is temporarily unavailable") ||
+		strings.Contains(msg, "server is temporarily overloaded") ||
+		strings.Contains(msg, "currently overloaded") ||
+		strings.Contains(msg, "temporarily overloaded") ||
+		strings.Contains(msg, "overloaded_error") {
+		return true
+	}
+	checkOAI := func(code any, typeStr string, message string) bool {
+		cStr := strings.ToLower(fmt.Sprintf("%v", code))
+		tStr := strings.ToLower(typeStr)
+		mStr := strings.ToLower(message)
+		return strings.Contains(cStr, "model_at_capacity") ||
+			strings.Contains(cStr, "model_capacity_exceeded") ||
+			strings.Contains(cStr, "at_capacity") ||
+			strings.Contains(cStr, "capacity_exceeded") ||
+			strings.Contains(cStr, "gateway_capacity") ||
+			strings.Contains(cStr, "server_overloaded") ||
+			strings.Contains(tStr, "model_capacity") ||
+			strings.Contains(tStr, "overloaded_error") ||
+			strings.Contains(mStr, "at capacity") ||
+			strings.Contains(mStr, "capacity exceeded") ||
+			strings.Contains(mStr, "no capacity available") ||
+			strings.Contains(mStr, "temporarily overloaded") ||
+			strings.Contains(mStr, "currently overloaded")
+	}
+	if oe, ok := err.RelayError.(types.OpenAIError); ok {
+		if checkOAI(oe.Code, oe.Type, oe.Message) {
+			return true
+		}
+	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
+		if checkOAI(poe.Code, poe.Type, poe.Message) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsCodexValidationBadRequest 判断是否为 Codex / Responses 接口由于请求参数格式、缺失必要字段或特定后端协议校验返回的 400 Bad Request（如 "invalid codex request"、code="invalid_responses_request"）。

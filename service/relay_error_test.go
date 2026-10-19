@@ -413,6 +413,29 @@ func TestEvaluateRelayFailure(t *testing.T) {
 		assert.False(t, decision.IsPreStreamNonTTFT, "rate limit is not treated as pre-stream non-TTFT failure")
 	})
 
+	t.Run("model at capacity 400 produces breaker_rate_limit and retry", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("Selected model is at capacity. Please try a different model."), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, "upstream_rate_limited", decision.PolicyDecision.Reason)
+		assert.Equal(t, BreakerRateLimit, decision.BreakerEffect)
+		assert.False(t, decision.IsPreStreamNonTTFT, "model at capacity is treated as rate limit and excluded from pre-stream non-TTFT failure")
+	})
+
+	t.Run("model capacity exceeded via openai error code produces breaker_rate_limit and retry", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.WithOpenAIError(types.OpenAIError{
+			Message: "The server is temporarily overloaded.",
+			Type:    "server_error",
+			Code:    "model_capacity_exceeded",
+		}, http.StatusServiceUnavailable)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, BreakerRateLimit, decision.BreakerEffect)
+		assert.False(t, decision.IsPreStreamNonTTFT)
+	})
+
 	t.Run("curfew 403 sets BreakerCurfew and CurfewUntil", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		err := types.NewOpenAIError(errors.New("system_curfew: 00:00-8:00 账号宵禁"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden)
