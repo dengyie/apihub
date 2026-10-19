@@ -402,7 +402,7 @@ func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
 		serveTaskPluginProtocol(c, pinned, defaultPluginProtocolBridgeDeps())
 	case pluginruntime.ProtocolOpenAIImage:
 		serveTaskPluginImageProtocol(c, pinned, defaultPluginProtocolBridgeDeps())
-		default:
-			fallback(c)
-		}
+	default:
+		fallback(c)
 	}
+}

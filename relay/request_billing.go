@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/logger"
+	"github.com/dengyie/apihub/model"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relay/helper"
 	"github.com/dengyie/apihub/relaykit/dto"
@@ -22,7 +24,23 @@ import (
 // provide the current request body through BodyStorage or BillingRequestInput;
 // channel retries retain the resulting billing session and pricing snapshot.
 func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
-	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
+	userId := 0
+	userRole := 0
+	userGroup := ""
+	usingGroup := ""
+	if info != nil {
+		userId = info.UserId
+		userRole = info.UserRole
+		userGroup = info.UserGroup
+		usingGroup = info.UsingGroup
+	}
+	if userRole == 0 && c != nil {
+		userRole = c.GetInt("role")
+	}
+	if userRole == 0 && userId > 0 && model.IsAdmin(userId) {
+		userRole = common.RoleAdminUser
+	}
+	needSensitiveCheck := setting.ShouldCheckPromptSensitive(userId, userRole, userGroup, usingGroup)
 	meta := &types.TokenCountMeta{TokenType: types.TokenTypeTokenizer}
 	if info.Request != nil && (needSensitiveCheck || constant.CountToken) {
 		meta = info.Request.GetTokenCountMeta()

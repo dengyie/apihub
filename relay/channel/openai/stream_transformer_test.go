@@ -172,19 +172,19 @@ func TestShouldApplyReasoningAsContent(t *testing.T) {
 			"deepseek-reasoner",
 			"kimi-k3",
 			"kimi-k2.5-thinking",
-				"moonshot-v1-thinking",
-				"o1",
-				"o1-mini",
-				"o3",
-				"o3-mini",
-				"o4-mini",
-				"qwq-32b",
-				"qwen-qwq-32b",
-				"qwen2.5-qwq-7b",
-				"claude-3-7-sonnet-thinking",
-				"claude-3-7-sonnet:thinking",
-				"gemini-2.5-flash-thinking-preview",
-			}
+			"moonshot-v1-thinking",
+			"o1",
+			"o1-mini",
+			"o3",
+			"o3-mini",
+			"o4-mini",
+			"qwq-32b",
+			"qwen-qwq-32b",
+			"qwen2.5-qwq-7b",
+			"claude-3-7-sonnet-thinking",
+			"claude-3-7-sonnet:thinking",
+			"gemini-2.5-flash-thinking-preview",
+		}
 		for _, m := range exemptModels {
 			info := &relaycommon.RelayInfo{
 				OriginModelName: m,
@@ -339,4 +339,3 @@ func TestSendStreamData_ModelAwareGuard(t *testing.T) {
 		assert.Equal(t, "deepseek non-stream CoT", simpleResponse.Choices[0].Message.GetReasoningContent())
 	})
 }
-

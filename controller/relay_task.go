@@ -190,29 +190,29 @@ func executeTaskSubmissionWith(
 			break
 		}
 
-			taskAPIError := taskSubmissionAPIError(taskErr)
-			relayInfo.LastError = taskAPIError
-			decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
-			service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
-			if !taskErr.LocalError {
-				// 智能负载：渠道失败计入熔断器。
-				// 400 参数问题与 429 短期限流不计入硬熔断计数器，走 EndCancelled 避免洗白历史失败计数；
-				// 429、宵禁 403、额度耗尽等通过 applyUpstreamFailureEffects 进行特异性熔断与冷却。
-				isHardFailure := taskAPIError.StatusCode != 400 && !loadbalancer.IsUpstreamRateLimitError(taskAPIError)
-				if isHardFailure {
-					lbAttempt.End(false, true)
-				} else {
-					lbAttempt.EndCancelled()
-				}
-				applyUpstreamFailureEffects(c, channel, relayInfo, lbAttempt, taskAPIError)
-				processChannelError(c,
-					*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
-						common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),
-					taskAPIError,
-					relayInfo)
+		taskAPIError := taskSubmissionAPIError(taskErr)
+		relayInfo.LastError = taskAPIError
+		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
+		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
+		if !taskErr.LocalError {
+			// 智能负载：渠道失败计入熔断器。
+			// 400 参数问题与 429 短期限流不计入硬熔断计数器，走 EndCancelled 避免洗白历史失败计数；
+			// 429、宵禁 403、额度耗尽等通过 applyUpstreamFailureEffects 进行特异性熔断与冷却。
+			isHardFailure := taskAPIError.StatusCode != 400 && !loadbalancer.IsUpstreamRateLimitError(taskAPIError)
+			if isHardFailure {
+				lbAttempt.End(false, true)
 			} else {
 				lbAttempt.EndCancelled()
 			}
+			applyUpstreamFailureEffects(c, channel, relayInfo, lbAttempt, taskAPIError)
+			processChannelError(c,
+				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
+					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),
+				taskAPIError,
+				relayInfo)
+		} else {
+			lbAttempt.EndCancelled()
+		}
 
 		willRetry := decision.Action == "retry"
 		diagnostics.attemptFailed(retryParam.GetRetry()+1, channel, taskErr, willRetry)

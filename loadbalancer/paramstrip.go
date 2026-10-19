@@ -318,32 +318,32 @@ var unsupportedParamPatterns = []*regexp.Regexp{
 	reParamInvalidQuoted,
 	reUnknownParamField,
 	reInvalidParamColon,
-		reParamNotSupportedBare,
-		reExtraFieldsLast,
-		reExtraFieldsBracket,
-	}
+	reParamNotSupportedBare,
+	reExtraFieldsLast,
+	reExtraFieldsBracket,
+}
 
-	// unsupportedParamPatternsStrict 是「报文里明确点名了某个参数」的措辞子集，
-	// 即全量表去掉两条散文式措辞（reDoesNotSupport / reFieldInvalid），顺序与
-	// 原实现逐位一致。
-	//
-	// 存在的唯一理由是要在 **400 之外**（422 / 5xx）也认参数错误，而放宽到这些
-	// 状态码的前提是「不会把无关故障误判成参数问题」——5xx 报文的内容不受我们
-	// 控制，什么都可能出现在里面。于是按「是否强制出现 parameter / field /
-	// argument 这类词，或强制要求带引号的参数名 + 校验框架」来划线，每一条都
-	// 只可能来自请求校验，不可能是通用故障文案。
-	var unsupportedParamPatternsStrict = []*regexp.Regexp{
-		reParamNotSupportedQuoted,
-		reUnsupportedParam,
-		reUnrecognizedArgument,
-		reWasUnexpected,
-		reUnknownParamField,
-		reInvalidParamColon,
-		reParamNotSupportedBare,
-		reParamInvalidQuoted,
-		reExtraFieldsLast,
-		reExtraFieldsBracket,
-	}
+// unsupportedParamPatternsStrict 是「报文里明确点名了某个参数」的措辞子集，
+// 即全量表去掉两条散文式措辞（reDoesNotSupport / reFieldInvalid），顺序与
+// 原实现逐位一致。
+//
+// 存在的唯一理由是要在 **400 之外**（422 / 5xx）也认参数错误，而放宽到这些
+// 状态码的前提是「不会把无关故障误判成参数问题」——5xx 报文的内容不受我们
+// 控制，什么都可能出现在里面。于是按「是否强制出现 parameter / field /
+// argument 这类词，或强制要求带引号的参数名 + 校验框架」来划线，每一条都
+// 只可能来自请求校验，不可能是通用故障文案。
+var unsupportedParamPatternsStrict = []*regexp.Regexp{
+	reParamNotSupportedQuoted,
+	reUnsupportedParam,
+	reUnrecognizedArgument,
+	reWasUnexpected,
+	reUnknownParamField,
+	reInvalidParamColon,
+	reParamNotSupportedBare,
+	reParamInvalidQuoted,
+	reExtraFieldsLast,
+	reExtraFieldsBracket,
+}
 
 // matchParamPatterns 依次跑一组模式，返回第一个命中的规范化参数名。
 func matchParamPatterns(msg string, patterns []*regexp.Regexp) (string, bool) {
@@ -390,58 +390,58 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 	msg := err.Error()
 	msgLower := strings.ToLower(msg)
 
-		// 400 走完整判据（含散文式措辞与 reasoning_effort 等级启发式），
-		// 行为与既往逐位一致 —— 那 71 条生产 400 正是靠它自愈的，不能动。
-		if err.StatusCode == http.StatusBadRequest {
-			// 特殊识别 reasoning_effort 等级/参数不支持错误：
-			// 例如：level "max" not supported, valid levels: low, medium, high
-			if strings.Contains(msgLower, "valid levels:") ||
-				(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
-				reReasoningEffortLevel.MatchString(msg) {
-				return "reasoning_effort", true
-			}
-			if param, ok := matchParamPatterns(msg, unsupportedParamPatterns); ok {
-				return param, true
-			}
-			// 特殊识别非标准报文格式中的 reasoning_content / reasoning 不支持错误（如 messages.1.reasoning_content: extra fields not permitted）：
-			if strings.Contains(msgLower, "reasoning_content") &&
-				(strings.Contains(msgLower, "not supported") ||
-					strings.Contains(msgLower, "unsupported") ||
-					strings.Contains(msgLower, "unexpected") ||
-					strings.Contains(msgLower, "extra field") ||
-					strings.Contains(msgLower, "unrecognized") ||
-					strings.Contains(msgLower, "invalid") ||
-					strings.Contains(msgLower, "not permitted") ||
-					strings.Contains(msgLower, "unknown")) {
-				return "reasoning_content", true
-			}
-			if strings.Contains(msgLower, "reasoning") &&
-				!strings.Contains(msgLower, "effort") &&
-				!strings.Contains(msgLower, "reasoning_content") &&
-				(strings.Contains(msgLower, "not supported") ||
-					strings.Contains(msgLower, "unsupported") ||
-					strings.Contains(msgLower, "unexpected") ||
-					strings.Contains(msgLower, "extra field") ||
-					strings.Contains(msgLower, "unrecognized") ||
-					strings.Contains(msgLower, "invalid") ||
-					strings.Contains(msgLower, "not permitted") ||
-					strings.Contains(msgLower, "unknown")) {
-				return "reasoning", true
-			}
-			return "", false
+	// 400 走完整判据（含散文式措辞与 reasoning_effort 等级启发式），
+	// 行为与既往逐位一致 —— 那 71 条生产 400 正是靠它自愈的，不能动。
+	if err.StatusCode == http.StatusBadRequest {
+		// 特殊识别 reasoning_effort 等级/参数不支持错误：
+		// 例如：level "max" not supported, valid levels: low, medium, high
+		if strings.Contains(msgLower, "valid levels:") ||
+			(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
+			reReasoningEffortLevel.MatchString(msg) {
+			return "reasoning_effort", true
 		}
-
-		// 400 之外只认「明确点名参数」的严格子集：5xx 报文不受我们控制，
-		// 散文式措辞会把无关故障误判成参数问题。
-		if !isParamValidationStatusCode(err.StatusCode) {
-			return "", false
-		}
-		if param, ok := matchParamPatterns(msg, unsupportedParamPatternsStrict); ok {
+		if param, ok := matchParamPatterns(msg, unsupportedParamPatterns); ok {
 			return param, true
 		}
+		// 特殊识别非标准报文格式中的 reasoning_content / reasoning 不支持错误（如 messages.1.reasoning_content: extra fields not permitted）：
 		if strings.Contains(msgLower, "reasoning_content") &&
-			(strings.Contains(msgLower, "extra field") || strings.Contains(msgLower, "not permitted") || strings.Contains(msgLower, "not supported") || strings.Contains(msgLower, "unsupported")) {
+			(strings.Contains(msgLower, "not supported") ||
+				strings.Contains(msgLower, "unsupported") ||
+				strings.Contains(msgLower, "unexpected") ||
+				strings.Contains(msgLower, "extra field") ||
+				strings.Contains(msgLower, "unrecognized") ||
+				strings.Contains(msgLower, "invalid") ||
+				strings.Contains(msgLower, "not permitted") ||
+				strings.Contains(msgLower, "unknown")) {
 			return "reasoning_content", true
 		}
+		if strings.Contains(msgLower, "reasoning") &&
+			!strings.Contains(msgLower, "effort") &&
+			!strings.Contains(msgLower, "reasoning_content") &&
+			(strings.Contains(msgLower, "not supported") ||
+				strings.Contains(msgLower, "unsupported") ||
+				strings.Contains(msgLower, "unexpected") ||
+				strings.Contains(msgLower, "extra field") ||
+				strings.Contains(msgLower, "unrecognized") ||
+				strings.Contains(msgLower, "invalid") ||
+				strings.Contains(msgLower, "not permitted") ||
+				strings.Contains(msgLower, "unknown")) {
+			return "reasoning", true
+		}
 		return "", false
+	}
+
+	// 400 之外只认「明确点名参数」的严格子集：5xx 报文不受我们控制，
+	// 散文式措辞会把无关故障误判成参数问题。
+	if !isParamValidationStatusCode(err.StatusCode) {
+		return "", false
+	}
+	if param, ok := matchParamPatterns(msg, unsupportedParamPatternsStrict); ok {
+		return param, true
+	}
+	if strings.Contains(msgLower, "reasoning_content") &&
+		(strings.Contains(msgLower, "extra field") || strings.Contains(msgLower, "not permitted") || strings.Contains(msgLower, "not supported") || strings.Contains(msgLower, "unsupported")) {
+		return "reasoning_content", true
+	}
+	return "", false
 }

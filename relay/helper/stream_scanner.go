@@ -156,33 +156,33 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			lbHandle.MarkFirstByte()
 		})
 	}
-		defer func() {
-			// 流结束：上报跟踪。
-			// 客户端主动断开是下游行为，不算渠道故障。
-			// 若客户端主动断开且未触发首字超时，交由外层 controller 判断是否为上游假死或取消，
-			// 绝不能在此调用 End(false, false) 将历史连续失败和退避倍数误洗白。
-			if info != nil && info.StreamStatus != nil && info.StreamStatus.IsClientAbort() {
-				if lbTTFTSlow.Load() {
-					lbHandle.End(true, false)
-					return
-				}
-				hasAttempt := false
-				if c != nil {
-					_, hasAttempt = c.Get(loadbalancer.ContextKeyAttempt)
-				}
-				if !hasAttempt {
-					lbHandle.EndCancelled()
-				}
+	defer func() {
+		// 流结束：上报跟踪。
+		// 客户端主动断开是下游行为，不算渠道故障。
+		// 若客户端主动断开且未触发首字超时，交由外层 controller 判断是否为上游假死或取消，
+		// 绝不能在此调用 End(false, false) 将历史连续失败和退避倍数误洗白。
+		if info != nil && info.StreamStatus != nil && info.StreamStatus.IsClientAbort() {
+			if lbTTFTSlow.Load() {
+				lbHandle.End(true, false)
 				return
 			}
-			failed := info.StreamStatus.IsUpstreamStreamFault()
-			// 零块流视同失败：上游正常结束却一个内容块都没发，渠道确实没干活。
-			// 判据与下面的 EmptyStreamError 一致，只看块数不看字节数。
-			if !failed && info.StreamStatus.IsNormalEnd() && info.ReceivedResponseCount == 0 {
-				failed = true
+			hasAttempt := false
+			if c != nil {
+				_, hasAttempt = c.Get(loadbalancer.ContextKeyAttempt)
 			}
-			lbHandle.End(lbTTFTSlow.Load(), failed)
-		}()
+			if !hasAttempt {
+				lbHandle.EndCancelled()
+			}
+			return
+		}
+		failed := info.StreamStatus.IsUpstreamStreamFault()
+		// 零块流视同失败：上游正常结束却一个内容块都没发，渠道确实没干活。
+		// 判据与下面的 EmptyStreamError 一致，只看块数不看字节数。
+		if !failed && info.StreamStatus.IsNormalEnd() && info.ReceivedResponseCount == 0 {
+			failed = true
+		}
+		lbHandle.End(lbTTFTSlow.Load(), failed)
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 

@@ -1213,7 +1213,7 @@ func ResetUserPasswordByEmail(email string, password string) error {
 }
 
 func IsAdmin(userId int) bool {
-	if userId == 0 {
+	if userId == 0 || DB == nil {
 		return false
 	}
 	var user User

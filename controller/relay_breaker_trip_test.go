@@ -269,4 +269,3 @@ func TestBreakerNonHardFailureDoesNotResetBreakerCounters(t *testing.T) {
 	assert.False(t, ok, "累积 3 次硬失败后渠道必须熔断，中间的 400 绝不能洗白此前累积的 2 次失败")
 	assert.Equal(t, loadbalancer.ReasonCircuitOpen, reason)
 }
-
