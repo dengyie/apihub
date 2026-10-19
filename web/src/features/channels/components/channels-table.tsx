@@ -36,7 +36,7 @@ import {
   useDataTable,
 } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Combobox } from '@/components/ui/combobox'
 import {
   Tooltip,
   TooltipContent,
@@ -47,7 +47,12 @@ import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
-import { getChannels, searchChannels, getGroups } from '../api'
+import {
+  getChannels,
+  searchChannels,
+  getGroups,
+  getEnabledModels,
+} from '../api'
 import {
   DEFAULT_PAGE_SIZE,
   CHANNEL_STATUS,
@@ -166,14 +171,27 @@ export function ChannelsTable() {
   const {
     value: modelFilter,
     inputValue: modelFilterInput,
-    onChange: onModelFilterInputChange,
-    onCompositionStart: onModelFilterCompositionStart,
-    onCompositionEnd: onModelFilterCompositionEnd,
+    setInputValue: setModelFilterInput,
     resetInput: resetModelFilterInput,
   } = useDebouncedColumnFilter({
     columnFilters,
     columnId: 'model',
     onColumnFiltersChange,
+  })
+
+  // Fetch enabled models for filter combobox
+  const { data: enabledModelsData } = useQuery({
+    queryKey: ['channels', 'enabled-models'],
+    queryFn: async () => {
+      try {
+        return requireServerSuccess(await getEnabledModels())
+      } catch {
+        return null
+      }
+    },
+    meta: { errorToast: false },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
   })
 
   // Determine whether to use search or regular list API
@@ -306,6 +324,28 @@ export function ChannelsTable() {
     return rawChannels
   }, [data, enableTagMode])
 
+  // Model options for filter combobox
+  const modelOptions = useMemo(() => {
+    const modelSet = new Set<string>()
+    if (Array.isArray(enabledModelsData?.data)) {
+      for (const m of enabledModelsData.data) {
+        if (m?.trim()) modelSet.add(m.trim())
+      }
+    }
+    const rawChannels = data?.data?.items || []
+    for (const ch of rawChannels) {
+      if (ch.models) {
+        for (const m of ch.models.split(',')) {
+          const trimmed = m.trim()
+          if (trimmed) modelSet.add(trimmed)
+        }
+      }
+    }
+    return [...modelSet]
+      .sort((a, b) => a.localeCompare(b))
+      .map((m) => ({ label: m, value: m }))
+  }, [enabledModelsData, data?.data?.items])
+
   const totalCount = data?.data?.total || 0
   const typeCounts = data?.data?.type_counts
 
@@ -433,17 +473,23 @@ export function ChannelsTable() {
         collapsibleOnMobile: true,
         searchPlaceholder: t('Filter by name, ID, or key...'),
         searchDebounceMs: 500,
+        hasAdditionalFilters: Boolean(
+          modelFilter.trim() || modelFilterInput.trim()
+        ),
         onReset: () => {
           resetModelFilterInput()
+          onColumnFiltersChange((prev) => prev.filter((f) => f.id !== 'model'))
         },
         additionalSearch: (
-          <Input
+          <Combobox
+            options={modelOptions}
+            allowCustomValue
+            aria-label={t('Filter by model...')}
+            emptyText={t('No model found.')}
             placeholder={t('Filter by model...')}
-            value={modelFilterInput}
-            onChange={onModelFilterInputChange}
-            onCompositionStart={onModelFilterCompositionStart}
-            onCompositionEnd={onModelFilterCompositionEnd}
             className='w-full sm:w-[150px] lg:w-[180px]'
+            value={modelFilterInput}
+            onValueChange={(value) => setModelFilterInput(value ?? '')}
           />
         ),
         filters: [
