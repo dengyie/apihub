@@ -577,6 +577,105 @@ func TestSelectRetryChannelSkipsUnhealthyChannels(t *testing.T) {
 	assert.Nil(t, selected, "an all-unhealthy pool must report exhaustion, not a channel")
 }
 
+// Mutex groups pin a request to one channel of the pair: once either side is
+// excluded (failed attempt, breaker trip, sticky collision), the other side
+// must never be picked for the same request. This is what prevents Responses
+// API stateful calls from leaking across Azure resources that do not
+// recognize each other's previous_response_id.
+func TestSelectRetryChannelMutexExcludesSibling(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-mutex-model"
+
+	// Hardcoded mutex pair used in production: agentrouter-1 and agentrouter-2.
+	const chID151, chID274 = 151, 274
+	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID274, "default", modelName)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	// First attempt landed on 151 and failed; the retry must not pick 274.
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Set("use_channel", []string{"151"})
+	retry.SetRetry(1)
+
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	assert.Nil(t, selected, "a mutex sibling must not be picked after the other side failed")
+	assert.Contains(t, retry.ExcludedIDs, chID151, "the failed channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded as well")
+}
+
+// The reverse direction works the same way: 274 first, then 151 is locked out.
+func TestSelectRetryChannelMutexExcludesSiblingReverse(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-mutex-reverse-model"
+
+	const chID151, chID274 = 151, 274
+	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID274, "default", modelName)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Set("use_channel", []string{"274"})
+	retry.SetRetry(1)
+
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	assert.Nil(t, selected, "a mutex sibling must not be picked after the other side failed")
+	assert.Contains(t, retry.ExcludedIDs, chID274, "the failed channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID151, "the mutex sibling is excluded as well")
+}
+
+// Channels outside the mutex group are not affected.
+func TestSelectRetryChannelMutexLeavesOtherChannelsAlone(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-mutex-others-model"
+
+	const chID151, chID274, chID999 = 151, 274, 999
+	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID274, "default", modelName)
+	createTestChannelForSelect(t, db, chID999, "default", modelName)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Set("use_channel", []string{"151"})
+	retry.SetRetry(1)
+
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	require.NotNil(t, selected, "non-mutex channels remain eligible")
+	assert.Equal(t, chID999, selected.Id, "the retry must land on the only non-mutex channel left")
+	assert.Contains(t, retry.ExcludedIDs, chID151, "the failed channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded")
+	assert.NotContains(t, retry.ExcludedIDs, chID999, "non-mutex channels are not excluded")
+}
+
 // testModel 测试里统一用的模型名。per_model 默认关闭，模型名会被 scopeKey
 // 折叠成渠道级，所以这些用例的语义与 v29.10 一致。
 const testModel = "gpt-4o"

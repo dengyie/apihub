@@ -313,6 +313,28 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 		param.ExcludedIDs = excluded
 	}
 
+	// 互斥渠道组：同一组内任一渠道被排除时，同组其他渠道一并排除。
+	// 用于 Responses API 等带状态接口（previous_response_id 绑定上游资源），
+	// 防止跨渠道 failover 时把请求打到不认识该 id 的另一资源上。
+	// 硬编码止血，后续若有多组互斥需求再升级为配置化。
+	channelMutexGroups := [][]int{
+		{151, 274}, // cpa-agentrouter-1 与 cpa-agentrouter-2 互斥
+	}
+	for _, group := range channelMutexGroups {
+		hasAny := false
+		for _, id := range group {
+			if _, ok := param.ExcludedIDs[id]; ok {
+				hasAny = true
+				break
+			}
+		}
+		if hasAny {
+			for _, id := range group {
+				param.ExcludedIDs[id] = struct{}{}
+			}
+		}
+	}
+
 	candidates := newChannelCandidates(param)
 	tracker := loadbalancer.GlobalTracker()
 	for {
