@@ -587,9 +587,10 @@ func TestSelectRetryChannelMutexExcludesSibling(t *testing.T) {
 	common.MemoryCacheEnabled = false
 	const modelName = "test-mutex-model"
 
-	// Hardcoded mutex pair used in production: agentrouter-1 and agentrouter-2.
-	const chID151, chID274 = 151, 274
+	// Hardcoded mutex triple used in production: agentrouter-1, anyrouter, agentrouter-2.
+	const chID151, chID154, chID274 = 151, 154, 274
 	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID154, "default", modelName)
 	createTestChannelForSelect(t, db, chID274, "default", modelName)
 
 	loadbalancer.SetPolicy(&loadbalancer.Policy{
@@ -601,26 +602,31 @@ func TestSelectRetryChannelMutexExcludesSibling(t *testing.T) {
 	})
 	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
 
-	// First attempt landed on 151 and failed; the retry must not pick 274.
+	// First attempt landed on 151 and failed; the retry must not pick 154 or 274.
 	c, retry := newSelectRetryParam(modelName, nil)
 	c.Set("use_channel", []string{"151"})
 	retry.SetRetry(1)
 
 	selected, _, err := SelectRetryChannel(retry)
 	require.NoError(t, err)
-	assert.Nil(t, selected, "a mutex sibling must not be picked after the other side failed")
+	assert.Nil(t, selected, "mutex siblings must not be picked after one side failed")
 	assert.Contains(t, retry.ExcludedIDs, chID151, "the failed channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID154, "the mutex sibling is excluded as well")
 	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded as well")
 }
 
-// The reverse direction works the same way: 274 first, then 151 is locked out.
+// The reverse direction works the same way: 154 first (the anyrouter channel
+// that actually serves gpt-6-astra / gpt-6.1-sol), then 151 and 274 are locked
+// out. This is the failover pair production logs showed (重试：154->274) that
+// triggered the three-way expansion.
 func TestSelectRetryChannelMutexExcludesSiblingReverse(t *testing.T) {
 	db := setupChannelSelectTest(t)
 	common.MemoryCacheEnabled = false
 	const modelName = "test-mutex-reverse-model"
 
-	const chID151, chID274 = 151, 274
+	const chID151, chID154, chID274 = 151, 154, 274
 	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID154, "default", modelName)
 	createTestChannelForSelect(t, db, chID274, "default", modelName)
 
 	loadbalancer.SetPolicy(&loadbalancer.Policy{
@@ -633,14 +639,15 @@ func TestSelectRetryChannelMutexExcludesSiblingReverse(t *testing.T) {
 	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
 
 	c, retry := newSelectRetryParam(modelName, nil)
-	c.Set("use_channel", []string{"274"})
+	c.Set("use_channel", []string{"154"})
 	retry.SetRetry(1)
 
 	selected, _, err := SelectRetryChannel(retry)
 	require.NoError(t, err)
-	assert.Nil(t, selected, "a mutex sibling must not be picked after the other side failed")
-	assert.Contains(t, retry.ExcludedIDs, chID274, "the failed channel stays excluded")
+	assert.Nil(t, selected, "mutex siblings must not be picked after one side failed")
+	assert.Contains(t, retry.ExcludedIDs, chID154, "the failed channel stays excluded")
 	assert.Contains(t, retry.ExcludedIDs, chID151, "the mutex sibling is excluded as well")
+	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded as well")
 }
 
 // Channels outside the mutex group are not affected.
@@ -649,8 +656,9 @@ func TestSelectRetryChannelMutexLeavesOtherChannelsAlone(t *testing.T) {
 	common.MemoryCacheEnabled = false
 	const modelName = "test-mutex-others-model"
 
-	const chID151, chID274, chID999 = 151, 274, 999
+	const chID151, chID154, chID274, chID999 = 151, 154, 274, 999
 	createTestChannelForSelect(t, db, chID151, "default", modelName)
+	createTestChannelForSelect(t, db, chID154, "default", modelName)
 	createTestChannelForSelect(t, db, chID274, "default", modelName)
 	createTestChannelForSelect(t, db, chID999, "default", modelName)
 
@@ -672,6 +680,7 @@ func TestSelectRetryChannelMutexLeavesOtherChannelsAlone(t *testing.T) {
 	require.NotNil(t, selected, "non-mutex channels remain eligible")
 	assert.Equal(t, chID999, selected.Id, "the retry must land on the only non-mutex channel left")
 	assert.Contains(t, retry.ExcludedIDs, chID151, "the failed channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID154, "the mutex sibling is excluded")
 	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded")
 	assert.NotContains(t, retry.ExcludedIDs, chID999, "non-mutex channels are not excluded")
 }

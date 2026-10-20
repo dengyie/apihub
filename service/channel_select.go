@@ -296,7 +296,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 // 防止跨渠道 failover 时把请求打到不认识该 id 的另一资源上。
 // 硬编码止血，后续若有多组互斥需求再升级为配置化。
 var channelMutexGroups = [][]int{
-	{151, 274}, // cpa-agentrouter-1 与 cpa-agentrouter-2 互斥
+	{151, 154, 274}, // cpa-agentrouter-1 / cpa-anyrouter / cpa-agentrouter-2 互斥
+	// anyrouter 与 agentrouter 背后是不同的 Azure OpenAI 资源池，
+	// Responses API 的 previous_response_id 跨资源会报 400。
 }
 
 // applyMutexGroupExclusions 把互斥组扩展进排除集。它是排除集的不变量而不只是
