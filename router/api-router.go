@@ -15,6 +15,11 @@ import (
 )
 
 func SetApiRouter(router *gin.Engine) {
+	// CORS must be installed before any /api route is registered: Gin's Use()
+	// only affects routes registered after it, and SetRelayRouter's engine-wide
+	// CORS runs too late to cover these handlers. Browser clients on
+	// share.mangoqwq.com read /api/status and /api/pricing cross-origin.
+	router.Use(middleware.CORS())
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
