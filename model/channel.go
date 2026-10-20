@@ -737,6 +737,17 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
 	}
+	// 学到的裁剪规则跟着渠道一起走（理由见 Channel.Delete）。
+	//
+	// 刻意放在事务**外**且不阻断删除：这是一次清理，不是删除渠道的前提。
+	// 放进事务的话，只要 param_strip_rules 这张表暂时不可用（老部署还没
+	// 迁移、非主节点没建表），删渠道就会整批回滚 —— 用「删不掉渠道」换
+	// 「残留几行无害规则」，代价完全不成比例。
+	for _, id := range ids {
+		if err := deleteParamStripRulesForChannel(id); err != nil {
+			common.SysLog(fmt.Sprintf("failed to delete param strip rules for channel %d: %v", id, err))
+		}
+	}
 	return deletedCount, nil
 }
 
@@ -878,7 +889,16 @@ func (channel *Channel) Delete() error {
 		return err
 	}
 	err = channel.DeleteAbilities()
-	return err
+	if err != nil {
+		return err
+	}
+	// 学到的裁剪规则跟着渠道一起走。渠道 id 会被复用，不清的话新渠道会
+	// 继承上一条渠道的参数限制 —— 那条规则当初是为完全不同的上游模型学到的。
+	// 清理失败不阻塞删除：表会残留几行无害数据，而删不掉渠道才是真的坏事。
+	if err := deleteParamStripRulesForChannel(channel.Id); err != nil {
+		common.SysLog(fmt.Sprintf("failed to delete param strip rules for channel %d: %v", channel.Id, err))
+	}
+	return nil
 }
 
 var channelStatusLock sync.Mutex

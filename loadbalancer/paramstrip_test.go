@@ -282,3 +282,82 @@ func TestParamStripReasoningContentAndRelayErrorHardening(t *testing.T) {
 		assert.True(t, IsUpstreamRelayError(errRelay), "error type %s must be recognized as upstream relay error", errType)
 	}
 }
+
+// TestIsParamNotSupportedErrorInvalidRequestParameters 钉住「Invalid request
+// parameters: X」这一族措辞。
+//
+// 生产实测渠道 #52（gpt-6-luna，2026-10-21 02:29）的原话是：
+//
+//	status_code=400, status_code=400, Invalid request parameters: enable_thinking is not supported.
+//
+// 它同时躲过了两条既有判据：reInvalidParamColon 要求 "invalid" 与
+// "parameter" 之间只有空白，而这里隔着 "request"；reParamNotSupportedBare
+// 要求 "parameter" 后面直接跟参数名，而这里跟的是 "s:"（复数 parameters）。
+// 于是这条 400 从未被认成参数问题，#52 每个请求都白烧一轮 enable_thinking，
+// 而且永不自愈 —— 自动学习链路一次也没被触发过。
+func TestIsParamNotSupportedErrorInvalidRequestParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{
+			name: "生产原话",
+			msg:  "status_code=400, status_code=400, Invalid request parameters: enable_thinking is not supported. (request id: 202610201829178775553148268d9d66N0jSnzz)",
+			want: "enable_thinking",
+		},
+		{
+			name: "单数 parameter",
+			msg:  "Invalid request parameter: top_k",
+			want: "top_k",
+		},
+		{
+			name: "小写",
+			msg:  "invalid request parameters: top_k",
+			want: "top_k",
+		},
+		{
+			name: "引号包裹",
+			msg:  "Invalid request parameters: 'top_k'",
+			want: "top_k",
+		},
+		{
+			name: "双引号包裹",
+			msg:  `Invalid request parameters: "top_k"`,
+			want: "top_k",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 400 走全量判据表。
+			e := &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New(tc.msg)}
+			p, ok := IsParamNotSupportedError(e)
+			assert.True(t, ok, "400 路径必须识别: %s", tc.msg)
+			assert.Equal(t, tc.want, p, "参数名提取错误: %s", tc.msg)
+
+			// 同一族措辞被中转层包成 5xx 时也必须认 —— 判据是措辞不是状态码。
+			e5 := &types.NewAPIError{StatusCode: 502, Err: errors.New(tc.msg)}
+			p5, ok5 := IsParamNotSupportedError(e5)
+			assert.True(t, ok5, "5xx 路径必须识别: %s", tc.msg)
+			assert.Equal(t, tc.want, p5, "5xx 参数名提取错误: %s", tc.msg)
+		})
+	}
+}
+
+// TestIsParamNotSupportedErrorInvalidRequestParamsNoFalsePositive 钉住这条新
+// 判据不会把无关文案误判成参数问题。
+//
+// 误判的代价是双向的：既会裁掉一个上游其实支持的参数，又会让
+// IsUpstreamRelayError 提前 return false 而不熔断真正坏掉的渠道。
+func TestIsParamNotSupportedErrorInvalidRequestParamsNoFalsePositive(t *testing.T) {
+	for _, msg := range []string{
+		"invalid request body: json: unknown field \"enable_thinking\"",
+		"invalid request",
+		"invalid request parameters are not acceptable here",
+		"internal server error",
+	} {
+		e := &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New(msg)}
+		p, ok := IsParamNotSupportedError(e)
+		assert.False(t, ok, "无关文案不得被误判成参数问题: %s", msg)
+		assert.Empty(t, p, "误判时不应带出参数名: %s", msg)
+	}
+}

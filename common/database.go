@@ -1,5 +1,7 @@
 package common
 
+import "strings"
+
 type DatabaseType string
 
 const (
@@ -70,3 +72,33 @@ var SQLitePath = "one-api.db?" + SQLiteConcurrencyParams
 // anything derived from it at the point of use silently loses the pragmas the
 // second time it is read.
 const SQLiteConcurrencyParams = "_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+
+// BuildSQLiteDSN 给一个 SQLite 文件路径补齐并发参数。
+//
+// 存在的理由是一个真实的生产事故：SQLITE_PATH 环境变量原本是**整串替换**
+// SQLitePath 的（`SQLitePath = os.Getenv("SQLITE_PATH")`），而 SQLitePath 自带
+// 的正是上面那三个并发参数。于是运维把库指到 /data/new-api/data/new-api.db
+// 这个绝对路径时，busy_timeout / WAL / BEGIN IMMEDIATE 被一起丢掉 ——
+// PRAGMA busy_timeout 变回 0，写操作遇到并发立刻 SQLITE_BUSY，当天就丢了
+// 计费结算、日志落库、渠道配额更新共 17 笔。
+//
+// 运维改的只是「哪个文件」，不是「要不要并发参数」；后者是代码级的并发正确性
+// 前提，不该因为指了个绝对路径就消失。所以这里把「路径」与「参数」分开：
+// 环境变量只提供路径，并发参数始终由代码补上。
+//
+// 幂等：DSN 里已经有同名参数时不再重复追加（重复的 _pragma 会被驱动按序执行，
+// 重复设置 busy_timeout 虽然无害，但会让日志里的 DSN 变得难读）。
+func BuildSQLiteDSN(path string) string {
+	if path == "" {
+		return SQLitePath
+	}
+	// 已经带了查询串的，说明调用方自己拼过参数：只在缺并发参数时补。
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		query := path[idx+1:]
+		if !strings.Contains(query, "busy_timeout") || !strings.Contains(query, "journal_mode") {
+			return path + "&" + SQLiteConcurrencyParams
+		}
+		return path
+	}
+	return path + "?" + SQLiteConcurrencyParams
+}

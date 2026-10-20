@@ -382,6 +382,12 @@ func InitResources() error {
 		common.FatalLog("failed to initialize authorization: " + err.Error())
 		return err
 	}
+	// 把「自动学到的参数裁剪规则」从库里读回内存。必须在 InitDB 之后：
+	// 表要先存在，读回来才有内容。失败不阻塞启动 —— 读不到就退回「重新学」，
+	// 也就是改动前的行为。
+	if err = model.InitParamStripStore(); err != nil {
+		common.SysError("failed to load persisted param strip rules: " + err.Error())
+	}
 	if common.PasswordLoginEncryptionEnabled {
 		if err = model.InitPasswordEncryption(); err != nil {
 			common.FatalLog("failed to initialize password encryption: " + err.Error())

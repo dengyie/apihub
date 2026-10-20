@@ -9,6 +9,7 @@ package loadbalancer
 // 分类器是熔断最敏感的部分，必须有独立的家。
 
 import (
+	"log"
 	"net/http"
 	"regexp"
 	"slices"
@@ -206,14 +207,28 @@ func MarkParamUnsupported(channelID int, modelName string, param string) {
 		return
 	}
 	paramStripMu.Lock()
-	defer paramStripMu.Unlock()
 	key := paramStripKey{channelID: channelID, model: modelName}
 	set := paramStripLearned[key]
 	if set == nil {
 		set = make(map[string]struct{})
 		paramStripLearned[key] = set
 	}
-	set[param] = struct{}{}
+	alreadyKnown := false
+	if _, ok := set[param]; ok {
+		alreadyKnown = true
+	} else {
+		set[param] = struct{}{}
+	}
+	paramStripMu.Unlock()
+
+	// 已经在内存里学过的参数不必再落库：重启后从表里读回来还是同一条。
+	// 这条判断让「同一个参数被反复遇到」只产生一次写。
+	if alreadyKnown {
+		return
+	}
+	if err := persistLearnedRule(channelID, modelName, param); err != nil {
+		log.Printf("loadbalancer: failed to persist learned param rule (channel=%d model=%s param=%s): %v", channelID, modelName, param, err)
+	}
 }
 
 func normalizeParamName(p string) string {
@@ -291,6 +306,16 @@ var (
 	reInvalidParamColon = regexp.MustCompile(`(?i)invalid\s+parameter:\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`)
 	// ↑ invalid parameter: xxx
 
+	reInvalidRequestParams = regexp.MustCompile(`(?i)invalid\s+request\s+parameters?\s*:\s*['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?`)
+	// ↑ Invalid request parameters: enable_thinking
+	//   生产实测渠道 #52（gpt-6-luna）的原话。它的形态是「invalid」后面隔着
+	//   一个 request，参数名以**复数** parameters 开头：reInvalidParamColon 的
+	//   `invalid\s+parameter:` 匹配不上（中间多了 request），reParamNotSupportedBare
+	//   的 `parameter\s+...is not supported` 也匹配不上（parameter 后面跟着 s:，
+	//   不是参数名）。两条都擦肩而过，于是这条 400 从未被认成参数问题，
+	//   #52 每个请求都白烧一轮 enable_thinking，且永不自愈。
+	//   写成 parameters? 是为了同时覆盖 "Invalid request parameter:" 的单数写法。
+
 	reParamNotSupportedBare = regexp.MustCompile(`(?i)parameter\s+['"]?([a-zA-Z_][a-zA-Z0-9_]*)['"]?\s+is not supported`)
 	// ↑ parameter xxx is not supported
 
@@ -318,6 +343,7 @@ var unsupportedParamPatterns = []*regexp.Regexp{
 	reParamInvalidQuoted,
 	reUnknownParamField,
 	reInvalidParamColon,
+	reInvalidRequestParams,
 	reParamNotSupportedBare,
 	reExtraFieldsLast,
 	reExtraFieldsBracket,
@@ -339,6 +365,7 @@ var unsupportedParamPatternsStrict = []*regexp.Regexp{
 	reWasUnexpected,
 	reUnknownParamField,
 	reInvalidParamColon,
+	reInvalidRequestParams,
 	reParamNotSupportedBare,
 	reParamInvalidQuoted,
 	reExtraFieldsLast,
