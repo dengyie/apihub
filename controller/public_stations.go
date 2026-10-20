@@ -32,10 +32,36 @@ func publicStationsMode() string {
 	}
 }
 
+// internalOnlyCIDRs 覆盖标准库 IsPrivate/IsGlobalUnicast 不识别、但在本
+// 基础设施里同样属于内部编址的网段：
+//   - 100.64.0.0/10  运营商级 NAT（RFC 6598），云内网常见；
+//   - 198.18.0.0/15  基准测试保留段（RFC 2544），sing-box fake-IP 默认区间。
+var internalOnlyCIDRs = func() []*net.IPNet {
+	blocks := []string{"100.64.0.0/10", "198.18.0.0/15"}
+	nets := make([]*net.IPNet, 0, len(blocks))
+	for _, block := range blocks {
+		_, parsed, err := net.ParseCIDR(block)
+		if err != nil {
+			panic("invalid internal-only CIDR " + block + ": " + err.Error())
+		}
+		nets = append(nets, parsed)
+	}
+	return nets
+}()
+
+func isInternalOnlyIP(ip net.IP) bool {
+	for _, network := range internalOnlyCIDRs {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // isPubliclyPublishableBaseURL 过滤不适合对公网公开的上游地址：
-// 回环、私网、链路本地地址以及空地址一律不下发 —— 本机侧车代理
-// （127.0.0.1:xxxx 一类的内部网关渠道）不是「站点」，公开它们只会泄露
-// 内部拓扑。该规则与公开模式无关，任何模式下都强制生效。
+// 回环、私网、链路本地、CGNAT、fake-IP 段以及空地址一律不下发 ——
+// 本机侧车代理（127.0.0.1:xxxx 一类的内部网关渠道）不是「站点」，
+// 公开它们只会泄露内部拓扑。该规则与公开模式无关，任何模式下都强制生效。
 func isPubliclyPublishableBaseURL(raw string) bool {
 	if strings.TrimSpace(raw) == "" {
 		return false
@@ -46,7 +72,7 @@ func isPubliclyPublishableBaseURL(raw string) bool {
 	}
 	host := parsed.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsGlobalUnicast() && !ip.IsPrivate()
+		return ip.IsGlobalUnicast() && !ip.IsPrivate() && !isInternalOnlyIP(ip)
 	}
 	// 主机名形式：把 .local / 裸主机名（无点）视作内网。
 	return strings.Contains(host, ".") && !strings.HasSuffix(host, ".local")

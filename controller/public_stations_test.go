@@ -167,9 +167,14 @@ func TestGetPublicStationsAllMode(t *testing.T) {
 
 	publicURL := "https://nailao.example.com"
 	loopback := "http://127.0.0.1:8318"
+	cgnat := "http://100.64.1.5:3000"
+	fakeIP := "http://198.18.0.7:8080"
 	for _, ch := range []*model.Channel{
 		{Id: 10, Name: "cpa-nailao", Type: 1, Status: common.ChannelStatusEnabled, Key: "sk-A", BaseURL: &publicURL, Models: "gpt-5.5", Group: "default"},
 		{Id: 95, Name: "cpa-opencode.zen", Type: 1, Status: common.ChannelStatusEnabled, Key: "sk-B", BaseURL: &loopback, Models: "gpt-5.5", Group: "default"},
+		// CGNAT（RFC 6598）与 fake-IP（RFC 2544 / sing-box）段同样不许下发。
+		{Id: 96, Name: "cpa-cgnat", Type: 1, Status: common.ChannelStatusEnabled, Key: "sk-C", BaseURL: &cgnat, Models: "gpt-5.5", Group: "default"},
+		{Id: 97, Name: "cpa-fakeip", Type: 1, Status: common.ChannelStatusEnabled, Key: "sk-D", BaseURL: &fakeIP, Models: "gpt-5.5", Group: "default"},
 	} {
 		ch := ch
 		require.NoError(t, db.Create(ch).Error)
@@ -192,5 +197,7 @@ func TestGetPublicStationsAllMode(t *testing.T) {
 	assert.Equal(t, 10, body.Data[0].ID)
 	assert.Equal(t, "https://nailao.example.com", body.Data[0].BaseURL)
 	assert.NotContains(t, recorder.Body.String(), "127.0.0.1")
+	assert.NotContains(t, recorder.Body.String(), "100.64.1.5")
+	assert.NotContains(t, recorder.Body.String(), "198.18.0.7")
 	assert.NotContains(t, recorder.Body.String(), "sk-A")
 }
