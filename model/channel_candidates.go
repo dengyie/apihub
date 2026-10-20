@@ -56,14 +56,18 @@ func (c *ChannelCandidates) Pick(retry int, excludedIDs map[int]struct{}, sticky
 	firstAttempt := retry == 0
 
 	tiers := priorityTiers(pool)
-	if retry >= len(tiers) {
-		retry = len(tiers) - 1
-	}
-	if retry < 0 {
-		retry = 0
+	tierIndex := 0
+	if !firstAttempt && len(tiers) > 1 {
+		// 概率梯队降级：重试时若当前最高可用优先级梯队仍有未尝试的渠道，
+		// 以 2/3 概率优先在当前最高梯队继续尝试（充分利用高优先级优质渠道），
+		// 以 1/3 概率向下一个较低优先级梯队步进降级（避免高梯队发生大面积上游故障时死锁耗尽重试预算）。
+		// 每次步进降级均有 1/3 概率向下一级延展。
+		for tierIndex < len(tiers)-1 && rand.Intn(3) == 0 {
+			tierIndex++
+		}
 	}
 	tier := lo.Filter(pool, func(channel *Channel, _ int) bool {
-		return channel.GetPriority() == tiers[retry]
+		return channel.GetPriority() == tiers[tierIndex]
 	})
 	if len(tier) == 0 {
 		return nil

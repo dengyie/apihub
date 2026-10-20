@@ -365,8 +365,9 @@ func TestChannelCandidatesDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, 810002, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}}).Id)
 			assert.Equal(t, 810003, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}, 810002: {}}).Id)
 			assert.Nil(t, pick("default", "gpt-matrix", 0, map[int]struct{}{810001: {}, 810002: {}, 810003: {}}))
-			// A second retry tier reaches the lower-priority channel directly.
-			assert.Equal(t, 810003, pick("default", "gpt-matrix", 1, nil).Id)
+			// 重试在未排除高优先级渠道时，支持基于概率的平滑降级（既可留在高优先级亦可降级）
+			pickedRetry := pick("default", "gpt-matrix", 1, nil)
+			assert.Contains(t, []int{810001, 810002, 810003}, pickedRetry.Id)
 
 			// A suffixed model name falls back to its base name, which is what
 			// makes "-high"/"-low" variants routable without per-variant abilities.
@@ -435,4 +436,81 @@ func TestChannelCandidatesRetryLeavesStickyChannel(t *testing.T) {
 	assert.Equal(t, 2, candidates.Pick(1, map[int]struct{}{1: {}}, stickyKey).Id)
 	sole := &ChannelCandidates{channels: []*Channel{{Id: 9, Priority: &priority, Weight: &otherWeight}}}
 	assert.Equal(t, 9, sole.Pick(2, nil, stickyKey).Id, "exhausting the sticky preference must not return nil")
+}
+
+func TestChannelCandidatesProbabilisticTierDegradation(t *testing.T) {
+	p10 := int64(10)
+	p8 := int64(8)
+	p5 := int64(5)
+	w100 := uint(100)
+
+	// 两个优先级分层：P10 (渠道1、2), P5 (渠道3)
+	candidates2Tier := &ChannelCandidates{channels: []*Channel{
+		{Id: 1, Priority: &p10, Weight: &w100},
+		{Id: 2, Priority: &p10, Weight: &w100},
+		{Id: 3, Priority: &p5, Weight: &w100},
+	}}
+
+	// 1. 首轮请求 (retry == 0) 必须 100% 落在最高梯队 P10 (渠道 1 或 2)
+	for i := 0; i < 100; i++ {
+		ch := candidates2Tier.Pick(0, nil, "")
+		require.NotNil(t, ch)
+		assert.Contains(t, []int{1, 2}, ch.Id, "首轮必须严格选择最高优先级 P10")
+	}
+
+	// 2. 重试阶段 (retry == 1) 且高优先级未被排除时：约 2/3 概率留守 P10，约 1/3 概率降级到 P5
+	runs := 3000
+	countP10 := 0
+	countP5 := 0
+	for i := 0; i < runs; i++ {
+		ch := candidates2Tier.Pick(1, nil, "")
+		require.NotNil(t, ch)
+		if ch.Id == 1 || ch.Id == 2 {
+			countP10++
+		} else if ch.Id == 3 {
+			countP5++
+		}
+	}
+	ratioP10 := float64(countP10) / float64(runs)
+	ratioP5 := float64(countP5) / float64(runs)
+	// 期望 P10 约为 66.7% (容差 60% ~ 73%), P5 约为 33.3% (容差 27% ~ 40%)
+	assert.True(t, ratioP10 > 0.60 && ratioP10 < 0.73, "P10 概率期望约为 2/3，实际: %f", ratioP10)
+	assert.True(t, ratioP5 > 0.27 && ratioP5 < 0.40, "P5 概率期望约为 1/3，实际: %f", ratioP5)
+
+	// 3. 当高优先级渠道全部耗尽被排除时，必须 100% 确定性降级到下一个有效梯队 P5
+	excludedP10 := map[int]struct{}{1: {}, 2: {}}
+	for i := 0; i < 100; i++ {
+		ch := candidates2Tier.Pick(1, excludedP10, "")
+		require.NotNil(t, ch)
+		assert.Equal(t, 3, ch.Id, "高优先级耗尽后必须 100% 降级至 P5")
+	}
+
+	// 4. 三个优先级分层：P10 (渠道1), P8 (渠道2), P5 (渠道3)
+	candidates3Tier := &ChannelCandidates{channels: []*Channel{
+		{Id: 1, Priority: &p10, Weight: &w100},
+		{Id: 2, Priority: &p8, Weight: &w100},
+		{Id: 3, Priority: &p5, Weight: &w100},
+	}}
+	count3P10 := 0
+	count3P8 := 0
+	count3P5 := 0
+	for i := 0; i < runs; i++ {
+		ch := candidates3Tier.Pick(1, nil, "")
+		require.NotNil(t, ch)
+		switch ch.Id {
+		case 1:
+			count3P10++
+		case 2:
+			count3P8++
+		case 3:
+			count3P5++
+		}
+	}
+	ratio3P10 := float64(count3P10) / float64(runs)
+	ratio3P8 := float64(count3P8) / float64(runs)
+	ratio3P5 := float64(count3P5) / float64(runs)
+	// 期望 P10: 2/3 ≈ 66.7% (60%~73%), P8: 1/3 * 2/3 ≈ 22.2% (17%~27%), P5: 1/9 ≈ 11.1% (7%~16%)
+	assert.True(t, ratio3P10 > 0.60 && ratio3P10 < 0.73, "3层 P10 期望约为 66.7%，实际: %f", ratio3P10)
+	assert.True(t, ratio3P8 > 0.17 && ratio3P8 < 0.27, "3层 P8 期望约为 22.2%，实际: %f", ratio3P8)
+	assert.True(t, ratio3P5 > 0.07 && ratio3P5 < 0.16, "3层 P5 期望约为 11.1%，实际: %f", ratio3P5)
 }
