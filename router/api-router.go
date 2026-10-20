@@ -31,6 +31,9 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
+		// ai-hub 动态站点拓扑（tag 白名单 + 投影 DTO，无敏感字段），
+		// 供 share.mangoqwq.com 前端拉取后台实际接入的公益站渠道。
+		apiRouter.GET("/public_stations", controller.GetPublicStations)
 		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
