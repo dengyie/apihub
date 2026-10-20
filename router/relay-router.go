@@ -13,7 +13,8 @@ import (
 )
 
 func SetRelayRouter(router *gin.Engine) {
-	router.Use(middleware.CORS())
+	// CORS 由 SetApiRouter 顶部的引擎级 router.Use 统一挂载（它先于本函数执行，
+	// 覆盖其后注册的全部路由），这里不再重复挂一份。
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())

@@ -676,6 +676,77 @@ func TestSelectRetryChannelMutexLeavesOtherChannelsAlone(t *testing.T) {
 	assert.NotContains(t, retry.ExcludedIDs, chID999, "non-mutex channels are not excluded")
 }
 
+// The mutex expansion is an invariant of the excluded set, not a one-time entry
+// step: when the tracker (breaker/inflight) skips 151 INSIDE the retry loop,
+// that exclusion happens after the entry-time expansion ran, so the sibling 274
+// must be excluded before the next resolve. Regression: this used to return 274
+// in the same call, exactly the "breaker trip" leak the mutex groups exist to
+// prevent.
+func TestSelectRetryChannelMutexCoversBreakerTripWithinCall(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-mutex-breaker-trip-model"
+
+	const chID151, chID274, chIDStale = 151, 274, 888
+	zeroWeight := uint(0)
+	heavyWeight := uint(1000)
+	createTestChannelForSelectWeighted(t, db, chID151, "default", modelName, heavyWeight)
+	createTestChannelForSelectWeighted(t, db, chID274, "default", modelName, zeroWeight)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 8,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 5, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	// 151 is breaker-tripped but NOT excluded at entry (previous attempt was on
+	// an unrelated channel), so the entry-time mutex expansion is a no-op. The
+	// loop must apply it again after the tracker skip.
+	loadbalancer.GlobalTracker().TripBreaker(chID151, modelName)
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Set("use_channel", []string{fmt.Sprintf("%d", chIDStale)})
+	retry.SetRetry(1)
+
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	assert.Nil(t, selected, "with 151 tripped and 274 mutex-excluded, the pair must be exhausted")
+	assert.Contains(t, retry.ExcludedIDs, chIDStale, "the unrelated previous channel stays excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID151, "the breaker-tripped channel is excluded")
+	assert.Contains(t, retry.ExcludedIDs, chID274, "the mutex sibling is excluded by the in-loop re-application")
+}
+
+// createTestChannelForSelectWeighted is createTestChannelForSelect with an
+// explicit weight: the weighted-random Pick needs channel 151 to dominate the
+// tier (weight 1000 vs 0) so the breaker-trip path above is deterministic
+// instead of a coin flip between the mutex siblings.
+func createTestChannelForSelectWeighted(t *testing.T, db *gorm.DB, id int, group, modelName string, weight uint) {
+	t.Helper()
+	priority := int64(0)
+	require.NoError(t, db.Create(&model.Channel{
+		Id:       id,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      fmt.Sprintf("key-%d", id),
+		Status:   common.ChannelStatusEnabled,
+		Name:     fmt.Sprintf("channel-%d", id),
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    group,
+		Priority: &priority,
+	}).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group:     group,
+		Model:     modelName,
+		ChannelId: id,
+		Enabled:   true,
+		Priority:  &priority,
+		Weight:    weight,
+	}).Error)
+}
+
 // testModel 测试里统一用的模型名。per_model 默认关闭，模型名会被 scopeKey
 // 折叠成渠道级，所以这些用例的语义与 v29.10 一致。
 const testModel = "gpt-4o"

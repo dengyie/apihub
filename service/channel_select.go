@@ -291,6 +291,35 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 // 被 tracker 判死），后续轮次就不再参与。终止性由 Pick 保证——候选被排除干净时
 // 它返回 nil，resolve 随之返回「无可用渠道」错误，循环最迟在候选耗尽的那一轮
 // 结束，无需人为设定尝试上限。
+// 互斥渠道组：同一组内任一渠道被排除时，同组其他渠道一并排除。
+// 用于 Responses API 等带状态接口（previous_response_id 绑定上游资源），
+// 防止跨渠道 failover 时把请求打到不认识该 id 的另一资源上。
+// 硬编码止血，后续若有多组互斥需求再升级为配置化。
+var channelMutexGroups = [][]int{
+	{151, 274}, // cpa-agentrouter-1 与 cpa-agentrouter-2 互斥
+}
+
+// applyMutexGroupExclusions 把互斥组扩展进排除集。它是排除集的不变量而不只是
+// 入口处的一次性步骤：只要排除集发生变化（入口同步 use_channel 之后、重试循环
+// 内 tracker 判死某个渠道之后）都必须重新应用，否则熔断跳过的渠道会在同一轮
+// resolve 里把请求送到它的互斥兄弟上。
+func applyMutexGroupExclusions(excluded map[int]struct{}) {
+	for _, group := range channelMutexGroups {
+		hasAny := false
+		for _, id := range group {
+			if _, ok := excluded[id]; ok {
+				hasAny = true
+				break
+			}
+		}
+		if hasAny {
+			for _, id := range group {
+				excluded[id] = struct{}{}
+			}
+		}
+	}
+}
+
 func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 	if param == nil || param.Ctx == nil {
 		return nil, "", errors.New("retry param is nil")
@@ -313,27 +342,7 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 		param.ExcludedIDs = excluded
 	}
 
-	// 互斥渠道组：同一组内任一渠道被排除时，同组其他渠道一并排除。
-	// 用于 Responses API 等带状态接口（previous_response_id 绑定上游资源），
-	// 防止跨渠道 failover 时把请求打到不认识该 id 的另一资源上。
-	// 硬编码止血，后续若有多组互斥需求再升级为配置化。
-	channelMutexGroups := [][]int{
-		{151, 274}, // cpa-agentrouter-1 与 cpa-agentrouter-2 互斥
-	}
-	for _, group := range channelMutexGroups {
-		hasAny := false
-		for _, id := range group {
-			if _, ok := param.ExcludedIDs[id]; ok {
-				hasAny = true
-				break
-			}
-		}
-		if hasAny {
-			for _, id := range group {
-				param.ExcludedIDs[id] = struct{}{}
-			}
-		}
-	}
+	applyMutexGroupExclusions(param.ExcludedIDs)
 
 	candidates := newChannelCandidates(param)
 	tracker := loadbalancer.GlobalTracker()
@@ -348,6 +357,7 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 		if ok, reason := tracker.IsAvailable(channel.Id, param.ModelName); !ok {
 			logger.LogDebug(param.Ctx, "loadbalancer: retry 跳过渠道 #%d [model=%s] (%s)", channel.Id, param.ModelName, reason)
 			param.ExcludedIDs[channel.Id] = struct{}{}
+			applyMutexGroupExclusions(param.ExcludedIDs)
 			continue
 		}
 		return channel, selectGroup, nil
