@@ -1340,14 +1340,51 @@ func updateChannelUsedQuota(id int, quota int) {
 	}
 }
 
-func DeleteChannelByStatus(status int64) (int64, error) {
-	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
-}
-
+// DeleteDisabledChannel 删除全部已禁用渠道（自动禁用 + 手动禁用）。
+//
+// 它曾经只 `Delete(&Channel{})`，把 abilities 和学到的裁剪规则都留成了孤儿：
+// abilities 残留会让路由继续读到一条已不存在的渠道；param_strip_rules 残留会在
+// 渠道 id 被复用后让新渠道继承上一条渠道学到的参数限制。现在和 BatchDeleteChannels
+// 走同一条清理路径：事务内删 channels + abilities，事务外清学到的规则。
 func DeleteDisabledChannel() (int64, error) {
-	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	var ids []int
+	if err := DB.Model(&Channel{}).
+		Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return 0, tx.Error
+	}
+	var deletedCount int64
+	for _, chunk := range lo.Chunk(ids, 200) {
+		result := tx.Where("id in (?)", chunk).Delete(&Channel{})
+		if result.Error != nil {
+			tx.Rollback()
+			return 0, result.Error
+		}
+		deletedCount += result.RowsAffected
+		if err := tx.Where("channel_id in (?)", chunk).Delete(&Ability{}).Error; err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		return 0, err
+	}
+	// 学到的裁剪规则同样跟着渠道一起走；刻意放在事务外且不阻断删除，
+	// 理由与 BatchDeleteChannels 相同（见该函数注释）。
+	for _, id := range ids {
+		if err := deleteParamStripRulesForChannel(id); err != nil {
+			common.SysLog(fmt.Sprintf("failed to delete param strip rules for channel %d: %v", id, err))
+		}
+	}
+	return deletedCount, nil
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {

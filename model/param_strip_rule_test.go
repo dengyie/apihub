@@ -3,6 +3,7 @@ package model
 import (
 	"testing"
 
+	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/loadbalancer"
 
 	"github.com/stretchr/testify/assert"
@@ -87,22 +88,6 @@ func TestParamStripStoreMultipleParamsSamePair(t *testing.T) {
 	assert.ElementsMatch(t, []string{"reasoning_effort", "thinking"}, rules[0].Params)
 }
 
-func TestParamStripStoreDeleteForChannel(t *testing.T) {
-	setupParamStripRuleTest(t)
-
-	store := &ParamStripStore{}
-	require.NoError(t, store.SaveParamStripRule(loadbalancer.ParamStripRule{
-		ChannelID: 272,
-		Model:     "bge-m3",
-		Params:    []string{"thinking"},
-	}))
-	require.NoError(t, store.DeleteParamStripRulesForChannel(272))
-
-	rules, err := store.LoadParamStripRules()
-	require.NoError(t, err)
-	assert.Empty(t, rules)
-}
-
 // TestParamStripRulesSurviveRestart 是本次修复的核心断言。
 //
 // 模拟一次进程重启：把规则写进库 → 把内存清空（等价于新进程的空 map）→
@@ -163,4 +148,80 @@ func TestChannelDeleteClearsParamStripRules(t *testing.T) {
 	rules, err := store.LoadParamStripRules()
 	require.NoError(t, err)
 	assert.Empty(t, rules, "渠道删除后它的裁剪规则必须一起清掉")
+}
+
+// TestDeleteDisabledChannelClearsAbilitiesAndRules 钉住「批量删除禁用渠道」时的
+// 清理：abilities 与学到的裁剪规则都必须跟着一起走。
+//
+// DeleteDisabledChannel 曾经只 `Delete(&Channel{})`，把 abilities 和
+// param_strip_rules 都留成孤儿。abilities 残留会让路由读到一条已不存在的渠道；
+// 规则残留会在渠道 id 复用后让新渠道继承上一条渠道学到的参数限制。
+func TestDeleteDisabledChannelClearsAbilitiesAndRules(t *testing.T) {
+	truncateTables(t)
+	// 先清场，避免全量测试时别的用例留下 disabled 渠道，让删除计数不确定。
+	require.NoError(t, DB.Exec("DELETE FROM param_strip_rules").Error)
+	require.NoError(t, DB.Exec("DELETE FROM abilities").Error)
+	require.NoError(t, DB.Exec("DELETE FROM channels").Error)
+	t.Cleanup(func() {
+		DB.Exec("DELETE FROM param_strip_rules")
+		DB.Exec("DELETE FROM abilities")
+		DB.Exec("DELETE FROM channels")
+	})
+
+	channel := Channel{
+		Name:   "delete-disabled-cleanup",
+		Key:    "k",
+		Status: common.ChannelStatusManuallyDisabled,
+		Group:  "default",
+		Models: "some-model",
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+	require.NoError(t, DB.Create(&Ability{
+		Group:     "default",
+		Model:     "some-model",
+		ChannelId: channel.Id,
+		Enabled:   false,
+	}).Error)
+
+	store := &ParamStripStore{}
+	require.NoError(t, store.SaveParamStripRule(loadbalancer.ParamStripRule{
+		ChannelID: channel.Id,
+		Model:     "some-model",
+		Params:    []string{"thinking"},
+	}))
+
+	deleted, err := DeleteDisabledChannel()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
+
+	var abilityCount int64
+	require.NoError(t, DB.Model(&Ability{}).Where("channel_id = ?", channel.Id).Count(&abilityCount).Error)
+	assert.Zero(t, abilityCount, "批量删除禁用渠道后 abilities 必须一起清掉")
+
+	rules, err := store.LoadParamStripRules()
+	require.NoError(t, err)
+	assert.Empty(t, rules, "批量删除禁用渠道后裁剪规则必须一起清掉")
+}
+
+// TestDeleteParamStripRule 钉住「人工纠正到 (渠道, 模型, 参数) 粒度」。
+//
+// 误学确实可能发生（参数识别把一次 5xx 散文式错误误判成参数问题）。撤销一条
+// 规则不能误伤同渠道同模型的其他规则。
+func TestDeleteParamStripRule(t *testing.T) {
+	setupParamStripRuleTest(t)
+
+	store := &ParamStripStore{}
+	require.NoError(t, store.SaveParamStripRule(loadbalancer.ParamStripRule{
+		ChannelID: 99,
+		Model:     "some-model",
+		Params:    []string{"thinking", "enable_thinking"},
+	}))
+
+	require.NoError(t, DeleteParamStripRule(99, "some-model", "thinking"))
+
+	rules, err := store.LoadParamStripRules()
+	require.NoError(t, err)
+	require.Len(t, rules, 1, "同一 (渠道, 模型) 剩一条")
+	assert.Equal(t, []string{"enable_thinking"}, rules[0].Params,
+		"被撤销的参数必须删掉，其他参数保留")
 }

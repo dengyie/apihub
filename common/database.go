@@ -1,6 +1,9 @@
 package common
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 type DatabaseType string
 
@@ -78,27 +81,84 @@ const SQLiteConcurrencyParams = "_pragma=busy_timeout(30000)&_pragma=journal_mod
 // 存在的理由是一个真实的生产事故：SQLITE_PATH 环境变量原本是**整串替换**
 // SQLitePath 的（`SQLitePath = os.Getenv("SQLITE_PATH")`），而 SQLitePath 自带
 // 的正是上面那三个并发参数。于是运维把库指到 /data/new-api/data/new-api.db
-// 这个绝对路径时，busy_timeout / WAL / BEGIN IMMEDIATE 被一起丢掉 ——
-// PRAGMA busy_timeout 变回 0，写操作遇到并发立刻 SQLITE_BUSY，当天就丢了
-// 计费结算、日志落库、渠道配额更新共 17 笔。
+// 这个绝对路径时，busy_timeout / WAL / BEGIN IMMEDIATE 被一起丢掉。
+//
+// 参数丢掉后到底发生了什么，实测结论纠正了旧注释里「busy_timeout 变回 0」的
+// 错误说法：纯 Go 驱动在每个连接上会无条件先执行 `PRAGMA BUSY_TIMEOUT(5000)`
+// （驱动默认 5000ms，不是 0），journal_mode 则回落到 SQLite 默认的 `delete`
+// （不是 WAL）。真正的根因是 **WAL 丢失**：没有 WAL 时 writer 会 block reader、
+// reader 会 block writer，加上 _txlock=immediate 缺失，并发写走 busy_timeout 排队
+// 也压不住，最终表现成 SQLITE_BUSY。生产日志实测共 20 条 "database is locked"
+// （10/19 2 条、10/20 2 条、10/21 16 条），分布在计费结算 1 条、日志落库 8 条、
+// 用户配额 7 条、渠道配额 2 条、系统实例 2 条。
 //
 // 运维改的只是「哪个文件」，不是「要不要并发参数」；后者是代码级的并发正确性
 // 前提，不该因为指了个绝对路径就消失。所以这里把「路径」与「参数」分开：
 // 环境变量只提供路径，并发参数始终由代码补上。
 //
-// 幂等：DSN 里已经有同名参数时不再重复追加（重复的 _pragma 会被驱动按序执行，
-// 重复设置 busy_timeout 虽然无害，但会让日志里的 DSN 变得难读）。
+// 三个参数**各自独立**判断，绝不互相牵连：
+//   - busy_timeout：已存在则保留调用方给的值，缺失才补 30000（绝不覆盖）；
+//   - journal_mode：已存在则保留调用方给的值，缺失才补 WAL；
+//   - _txlock：缺失时始终补 immediate（这是并发正确性的硬前提）。
+//
+// 旧实现用一个 `||` 把三个参数绑在一起，有两个 bug：(a) 只传 busy_timeout 时，
+// 代码把整串三个参数又追加一遍，第二个 busy_timeout 按序覆盖了调用方显式给的
+// 值；(b) 传了 busy_timeout + journal_mode 却没传 _txlock 时，直接原样返回，
+// _txlock=immediate 被静默丢掉。现在三者独立判断，各自补缺，永不覆盖已存在的值。
 func BuildSQLiteDSN(path string) string {
 	if path == "" {
 		return SQLitePath
 	}
-	// 已经带了查询串的，说明调用方自己拼过参数：只在缺并发参数时补。
+	// 拆出路径与查询串；查询串用 url.ParseQuery 解析，按「键」判断而非子串匹配，
+	// 避免把值里的字符误判成已存在，也避免重复追加。
+	base := path
+	rawQuery := ""
+	hadQuery := false
 	if idx := strings.Index(path, "?"); idx >= 0 {
-		query := path[idx+1:]
-		if !strings.Contains(query, "busy_timeout") || !strings.Contains(query, "journal_mode") {
-			return path + "&" + SQLiteConcurrencyParams
-		}
+		base = path[:idx]
+		rawQuery = path[idx+1:]
+		hadQuery = true
+	}
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		// 查询串解析失败说明调用方给的不是合法 URI 查询，原样返回让驱动自己报错，
+		// 而不是在这里把一个坏 DSN 再加工一遍。
 		return path
 	}
-	return path + "?" + SQLiteConcurrencyParams
+
+	var missing []string
+	if !hasPragma(values, "busy_timeout") {
+		missing = append(missing, "_pragma=busy_timeout(30000)")
+	}
+	if !hasPragma(values, "journal_mode") {
+		missing = append(missing, "_pragma=journal_mode(WAL)")
+	}
+	if values.Get("_txlock") == "" {
+		missing = append(missing, "_txlock=immediate")
+	}
+
+	if len(missing) == 0 {
+		return path
+	}
+	// 原样保留调用方给的查询串，只在末尾追加缺失的参数。
+	if hadQuery {
+		return base + "?" + rawQuery + "&" + strings.Join(missing, "&")
+	}
+	return base + "?" + strings.Join(missing, "&")
+}
+
+// hasPragma 判断 query 的 _pragma 参数里是否已包含某个 pragma 名（忽略大小写），
+// 只比到左括号之前，即 `busy_timeout(30000)` 与 `busy_timeout(1000)` 都算命中
+// `busy_timeout`。这样可以识别调用方已经显式给了该 pragma，从而不覆盖。
+func hasPragma(values url.Values, name string) bool {
+	for _, p := range values["_pragma"] {
+		if i := strings.IndexAny(p, "("); i > 0 {
+			p = p[:i]
+		}
+		if strings.EqualFold(strings.TrimSpace(p), name) {
+			return true
+		}
+	}
+	return false
 }

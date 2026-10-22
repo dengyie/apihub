@@ -934,6 +934,44 @@ func DeleteDisabledChannel(c *gin.Context) {
 	return
 }
 
+// DeleteParamStripRule 删掉一条学到的裁剪规则（人工纠正误学）。
+//
+// 学习路径只增不减，但误判确实存在：参数识别把一次 5xx 的散文式错误误判成
+// 参数问题，就会让该模型一个本应支持的参数被永久裁掉。这个出口让运维撤销
+// 某一条具体规则，而不必删整条渠道。
+func DeleteParamStripRule(c *gin.Context) {
+	var req struct {
+		ChannelID int    `json:"channel_id"`
+		Model     string `json:"model"`
+		Param     string `json:"param"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if req.ChannelID <= 0 || req.Model == "" || req.Param == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "channel_id, model and param are required",
+		})
+		return
+	}
+	if err := model.DeleteParamStripRule(req.ChannelID, req.Model, req.Param); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "channel.delete_param_strip_rule", map[string]any{
+		"channel_id": req.ChannelID,
+		"model":      req.Model,
+		"param":      req.Param,
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+	return
+}
+
 type ChannelTag struct {
 	Tag            string  `json:"tag"`
 	NewTag         *string `json:"new_tag"`

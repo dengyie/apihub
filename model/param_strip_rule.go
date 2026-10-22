@@ -19,11 +19,16 @@ import (
 //
 // 唯一主键是 (channel_id, model, param)：同一规则被反复学到时只会有一行，
 // 保存路径因此是幂等的。
+//
+// Model / Param 必须显式写 varchar：不给类型的话，MySQL 会把它们映射成
+// longtext，而 longtext 不能作为唯一索引的键（要么报「BLOB/TEXT 用于 key
+// 需指定前缀长度」，要么唯一约束根本没建成）。SQLite 上 varchar 与 text
+// 等价（驱动按 schema.String 一律落 text），显式写上不影响 SQLite。
 type ParamStripRule struct {
 	Id        int    `json:"id" gorm:"primaryKey;autoIncrement"`
 	ChannelID int    `json:"channel_id" gorm:"index:idx_param_strip_rule,unique,priority:1;not null"`
-	Model     string `json:"model" gorm:"index:idx_param_strip_rule,unique,priority:2;not null"`
-	Param     string `json:"param" gorm:"index:idx_param_strip_rule,unique,priority:3;not null"`
+	Model     string `json:"model" gorm:"type:varchar(255);index:idx_param_strip_rule,unique,priority:2;not null"`
+	Param     string `json:"param" gorm:"type:varchar(255);index:idx_param_strip_rule,unique,priority:3;not null"`
 	// CreatedAt 是第一次学到的时刻。规则只增不减（上游不会「重新支持」一个
 	// 参数），所以这个时间戳就是这条观测的起点。
 	CreatedAt int64 `json:"created_at" gorm:"autoCreateTime"`
@@ -103,14 +108,6 @@ func (s *ParamStripStore) SaveParamStripRule(rule loadbalancer.ParamStripRule) e
 	return nil
 }
 
-// DeleteParamStripRulesForChannel 清掉某条渠道的全部规则。
-func (s *ParamStripStore) DeleteParamStripRulesForChannel(channelID int) error {
-	if channelID <= 0 {
-		return nil
-	}
-	return DB.Where("channel_id = ?", channelID).Delete(&ParamStripRule{}).Error
-}
-
 // deleteParamStripRulesForChannel 同时清掉内存与库里的规则。
 //
 // 渠道被删除时调用。内存必须一起清：留着的话，同一进程里渠道 id 被复用时
@@ -128,6 +125,25 @@ func deleteParamStripRulesForChannel(channelID int) error {
 	}
 	loadbalancer.ForgetParamStripLearnedForChannel(channelID)
 	err := DB.Where("channel_id = ?", channelID).Delete(&ParamStripRule{}).Error
+	if err != nil && isMissingTableError(err) {
+		return nil
+	}
+	return err
+}
+
+// DeleteParamStripRule 删掉某条渠道某模型的一条具体规则，并清掉内存态。
+//
+// 这是「人工纠正误学规则」的唯一出口。学习路径只增不减（上游不会「重新
+// 支持」一个参数），但误判确实存在：参数识别把一次 5xx 的散文式错误误判成
+// 参数问题，就会让该模型一个本应支持的参数被永久裁掉。删整条渠道代价太大
+// （那会断供给），所以提供到 (渠道, 模型, 参数) 粒度的删除。
+func DeleteParamStripRule(channelID int, model string, param string) error {
+	if channelID <= 0 || model == "" || param == "" {
+		return errors.New("invalid param strip rule")
+	}
+	loadbalancer.ForgetParamStripLearnedRule(channelID, model, param)
+	err := DB.Where("channel_id = ? AND model = ? AND param = ?", channelID, model, param).
+		Delete(&ParamStripRule{}).Error
 	if err != nil && isMissingTableError(err) {
 		return nil
 	}

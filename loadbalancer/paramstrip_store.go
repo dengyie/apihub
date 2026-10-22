@@ -18,9 +18,17 @@ package loadbalancer
 // 运维就得手工维护一份会自己过期的清单。
 
 import (
+	"errors"
 	"sort"
 	"sync"
 )
+
+// ErrParamStripStoreUnavailable 表示持久化后端尚未注册。
+//
+// 区别于「注册了但写失败」：未注册是启动顺序问题，通常会在几毫秒后自愈；
+// 写失败则是库/表层面的真问题。调用方可以用它决定日志措辞，但两者的处理
+// 一样——不阻塞请求、不把规则标成已落库，下次遇到再试。
+var ErrParamStripStoreUnavailable = errors.New("param strip store not registered")
 
 // ParamStripRule 是一条学到的裁剪规则：某渠道的某模型不支持某参数。
 type ParamStripRule struct {
@@ -33,14 +41,15 @@ type ParamStripRule struct {
 //
 // 读侧在启动时把全部规则读回来；写侧在学到新规则时追加一条。
 // 实现方必须自己保证幂等：同一条规则重复写入不应产生重复行。
+//
+// 只有读写两个方法被接口调用。渠道删除时的清理不经过这里：那条路径在 model
+// 包（deleteParamStripRulesForChannel）同时清内存与库，且不依赖启动期的注册
+// 顺序，接口里不必暴露一个从未被调用的 Delete 方法。
 type ParamStripStore interface {
 	// LoadParamStripRules 返回全部已持久化的规则。启动时调用一次。
 	LoadParamStripRules() ([]ParamStripRule, error)
 	// SaveParamStripRule 持久化一条规则。学到新参数时调用。
 	SaveParamStripRule(rule ParamStripRule) error
-	// DeleteParamStripRulesForChannel 清掉某条渠道的全部规则。
-	// 渠道被删除时调用，避免规则表无限增长并被下一次渠道 id 复用时误命中。
-	DeleteParamStripRulesForChannel(channelID int) error
 }
 
 var (
@@ -98,9 +107,15 @@ func LoadParamStripLearned() error {
 			set = make(map[string]struct{})
 			paramStripLearned[key] = set
 		}
+		persisted := paramStripPersisted[key]
+		if persisted == nil {
+			persisted = make(map[string]struct{})
+			paramStripPersisted[key] = persisted
+		}
 		for _, p := range rule.Params {
 			if n := normalizeParamName(p); n != "" {
 				set[n] = struct{}{}
+				persisted[n] = struct{}{} // 从库里读回来的，天然算「已落库」
 				loaded++
 			}
 		}
@@ -112,10 +127,14 @@ func LoadParamStripLearned() error {
 //
 // 失败只返回错误，不影响本次请求：落库是「让下次重启少错一次」的优化，
 // 不是请求正确性的前提。调用方记日志即可。
+//
+// 后端未注册时返回 ErrParamStripStoreUnavailable，而不是 nil：一旦在这里
+// 谎报成功，MarkParamUnsupported 会把这条规则标成「已落库」，等 store 之后
+// 注册好也不会再补写——这次学到的规则就永久丢了跨重启存活的机会。
 func persistLearnedRule(channelID int, modelName string, param string) error {
 	store := GetParamStripStore()
 	if store == nil {
-		return nil
+		return ErrParamStripStoreUnavailable
 	}
 	return store.SaveParamStripRule(ParamStripRule{
 		ChannelID: channelID,
@@ -137,6 +156,35 @@ func ForgetParamStripLearnedForChannel(channelID int) {
 	for key := range paramStripLearned {
 		if key.channelID == channelID {
 			delete(paramStripLearned, key)
+			delete(paramStripPersisted, key)
+		}
+	}
+}
+
+// ForgetParamStripLearnedRule 清掉**一条**学到的规则（渠道 × 模型 × 参数）。
+//
+// 供人工纠正误学规则用。学习路径只增不减（上游不会「重新支持」一个参数），
+// 但误判确实存在：参数识别可能把一次 5xx 的散文式错误误判成参数问题，于是
+// 该模型一个本应支持的参数被永久裁掉。这里让调用方去掉某一条具体规则，
+// 而不必删整条渠道。
+func ForgetParamStripLearnedRule(channelID int, modelName, param string) {
+	param = normalizeParamName(param)
+	if channelID <= 0 || param == "" {
+		return
+	}
+	key := paramStripKey{channelID: channelID, model: modelName}
+	paramStripMu.Lock()
+	defer paramStripMu.Unlock()
+	if set := paramStripLearned[key]; set != nil {
+		delete(set, param)
+		if len(set) == 0 {
+			delete(paramStripLearned, key)
+		}
+	}
+	if set := paramStripPersisted[key]; set != nil {
+		delete(set, param)
+		if len(set) == 0 {
+			delete(paramStripPersisted, key)
 		}
 	}
 }

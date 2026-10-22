@@ -2,6 +2,9 @@ package loadbalancer
 
 import (
 	"errors"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -22,30 +25,9 @@ func newMemParamStripStore() *memParamStripStore {
 	return &memParamStripStore{rules: map[string]map[string]struct{}{}}
 }
 
+// key 用与生产一致的编组键：strconv 数字 + \x00 + 模型名。
 func (s *memParamStripStore) key(channelID int, model string) string {
-	return itoa(channelID) + "\x00" + model
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.Itoa(channelID) + "\x00" + model
 }
 
 func (s *memParamStripStore) LoadParamStripRules() ([]ParamStripRule, error) {
@@ -70,17 +52,17 @@ func (s *memParamStripStore) LoadParamStripRules() ([]ParamStripRule, error) {
 	return out, nil
 }
 
+// splitKey 反解编组键，与生产的 SplitN 一致：只拆第一个 \x00。
 func splitKey(key string) (int, string) {
-	for i := 0; i < len(key); i++ {
-		if key[i] == 0 {
-			channelID := 0
-			for _, c := range key[:i] {
-				channelID = channelID*10 + int(c-'0')
-			}
-			return channelID, key[i+1:]
-		}
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return 0, ""
 	}
-	return 0, ""
+	channelID, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, ""
+	}
+	return channelID, parts[1]
 }
 
 func (s *memParamStripStore) SaveParamStripRule(rule ParamStripRule) error {
@@ -94,17 +76,6 @@ func (s *memParamStripStore) SaveParamStripRule(rule ParamStripRule) error {
 	}
 	for _, p := range rule.Params {
 		set[p] = struct{}{}
-	}
-	return nil
-}
-
-func (s *memParamStripStore) DeleteParamStripRulesForChannel(channelID int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key := range s.rules {
-		if cid, _ := splitKey(key); cid == channelID {
-			delete(s.rules, key)
-		}
 	}
 	return nil
 }
@@ -135,11 +106,14 @@ func clearParamStripLearned(t *testing.T) {
 	t.Helper()
 	paramStripMu.Lock()
 	oldLearned := paramStripLearned
+	oldPersisted := paramStripPersisted
 	paramStripLearned = make(map[paramStripKey]map[string]struct{})
+	paramStripPersisted = make(map[paramStripKey]map[string]struct{})
 	paramStripMu.Unlock()
 	t.Cleanup(func() {
 		paramStripMu.Lock()
 		paramStripLearned = oldLearned
+		paramStripPersisted = oldPersisted
 		paramStripMu.Unlock()
 	})
 }
@@ -285,6 +259,25 @@ func TestForgetParamStripLearnedForChannel(t *testing.T) {
 		"渠道删除后它的规则必须从内存里清掉")
 }
 
+// TestForgetParamStripLearnedRule 钉住「人工纠正只删指定那一条」。
+//
+// 误学纠正到 (渠道, 模型, 参数) 粒度，不能把同渠道同模型的其他规则误伤。
+func TestForgetParamStripLearnedRule(t *testing.T) {
+	installPolicy(t, testPolicy())
+	withParamStripStore(t)
+	clearParamStripLearned(t)
+
+	MarkParamUnsupported(84, "gpt-5.3-codex", "enable_thinking")
+	MarkParamUnsupported(84, "gpt-5.3-codex", "thinking")
+	require.Contains(t, GetStripParams(84, "gpt-5.3-codex"), "thinking")
+
+	ForgetParamStripLearnedRule(84, "gpt-5.3-codex", "thinking")
+
+	got := GetStripParams(84, "gpt-5.3-codex")
+	assert.NotContains(t, got, "thinking", "被撤销的那条规则必须消失")
+	assert.Contains(t, got, "enable_thinking", "其他规则不能被误删")
+}
+
 // TestLoadParamStripLearnedToleratesStoreError 钉住「后端读失败不炸」。
 //
 // 落库是「让下次重启少错一次」的优化，不是请求正确性的前提。读失败时
@@ -312,4 +305,103 @@ func (failingParamStripStore) LoadParamStripRules() ([]ParamStripRule, error) {
 	return nil, errors.New("boom")
 }
 func (failingParamStripStore) SaveParamStripRule(ParamStripRule) error { return nil }
-func (failingParamStripStore) DeleteParamStripRulesForChannel(int) error { return nil }
+
+// TestMarkParamUnsupportedRetriesAfterPersistFailure 钉住「一次落库失败不会让
+// 规则永久失去持久化机会」。
+//
+// 旧实现拿内存里的存在与否当作「已经落库」的判据：一次失败的写之后，同一
+// 参数再次遇到时 alreadyKnown 短路，永不再写库——这条规则在每次重启后都要
+// 重新学。修复后「已落库」单独记账，失败的写下次遇到还会重试。
+func TestMarkParamUnsupportedRetriesAfterPersistFailure(t *testing.T) {
+	installPolicy(t, testPolicy())
+	store := newFlakyParamStripStore()
+	paramStripStoreMu.Lock()
+	old := paramStripStore
+	paramStripStore = store
+	paramStripStoreMu.Unlock()
+	t.Cleanup(func() {
+		paramStripStoreMu.Lock()
+		paramStripStore = old
+		paramStripStoreMu.Unlock()
+	})
+	clearParamStripLearned(t)
+
+	// 第一次学习：落库失败，规则只留在内存。
+	MarkParamUnsupported(84, "gpt-5.3-codex", "enable_thinking")
+	require.Contains(t, GetStripParams(84, "gpt-5.3-codex"), "enable_thinking")
+	assert.Empty(t, store.saved(), "第一次落库失败，库里不该有这条规则")
+
+	// 同一参数再次遇到：必须重试落库，而不是被内存里的存在短路。
+	MarkParamUnsupported(84, "gpt-5.3-codex", "enable_thinking")
+	saved := store.saved()
+	require.Len(t, saved, 1, "失败的写必须在下次遇到同一参数时重试")
+	assert.Equal(t, "enable_thinking", saved[0])
+}
+
+// TestPersistLearnedRuleWithoutStoreReportsError 钉住「后端未注册时不谎报成功」。
+//
+// 旧实现里 persistLearnedRule 在 store == nil 时返回 nil，调用方以为写进去了，
+// 把规则标成已落库——等后端注册好后也不会补写。现在必须返回
+// ErrParamStripStoreUnavailable，让 MarkParamUnsupported 保持「未落库」状态，
+// 下次遇到再试。
+func TestPersistLearnedRuleWithoutStoreReportsError(t *testing.T) {
+	paramStripStoreMu.Lock()
+	old := paramStripStore
+	paramStripStore = nil
+	paramStripStoreMu.Unlock()
+	t.Cleanup(func() {
+		paramStripStoreMu.Lock()
+		paramStripStore = old
+		paramStripStoreMu.Unlock()
+	})
+
+	err := persistLearnedRule(52, "gpt-6-luna", "enable_thinking")
+	require.ErrorIs(t, err, ErrParamStripStoreUnavailable)
+}
+
+// flakyParamStripStore 第一次 Save 失败、之后成功，用来验证落库失败会重试。
+type flakyParamStripStore struct {
+	mu       sync.Mutex
+	failOnce bool
+	rules    map[string]map[string]struct{}
+}
+
+func newFlakyParamStripStore() *flakyParamStripStore {
+	return &flakyParamStripStore{failOnce: true, rules: map[string]map[string]struct{}{}}
+}
+
+func (s *flakyParamStripStore) LoadParamStripRules() ([]ParamStripRule, error) {
+	return nil, nil
+}
+
+func (s *flakyParamStripStore) SaveParamStripRule(rule ParamStripRule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failOnce {
+		s.failOnce = false
+		return errors.New("injected persist failure")
+	}
+	key := strconv.Itoa(rule.ChannelID) + "\x00" + rule.Model
+	set := s.rules[key]
+	if set == nil {
+		set = map[string]struct{}{}
+		s.rules[key] = set
+	}
+	for _, p := range rule.Params {
+		set[p] = struct{}{}
+	}
+	return nil
+}
+
+func (s *flakyParamStripStore) saved() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, set := range s.rules {
+		for p := range set {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

@@ -44,6 +44,16 @@ var (
 	//
 	// 运维在 yaml 里显式写的 paramStripConfig 仍按渠道：那是人的决定，不是观测。
 	paramStripLearned = make(map[paramStripKey]map[string]struct{})
+
+	// paramStripPersisted 记录**已经成功写进库**的那部分规则，跟
+	// paramStripLearned 分开维护。
+	//
+	// 为什么要分开：落库可能瞬时失败（表暂不可用、库忙、store 未注册）。而
+	// 「内存里有这条规则」不等于「它已经持久化」。若拿内存里的存在与否当作
+	// 「要不要落库」的判据，一次失败的写会让这条规则**永远**失去跨重启存活的
+	// 机会——下次再遇到同一参数时 alreadyKnown 短路，跳过落库，而它其实从没
+	// 写进库过。单独记一份「已落库」集合，没写成功的下次遇到还会重试。
+	paramStripPersisted = make(map[paramStripKey]map[string]struct{})
 )
 
 // paramStripKey 是学习集合的键。两端必须传**同一个**模型名，否则学到的裁剪
@@ -213,22 +223,28 @@ func MarkParamUnsupported(channelID int, modelName string, param string) {
 		set = make(map[string]struct{})
 		paramStripLearned[key] = set
 	}
-	alreadyKnown := false
-	if _, ok := set[param]; ok {
-		alreadyKnown = true
-	} else {
-		set[param] = struct{}{}
-	}
+	set[param] = struct{}{} // 内存态立刻生效，不等落库
+	// 只有「还没成功落库过」的才需要写一次。判据是 paramStripPersisted，
+	// 不是 paramStripLearned：落库这一次失败不能让它永不再试。
+	persisted := paramStripPersisted[key]
+	_, alreadyPersisted := persisted[param]
 	paramStripMu.Unlock()
 
-	// 已经在内存里学过的参数不必再落库：重启后从表里读回来还是同一条。
-	// 这条判断让「同一个参数被反复遇到」只产生一次写。
-	if alreadyKnown {
+	if alreadyPersisted {
 		return
 	}
 	if err := persistLearnedRule(channelID, modelName, param); err != nil {
+		// 落了库失败只记日志、不把请求判失败（落库是「下次重启少错一次」的优化，
+		// 不是请求正确性的前提）。但**不**把它标成已落库：标了就永久丢这次写。
 		log.Printf("loadbalancer: failed to persist learned param rule (channel=%d model=%s param=%s): %v", channelID, modelName, param, err)
+		return
 	}
+	paramStripMu.Lock()
+	if paramStripPersisted[key] == nil {
+		paramStripPersisted[key] = make(map[string]struct{})
+	}
+	paramStripPersisted[key][param] = struct{}{}
+	paramStripMu.Unlock()
 }
 
 func normalizeParamName(p string) string {
