@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -307,6 +308,70 @@ func TestRecordChannelAffinityKeepsBindingWhenStreamDeliveredContent(t *testing.
 	bound, found, err := cache.Get(cacheKeySuffix)
 	require.NoError(t, err)
 	require.True(t, found)
+	require.Equal(t, 154, bound)
+}
+
+// 干净成功的请求（eof/completed，与生产日志同型）必须照常重建绑定：守卫只针对
+// 上游流故障，绝不能误伤正常请求的亲和续期。
+func TestRecordChannelAffinityBindsOnCleanSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:success-%d", time.Now().UnixNano())
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+	cache := getChannelAffinityCache()
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	status := relaycommon.NewStreamStatus()
+	status.RequireTerminal()
+	status.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+	status.MarkCompleted()
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:   cacheKeyFull,
+		TTLSeconds: 3600,
+		RuleName:   "codex cli trace",
+	})
+	common.SetContextKey(ctx, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{StreamStatus: status})
+
+	RecordChannelAffinity(ctx, 127)
+
+	bound, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.True(t, found, "干净成功的请求必须重建绑定")
+	require.Equal(t, 127, bound)
+}
+
+// 客户端主动断开不是渠道的错：即便零内容交付，绑定也必须保留。
+func TestRecordChannelAffinityKeepsBindingOnClientAbort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:client-abort-%d", time.Now().UnixNano())
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+	cache := getChannelAffinityCache()
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 154, time.Minute))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	status := relaycommon.NewStreamStatus()
+	status.RequireTerminal()
+	status.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+	status.OverrideEndReason(relaycommon.StreamEndReasonClientGone, context.Canceled)
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:   cacheKeyFull,
+		TTLSeconds: 60,
+		RuleName:   "codex cli trace",
+	})
+	common.SetContextKey(ctx, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{StreamStatus: status})
+
+	RecordChannelAffinity(ctx, 154)
+
+	bound, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.True(t, found, "客户端断开的绑定必须保留")
 	require.Equal(t, 154, bound)
 }
 
