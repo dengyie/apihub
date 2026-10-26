@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/model"
 	"github.com/dengyie/apihub/pkg/cachex"
+	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/dengyie/apihub/setting/operation_setting"
@@ -842,6 +844,24 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		return
 	}
 	if setting == nil || !setting.Enabled {
+		return
+	}
+	// 零内容交付的上游断流：绑定不能续期。
+	//
+	// 流式响应头在收到上游首字节前就写给了客户端，断流时连接已提交，当轮换渠道
+	// 做不到（DecideRelayRetry 的 response_committed 闸门），而断流又不计硬熔断
+	// （relay_attempt 对 StreamBroken 走 EndCancelled），渠道不会被禁用，
+	// channelDisabled 那条清绑定的路也走不到。这里是唯一能让下一轮请求重新参与
+	// 分流的位置：请求已经证明这个渠道这次什么都没交付，把会话钉在它上面只会让
+	// 客户端一轮轮打在同一个坏渠道上。
+	//
+	// 三个条件缺一不可。已吐出内容的断流清绑定没有意义（续接本来就不可能，会话
+	// 状态还在这个渠道上）；客户端主动断开不是渠道的错，绑定照常维持。
+	if relayInfo, ok := common.GetContextKeyType[*relaycommon.RelayInfo](c, constant.ContextKeyRelayInfo); ok &&
+		relayInfo != nil && relayInfo.StreamStatus != nil &&
+		relayInfo.StreamStatus.IsUpstreamStreamFault() && !relayInfo.StreamStatus.IsClientAbort() &&
+		relayInfo.ReceivedResponseCount == 0 && relayInfo.ReceivedContentBytes == 0 {
+		ClearCurrentChannelAffinityCache(c)
 		return
 	}
 	if setting.SwitchOnSuccess && c != nil {

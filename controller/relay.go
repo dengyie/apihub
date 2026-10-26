@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	taskdto "github.com/dengyie/apihub/dto"
 	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/logger"
@@ -122,6 +123,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	// 发布到 gin context：亲和性记录（distributor 在 c.Next() 之后调用的
+	// RecordChannelAffinity）与终结路径之外的组件需要读流状态。WebSocket 路径
+	// 已在 runCall 的 defer 里写同一个 key，这里补齐 HTTP 路径。
+	common.SetContextKey(c, constant.ContextKeyRelayInfo, relayInfo)
 
 	// 记账必须用**父 context**，不能用 c.Request.Context()。
 	//

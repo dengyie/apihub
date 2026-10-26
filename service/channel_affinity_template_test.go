@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/dto"
 	"github.com/dengyie/apihub/model"
 	relaycommon "github.com/dengyie/apihub/relay/common"
@@ -240,6 +241,73 @@ func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {
 	require.Equal(t, "request_header", meta.KeySourceType)
 	require.Equal(t, "X-Affinity-Key", meta.KeySourceKey)
 	require.Equal(t, buildChannelAffinityKeyHint(affinityValue), meta.KeyHint)
+}
+
+// TestRecordChannelAffinityDropsBindingOnZeroByteStreamFault 覆盖线上断流故障串：
+// 响应头已提交（状态码停在 200，distributor 的 <400 守卫放行），但上游中途 EOF 且
+// 一个内容字节都没交付。绑定续期会把会话钉死在坏渠道上，这里必须清掉。
+func TestRecordChannelAffinityDropsBindingOnZeroByteStreamFault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:zero-byte-%d", time.Now().UnixNano())
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+	cache := getChannelAffinityCache()
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 154, time.Minute))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	status := relaycommon.NewStreamStatus()
+	status.RequireTerminal()
+	status.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:   cacheKeyFull,
+		TTLSeconds: 60,
+		RuleName:   "codex cli trace",
+	})
+	common.SetContextKey(ctx, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{StreamStatus: status})
+
+	RecordChannelAffinity(ctx, 154)
+
+	_, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.False(t, found, "零内容交付的上游断流必须解除会话绑定")
+}
+
+// 已经吐出内容的断流不能清绑定：响应接不上了，会话状态还在这个渠道上。
+func TestRecordChannelAffinityKeepsBindingWhenStreamDeliveredContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:delivered-%d", time.Now().UnixNano())
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+	cache := getChannelAffinityCache()
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 154, time.Minute))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	status := relaycommon.NewStreamStatus()
+	status.RequireTerminal()
+	status.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+
+	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+		CacheKey:   cacheKeyFull,
+		TTLSeconds: 60,
+		RuleName:   "codex cli trace",
+	})
+	common.SetContextKey(ctx, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{
+		StreamStatus:          status,
+		ReceivedContentBytes:  128,
+		ReceivedResponseCount: 1,
+	})
+
+	RecordChannelAffinity(ctx, 154)
+
+	bound, found, err := cache.Get(cacheKeySuffix)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, 154, bound)
 }
 
 func TestClearCurrentChannelAffinityCache(t *testing.T) {
