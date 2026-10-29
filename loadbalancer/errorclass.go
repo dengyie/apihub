@@ -433,11 +433,25 @@ func isCapacitySignal(code, typeStr, message string) bool {
 }
 
 func upstreamCapacitySignal(err *types.NewAPIError) bool {
-	if err == nil || err.GetErrorType() != types.ErrorTypeOpenAIError || IsUpstreamQuotaError(err) {
+	if err == nil || IsUpstreamQuotaError(err) {
 		return false
 	}
-	code, typeStr, message, ok := openAIErrorFields(err.RelayError)
-	return ok && isCapacitySignal(code, typeStr, message)
+	if err.GetErrorType() == types.ErrorTypeOpenAIError {
+		code, typeStr, message, ok := openAIErrorFields(err.RelayError)
+		return ok && isCapacitySignal(code, typeStr, message)
+	}
+
+	// Some relay paths preserve an upstream JSON error inside a generic
+	// NewAPIError. Parse only that explicit envelope; do not classify arbitrary
+	// local error prose as an upstream capacity signal.
+	var envelope struct {
+		Error *types.OpenAIError `json:"error"`
+	}
+	if json.Unmarshal([]byte(err.Error()), &envelope) == nil && envelope.Error != nil {
+		code, typeStr, message, ok := openAIErrorFields(envelope.Error)
+		return ok && isCapacitySignal(code, typeStr, message)
+	}
+	return false
 }
 
 // IsUpstreamCapacityError reports a structured upstream model/service capacity
