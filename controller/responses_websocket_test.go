@@ -1035,6 +1035,7 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 	}{
 		{name: "business rejection", code: "context_length_exceeded", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: true},
 		{name: "credentials rejected as 400", code: "invalid_api_key", firstStatus: 400, clientStatus: http.StatusServiceUnavailable, attempts: 1, success: false, ignored: false},
+		{name: "http capacity retry succeeds", code: "server_overloaded", firstStatus: 400, clientStatus: http.StatusOK, attempts: 2, success: true, ignored: false},
 		{name: "retry succeeds", code: "server_error", firstStatus: 500, clientStatus: http.StatusOK, attempts: 2, success: true, ignored: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

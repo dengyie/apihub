@@ -862,49 +862,60 @@ func TestIsUpstreamRateLimitError(t *testing.T) {
 		Err:        errors.New("bad gateway, trace id a1rpm2x9k"),
 	}))
 
-		// Codex / OpenAI 模型容量超载（即便是 400 状态码也应识别为瞬时限流与超载）
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 400,
-			Err:        errors.New("Selected model is at capacity. Please try a different model."),
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			Err:        errors.New("The model is currently at capacity, please try again later."),
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			Err:        errors.New("No capacity available for model gemini-3.8-flash-high on the server"),
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			Err:        errors.New("Upstream capacity is temporarily unavailable. Please try again later."),
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			Err:        errors.New("The server is temporarily overloaded. Please try again later."),
-		}))
-		// 结构化 OpenAIError code / type / message 命中
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			RelayError: types.OpenAIError{
-				Code:    "model_capacity_exceeded",
-				Message: "Capacity limit reached",
-			},
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 529,
-			RelayError: &types.OpenAIError{
-				Type:    "overloaded_error",
-				Message: "Overloaded",
-			},
-		}))
-		assert.True(t, IsUpstreamRateLimitError(&types.NewAPIError{
-			StatusCode: 503,
-			RelayError: &types.OpenAIError{
-				Code:    "gateway_capacity",
-				Message: "Upstream busy",
-			},
-		}))
+	// Codex / OpenAI 模型容量超载必须来自结构化上游错误，不能由本地文本伪造。
+	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{
+		StatusCode: 503,
+		Err:        errors.New("The model is currently at capacity, please try again later."),
+	}))
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Message: "No capacity available for model gemini-3.8-flash-high on the server",
+	}, 503)))
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Message: "Upstream capacity is temporarily unavailable. Please try again later.",
+	}, 503)))
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Message: "The server is temporarily overloaded. Please try again later.",
+	}, 503)))
+	// 结构化 OpenAIError code / type / message 命中
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Code:    "model_capacity_exceeded",
+		Message: "Capacity limit reached",
+	}, 503)))
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Type:    "overloaded_error",
+		Message: "Overloaded",
+	}, 529)))
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Code:    "gateway_capacity",
+		Message: "Upstream busy",
+	}, 503)))
+	// 结构化 Codex server_overloaded code 命中
+	assert.True(t, IsUpstreamRateLimitError(types.WithOpenAIError(types.OpenAIError{
+		Code:    "server_overloaded",
+		Message: "The server is overloaded.",
+	}, 503)))
+}
+
+func TestIsUpstreamCapacityErrorBoundaries(t *testing.T) {
+	for _, err := range []*types.NewAPIError{
+		types.WithOpenAIError(types.OpenAIError{Code: "quota_exceeded", Message: "Selected model is at capacity"}, 400),
+		types.WithOpenAIError(types.OpenAIError{Type: "insufficient_quota", Message: "The server is overloaded"}, 400),
+	} {
+		assert.True(t, IsUpstreamQuotaError(err))
+		assert.False(t, IsUpstreamCapacityError(err))
+		assert.False(t, IsUpstreamRateLimitError(err))
+	}
+	assert.False(t, IsUpstreamCapacityError(&types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("request capacity exceeded by local policy"),
+	}))
+	assert.False(t, IsUpstreamRateLimitError(&types.NewAPIError{
+		StatusCode: 400,
+		Err:        errors.New("request capacity exceeded by local policy"),
+	}))
+	assert.False(t, IsUpstreamCapacityError(types.WithOpenAIError(types.OpenAIError{
+		Message: "codex_error_info=not overloaded",
+	}, 503)))
 }
 
 func TestRateLimitBreakerShortCooldown(t *testing.T) {

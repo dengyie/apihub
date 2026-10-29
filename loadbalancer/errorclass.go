@@ -104,15 +104,25 @@ func IsUpstreamQuotaError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "reached your daily") {
 		return true
 	}
-	if oe, ok := err.RelayError.(types.OpenAIError); ok {
-		codeStr := strings.ToLower(fmt.Sprintf("%v", oe.Code))
-		typeStr := strings.ToLower(oe.Type)
-		if strings.Contains(codeStr, "insufficient") || strings.Contains(codeStr, "quota") ||
+	if code, typeStr, _, ok := openAIErrorFields(err.RelayError); ok {
+		if strings.Contains(code, "insufficient") || strings.Contains(code, "quota") ||
 			strings.Contains(typeStr, "insufficient") || strings.Contains(typeStr, "quota") {
 			return true
 		}
 	}
 	return false
+}
+
+func openAIErrorFields(value any) (code, typeStr, message string, ok bool) {
+	switch oe := value.(type) {
+	case types.OpenAIError:
+		return strings.ToLower(fmt.Sprintf("%v", oe.Code)), strings.ToLower(oe.Type), strings.ToLower(oe.Message), true
+	case *types.OpenAIError:
+		if oe != nil {
+			return strings.ToLower(fmt.Sprintf("%v", oe.Code)), strings.ToLower(oe.Type), strings.ToLower(oe.Message), true
+		}
+	}
+	return "", "", "", false
 }
 
 // IsUpstreamRoutingError 判断是否为上游网关会话路由头缺失错误（通常返回 400）。
@@ -390,6 +400,52 @@ func isRelayErrorTypeOrCode(typeStr, codeStr string) bool {
 	return false
 }
 
+// isCapacitySignal recognizes explicit upstream model/service overload signals.
+// Keep this narrow: request/account/context capacity errors are not transient
+// channel capacity, and generic local error text is not upstream evidence.
+func isCapacitySignal(code, typeStr, message string) bool {
+	machine := map[string]struct{}{
+		"at_capacity":             {},
+		"capacity_exceeded":       {},
+		"model_at_capacity":       {},
+		"model_capacity_exceeded": {},
+		"gateway_capacity":        {},
+		"server_overloaded":       {},
+		"overloaded_error":        {},
+	}
+	if _, ok := machine[code]; ok {
+		return true
+	}
+	if _, ok := machine[typeStr]; ok {
+		return true
+	}
+	return strings.Contains(message, "selected model is at capacity") ||
+		strings.Contains(message, "model is at capacity") ||
+		strings.Contains(message, "no capacity available") ||
+		strings.Contains(message, "capacity is temporarily unavailable") ||
+		strings.Contains(message, "server is temporarily overloaded") ||
+		strings.Contains(message, "server is overloaded") ||
+		strings.Contains(message, "currently overloaded") ||
+		strings.Contains(message, "temporarily overloaded") ||
+		strings.Contains(message, "负载已饱和") ||
+		strings.Contains(message, "负载已经达到上限") ||
+		strings.Contains(message, "负载已达到上限")
+}
+
+func upstreamCapacitySignal(err *types.NewAPIError) bool {
+	if err == nil || err.GetErrorType() != types.ErrorTypeOpenAIError || IsUpstreamQuotaError(err) {
+		return false
+	}
+	code, typeStr, message, ok := openAIErrorFields(err.RelayError)
+	return ok && isCapacitySignal(code, typeStr, message)
+}
+
+// IsUpstreamCapacityError reports a structured upstream model/service capacity
+// signal. It deliberately ignores arbitrary NewAPIError text and local errors.
+func IsUpstreamCapacityError(err *types.NewAPIError) bool {
+	return upstreamCapacitySignal(err)
+}
+
 // IsUpstreamRateLimitError 判断是否为上游瞬时频次限流或并发超限错误（如 429 Too Many Requests、最多同时处理1个请求、rpm/tpm 超限等）。
 // 区别于配额永久耗尽（IsUpstreamQuotaError），限流通常在短时间（几秒到几十秒）后自动解除，
 // 不应触发长达数百秒的常规硬熔断，而应采用短冷却（默认 30 秒）并触发换渠道重试，避免健康渠道被过度隔离导致全池瘫痪。
@@ -404,6 +460,9 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 	if err.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
+	if upstreamCapacitySignal(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "并发请求数限制") ||
 		strings.Contains(msg, "最多同时处理") ||
@@ -416,50 +475,8 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 		strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "rate_limit") ||
 		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "超额临时冻结") ||
-		strings.Contains(msg, "负载已饱和") ||
-		strings.Contains(msg, "负载已经达到上限") ||
-		strings.Contains(msg, "负载已达到上限") ||
-		// 兼容 Codex / OpenAI / 各类反代算力满载与过载提示（即使以 400 状态码返回也触发换渠道重试，且仅触发短冷却）
-		strings.Contains(msg, "at capacity") ||
-		strings.Contains(msg, "capacity exceeded") ||
-		strings.Contains(msg, "model_at_capacity") ||
-		strings.Contains(msg, "model_capacity_exceeded") ||
-		strings.Contains(msg, "gateway_capacity") ||
-		strings.Contains(msg, "no capacity available") ||
-		strings.Contains(msg, "capacity is temporarily unavailable") ||
-		strings.Contains(msg, "server is temporarily overloaded") ||
-		strings.Contains(msg, "currently overloaded") ||
-		strings.Contains(msg, "temporarily overloaded") ||
-		strings.Contains(msg, "overloaded_error") {
+		strings.Contains(msg, "超额临时冻结") {
 		return true
-	}
-	checkOAI := func(code any, typeStr string, message string) bool {
-		cStr := strings.ToLower(fmt.Sprintf("%v", code))
-		tStr := strings.ToLower(typeStr)
-		mStr := strings.ToLower(message)
-		return strings.Contains(cStr, "model_at_capacity") ||
-			strings.Contains(cStr, "model_capacity_exceeded") ||
-			strings.Contains(cStr, "at_capacity") ||
-			strings.Contains(cStr, "capacity_exceeded") ||
-			strings.Contains(cStr, "gateway_capacity") ||
-			strings.Contains(cStr, "server_overloaded") ||
-			strings.Contains(tStr, "model_capacity") ||
-			strings.Contains(tStr, "overloaded_error") ||
-			strings.Contains(mStr, "at capacity") ||
-			strings.Contains(mStr, "capacity exceeded") ||
-			strings.Contains(mStr, "no capacity available") ||
-			strings.Contains(mStr, "temporarily overloaded") ||
-			strings.Contains(mStr, "currently overloaded")
-	}
-	if oe, ok := err.RelayError.(types.OpenAIError); ok {
-		if checkOAI(oe.Code, oe.Type, oe.Message) {
-			return true
-		}
-	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
-		if checkOAI(poe.Code, poe.Type, poe.Message) {
-			return true
-		}
 	}
 	return false
 }
