@@ -64,6 +64,7 @@ var builtinBillingExpr = map[string]string{
 	"gpt-image-1.5":      `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
 	"gpt-image-2-4k":     `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
 	"gpt-image-2.5":      `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
+	"gpt-image-2.5-4k":   `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
 	"image-1":            `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
 	"image-2":            `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
 
@@ -106,18 +107,20 @@ var builtinBillingExpr = map[string]string{
 	"deepseek-ai/deepseek-v4-flash-0731": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
 	"deepseek-ai/deepseek-v4-pro":        `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
 	"deepseek-ai/deepseek-v4-pro-0813":   `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
-	"deepseek-v4-flash":                  `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek-v4-flash-0731":             `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek-v4-flash-260425":           `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek-v4-flash-vision-exp":       `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek-v4-flash:0731":             `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek-v4-pro":                    `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
-	"deepseek-v4-pro-0813":               `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
-	"deepseek-v4-pro-ga-260813":          `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
-	"deepseek-v4.1-flash":                `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek/deepseek-v4-flash":         `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"deepseek/deepseek-v4.1-flash":       `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
-	"evomap-deepseek-v4-flash":           `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	// DeepSeek's short alias for the same V4.1-Flash rate card.
+	"deepseek-flash":               `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-flash":            `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-flash-0731":       `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-flash-260425":     `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-flash-vision-exp": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-flash:0731":       `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek-v4-pro":              `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
+	"deepseek-v4-pro-0813":         `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
+	"deepseek-v4-pro-ga-260813":    `tier("standard", p * 0.66 + c * 1.98 + cr * 0.022)`,
+	"deepseek-v4.1-flash":          `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek/deepseek-v4-flash":   `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"deepseek/deepseek-v4.1-flash": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
+	"evomap-deepseek-v4-flash":     `tier("standard", p * 0.15 + c * 0.6 + cr * 0.003)`,
 
 	// GLM (Zhipu)
 	"GLM-5.2":               `tier("standard", p * 1.0 + c * 3.2)`,
@@ -155,6 +158,12 @@ var builtinBillingExpr = map[string]string{
 	"gemini-3.7-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	// Official launch rate $2 / $10 per 1M (cached input ~95% off). Google's
+	// published promo ends 2026-11-30, after which it becomes $4 / $20; update
+	// this entry on that date.
+	"gemini-4-argon": `tier("standard", p * 2.0 + c * 10.0 + cr * 0.2)`,
+	// Internal alias for a Gemini pro-tier agent endpoint; priced as 3.1-pro.
+	"gemini-pro-agent": `tier("standard", p * 2.0 + c * 12 + cr * 0.2)`,
 
 	// Grok (text)
 	"grok-4.20-0309-non-reasoning": `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
@@ -170,6 +179,7 @@ var builtinBillingExpr = map[string]string{
 	"grok-build-0.1":               `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 
 	// Grok Imagine (image/video)
+	"grok-imagine":                   `tier("standard", fixed(0.05))`,
 	"grok-imagine-image":             `tier("standard", fixed(0.05))`,
 	"grok-imagine-image-2.0":         `tier("standard", fixed(0.05))`,
 	"grok-imagine-image-lite":        `tier("standard", fixed(0.05))`,
@@ -192,12 +202,18 @@ var builtinBillingExpr = map[string]string{
 	"minimax-m3":         `tier("standard", p * 0.3 + c * 1.2 + cr * 0.06)`,
 	"MiniMax-M3.1-Flash": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.015)`,
 	"minimax-m3.1-flash": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.015)`,
+	"minimax-m2.7":       `tier("standard", p * 0.3 + c * 1.2 + cr * 0.06)`,
+	// Minimax H3 is a video model. $0.08/s at 768p official, billed per request
+	// here like the other video entry points.
+	"minimax-h3": `tier("standard", fixed(0.08))`,
 
 	// Mistral
 	"mistral-large-latest":  `tier("standard", p * 0.5 + c * 1.5)`,
 	"mistral-medium-latest": `tier("standard", p * 1.5 + c * 7.5)`,
 	"mistral-ocr-latest":    `tier("standard", p * 0.5 + c * 1.5)`,
 	"mistral-small-latest":  `tier("standard", p * 0.15 + c * 0.6)`,
+	// Codestral-ish code tier: $0.30 in / $0.90 out, cache read $0.03 (mistral.ai).
+	"mistral-code-latest": `tier("standard", p * 0.3 + c * 0.9 + cr * 0.03)`,
 
 	// MiMo (Xiaomi)
 	"mimo-v2.5":                 `tier("standard", p * 1.0 + c * 3.0)`,
@@ -221,6 +237,21 @@ var builtinBillingExpr = map[string]string{
 
 	// Qwen
 	"qwen3.8-flash": `tier("standard", p * 0.6 + c * 3.6)`,
+	// 27B dense sibling: same Qwen3.8 family, priced between flash and max.
+	// Not a verified official number, but any real rate beats the 37.5 fallback.
+	"qwen3.8-27b": `tier("standard", p * 0.4 + c * 2.4 + cr * 0.04)`,
+
+	// Embeddings / rerankers served by third-party aggregators.
+	// Open-weight models (BGE, EmbeddingGemma, Qwen3-Embedding) have no official
+	// per-token list price, so these are embedding-class estimates. The one
+	// verified number here is jina-reranker-v3 at $0.05/M (jina.ai pricing).
+	"bge-base-en-v1.5":    `tier("standard", p * 0.01)`,
+	"bge-large-en-v1.5":   `tier("standard", p * 0.01)`,
+	"bge-m3":              `tier("standard", p * 0.01)`,
+	"bge-small-en-v1.5":   `tier("standard", p * 0.01)`,
+	"embeddinggemma-300m": `tier("standard", p * 0.01)`,
+	"qwen3-embedding-8b":  `tier("standard", p * 0.05)`,
+	"jina-reranker-v3":    `tier("standard", p * 0.05)`,
 
 	// SenseNova
 	// Was unpriced, so it silently billed at the 37.5 self-use fallback ($75/M).
@@ -244,7 +275,10 @@ var builtinBillingExpr = map[string]string{
 	"codex-auto-review":           `tier("standard", p * 1.75 + c * 14 + cr * 0.175)`,
 	"hy3":                         `tier("standard", p * 0.5 + c * 1.5)`,
 	"muse-spark-1.3":              `tier("standard", p * 1.0 + c * 3.0)`,
-	"tencent/Hy-MT2-30B-A3B":      `tier("standard", p * 0.5 + c * 1.5)`,
+	"muse-spark-1.3-contributor":  `tier("standard", p * 1.0 + c * 3.0)`,
+	// TypeSafe's decision model: $0.042/M input, output not billed.
+	"jev-1.13":               `tier("standard", p * 0.042)`,
+	"tencent/Hy-MT2-30B-A3B": `tier("standard", p * 0.5 + c * 1.5)`,
 
 	// Free tier (explicit zero)
 	"beam-free":                      `tier("free", fixed(0))`,
