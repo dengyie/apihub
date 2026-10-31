@@ -26,14 +26,18 @@ type PricingPluginVariant struct {
 }
 
 type Pricing struct {
-	BillingPluginVariants  []PricingPluginVariant               `json:"billing_plugin_variants,omitempty"`
-	ModelName              string                               `json:"model_name"`
-	Description            string                               `json:"description,omitempty"`
-	Icon                   string                               `json:"icon,omitempty"`
-	Tags                   string                               `json:"tags,omitempty"`
-	VendorID               int                                  `json:"vendor_id,omitempty"`
-	QuotaType              int                                  `json:"quota_type"`
-	ModelRatio             float64                              `json:"model_ratio"`
+	BillingPluginVariants []PricingPluginVariant `json:"billing_plugin_variants,omitempty"`
+	ModelName             string                 `json:"model_name"`
+	Description           string                 `json:"description,omitempty"`
+	Icon                  string                 `json:"icon,omitempty"`
+	Tags                  string                 `json:"tags,omitempty"`
+	VendorID              int                    `json:"vendor_id,omitempty"`
+	QuotaType             int                    `json:"quota_type"`
+	// ModelRatio is nil when no ratio is configured. GetModelRatio answers an
+	// unknown model with the 37.5 self-use fallback, which is a billing safety
+	// net, not a price: publishing it would advertise $75/M for every model
+	// priced by expression and would let a sync import that bogus ratio.
+	ModelRatio             *float64                             `json:"model_ratio,omitempty"`
 	ModelPrice             float64                              `json:"model_price"`
 	OwnerBy                string                               `json:"owner_by"`
 	CompletionRatio        float64                              `json:"completion_ratio"`
@@ -349,8 +353,13 @@ func updatePricing() {
 			pricing.ModelPrice = modelPrice
 			pricing.QuotaType = 1
 		} else {
-			modelRatio, _, _ := ratio_setting.GetModelRatio(model)
-			pricing.ModelRatio = modelRatio
+			// Only publish a ratio that is actually configured. GetModelRatio
+			// answers an unknown model with the 37.5 self-use fallback; echoing
+			// that as model_ratio would advertise $75/M for every tiered or
+			// unpriced model and let a pricing sync import it as a real ratio.
+			if modelRatio, configured, _ := ratio_setting.GetModelRatio(model); configured {
+				pricing.ModelRatio = &modelRatio
+			}
 			pricing.CompletionRatio = ratio_setting.GetCompletionRatio(model)
 			pricing.QuotaType = 0
 		}

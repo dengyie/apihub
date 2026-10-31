@@ -295,9 +295,11 @@ func HasModelBillingConfig(modelName string) bool {
 	return ok && strings.TrimSpace(expr) != ""
 }
 
-// HasPriceOrRatioEntry reports whether name has a configured price, ratio, or
-// tiered billing-mode entry after a single wildcard normalization. Self-use
-// fallback does not count as a configured ratio.
+// HasPriceOrRatioEntry reports whether name has a configured price, ratio, or a
+// genuinely billable tiered entry after a single wildcard normalization.
+// Self-use fallback does not count as a configured ratio, and a model left in
+// tiered_expr mode with an empty expression does not count either: the relay
+// rejects those requests rather than billing them.
 func HasPriceOrRatioEntry(name string) bool {
 	formatted := ratio_setting.FormatMatchingModelName(name)
 	if _, ok := ratio_setting.GetModelPrice(formatted, false); ok {
@@ -306,7 +308,11 @@ func HasPriceOrRatioEntry(name string) bool {
 	if ratio_setting.HasConfiguredModelRatio(formatted) {
 		return true
 	}
-	return billing_setting.GetBillingMode(formatted) == billing_setting.BillingModeTieredExpr
+	if billing_setting.GetBillingMode(formatted) != billing_setting.BillingModeTieredExpr {
+		return false
+	}
+	expr, ok := billing_setting.GetBillingExpr(formatted)
+	return ok && strings.TrimSpace(expr) != ""
 }
 
 func resolveBillingModelName(origin string) string {

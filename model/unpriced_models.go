@@ -1,6 +1,8 @@
 package model
 
 import (
+	"strings"
+
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/relaykit/relayconvert/reasoning"
 	"github.com/dengyie/apihub/setting/billing_setting"
@@ -95,6 +97,11 @@ func billingCandidateNames(origin string) []string {
 
 // hasPriceOrRatioEntry mirrors relay/helper.HasPriceOrRatioEntry. It is
 // duplicated rather than imported because relay/helper depends on this package.
+//
+// A tiered_expr entry only counts when an expression actually exists. A model
+// left in tiered mode with an empty expression is *not* priced: the relay
+// refuses those requests outright, so reporting it as priced would hide a
+// broken configuration behind a passing audit.
 func hasPriceOrRatioEntry(name string) bool {
 	formatted := ratio_setting.FormatMatchingModelName(name)
 	if _, ok := ratio_setting.GetModelPrice(formatted, false); ok {
@@ -103,5 +110,9 @@ func hasPriceOrRatioEntry(name string) bool {
 	if ratio_setting.HasConfiguredModelRatio(formatted) {
 		return true
 	}
-	return billing_setting.GetBillingMode(formatted) == billing_setting.BillingModeTieredExpr
+	if billing_setting.GetBillingMode(formatted) != billing_setting.BillingModeTieredExpr {
+		return false
+	}
+	expr, ok := billing_setting.GetBillingExpr(formatted)
+	return ok && strings.TrimSpace(expr) != ""
 }

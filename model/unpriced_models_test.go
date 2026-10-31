@@ -104,6 +104,21 @@ func TestGetUnpricedModelsAcceptsRatioEntry(t *testing.T) {
 	assert.Empty(t, unpriced)
 }
 
+// A model parked in tiered_expr mode with no expression is not priced: the
+// relay rejects the request ("configured as tiered_expr but has no billing
+// expression") instead of billing it. Counting the mode alone as a price would
+// let the audit stay silent while every request to that model fails.
+func TestGetUnpricedModelsRejectsTieredModeWithoutExpression(t *testing.T) {
+	setupChannelStatusTest(t)
+	seedAbilityForStatus(t, common.ChannelStatusEnabled, "audit-empty-expr-model")
+	seedTieredBillingExpr(t, "audit-empty-expr-model", "")
+
+	unpriced, _, err := GetUnpricedModels()
+	require.NoError(t, err)
+	require.Len(t, unpriced, 1)
+	assert.Equal(t, "audit-empty-expr-model", unpriced[0].Model)
+}
+
 // A model whose channel was disabled is not routable, so a leftover ability row
 // must not keep producing audit noise. This is the same status/enabled pair
 // GetChannelCandidates requires.
