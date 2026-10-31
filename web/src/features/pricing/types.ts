@@ -66,7 +66,12 @@ export type PricingModel = {
   vendor_icon?: string
   vendor_description?: string
   quota_type: number
-  model_ratio: number
+  /**
+   * Absent when no ratio is configured: models billed by expression or not
+   * priced at all carry no model_ratio, and the fallback ratio is never
+   * published.
+   */
+  model_ratio?: number
   completion_ratio: number
   model_price?: number
   cache_ratio?: number | null

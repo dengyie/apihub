@@ -354,10 +354,14 @@ func updatePricing() {
 			pricing.QuotaType = 1
 		} else {
 			// Only publish a ratio that is actually configured. GetModelRatio
-			// answers an unknown model with the 37.5 self-use fallback; echoing
-			// that as model_ratio would advertise $75/M for every tiered or
-			// unpriced model and let a pricing sync import it as a real ratio.
-			if modelRatio, configured, _ := ratio_setting.GetModelRatio(model); configured {
+			// answers an unknown model with the 37.5 self-use fallback, and in
+			// self-use mode its presence flag is true for those models as well
+			// -- the flag means "a ratio can be used", not "one was configured".
+			// Echoing the fallback would advertise $75/M for every tiered or
+			// unpriced model and let a pricing sync import it as a real ratio,
+			// so the map itself decides.
+			if ratio_setting.HasConfiguredModelRatio(model) {
+				modelRatio, _, _ := ratio_setting.GetModelRatio(model)
 				pricing.ModelRatio = &modelRatio
 			}
 			pricing.CompletionRatio = ratio_setting.GetCompletionRatio(model)

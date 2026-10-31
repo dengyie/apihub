@@ -65,7 +65,8 @@ function calculateTokenPrice(
   type: PriceType,
   ratio: number
 ): number {
-  const base = model.model_ratio * 2 * ratio
+  if (!hasRatio(model.model_ratio)) return Number.NaN
+  const base = Number(model.model_ratio) * 2 * ratio
 
   switch (type) {
     case 'input':

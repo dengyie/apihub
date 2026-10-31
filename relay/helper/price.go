@@ -285,7 +285,9 @@ func HasModelBillingConfig(modelName string) bool {
 	if _, ok := ratio_setting.GetModelPrice(modelName, false); ok {
 		return true
 	}
-	if _, ok, _ := ratio_setting.GetModelRatio(modelName); ok {
+	// GetModelRatio reports a usable ratio, which in self-use mode includes the
+	// 37.5 fallback for models nobody priced; ask the map instead.
+	if ratio_setting.HasConfiguredModelRatio(modelName) {
 		return true
 	}
 	if billing_setting.GetBillingMode(modelName) != billing_setting.BillingModeTieredExpr {
