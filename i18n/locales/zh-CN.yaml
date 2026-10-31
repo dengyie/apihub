@@ -170,6 +170,7 @@ channel.query_failed: "查询渠道失败"
 channel.no_valid_upstream: "无有效上游渠道"
 channel.upstream_saturated: "当前分组上游负载已饱和，请稍后再试"
 channel.get_available_failed: "获取分组 {{.Group}} 下模型 {{.Model}} 的可用渠道失败"
+channel.status_dedicated_endpoint: "渠道状态不能通过编辑渠道修改，请使用独立的启用/禁用接口"
 
 # Model messages
 model.name_empty: "模型名称不能为空"

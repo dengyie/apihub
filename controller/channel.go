@@ -1171,7 +1171,10 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	if _, ok := requestData["status"]; ok {
-		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		// 状态有独立的 POST /api/channel/:id/status 接口。这里的报错必须点明去路：
+		// 客户端把 GET 结果原样回传是最自然的写法，笼统的「无效的参数」只会让人
+		// 去猜哪个字段不合法，而且猜不到是 status。
+		common.ApiErrorI18n(c, i18n.MsgChannelStatusDedicated)
 		return
 	}
 	clearChannelReadOnlyFields(&channel, requestData)

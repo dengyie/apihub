@@ -852,14 +852,30 @@ func (channel *Channel) Update() error {
 			}
 		}
 	}
-	var err error
-	err = DB.Model(channel).Updates(channel).Error
-	if err != nil {
-		return err
-	}
-	DB.Model(channel).First(channel, "id = ?", channel.Id)
-	err = channel.UpdateAbilities(nil)
-	return err
+	// UpdateAbilities 会整表重建该渠道的 abilities，且 Enabled 只跟随 channels.status
+	// —— 原先被 per-model 摘掉的模型因此回到轮转。留痕必须同步清空，否则两张表对
+	// 同一个模型给出互相矛盾的说法（abilities 说在架、channel_info 说已下线），而
+	// 留痕正是 EnableChannelModel 唯一的准入凭据。与 UpdateChannelStatus 整渠道恢复
+	// 时清留痕是同一条不变量；代价是该模型会再失败一次并被重新禁用一轮，那属于真实
+	// 故障，重试本就是正确行为。三处写入放进同一事务，避免中途失败留下半套状态。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(channel).Updates(channel).Error; err != nil {
+			return err
+		}
+		if err := tx.First(channel, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		if err := channel.UpdateAbilities(tx); err != nil {
+			return err
+		}
+		if len(channel.ChannelInfo.ModelDisabledReason) == 0 &&
+			len(channel.ChannelInfo.ModelDisabledTime) == 0 {
+			return nil
+		}
+		channel.ChannelInfo.ModelDisabledReason = nil
+		channel.ChannelInfo.ModelDisabledTime = nil
+		return channel.saveChannelInfo(tx)
+	})
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {

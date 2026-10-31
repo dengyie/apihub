@@ -317,3 +317,37 @@ func TestPerModelDisableRejectsDegenerateInput(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cleared)
 }
+
+// 渠道编辑会整表重建 abilities，被 per-model 摘掉的模型因此回到轮转 —— 留痕
+// 必须同步清空，否则 channel_info 声称模型已下线、abilities 却说它在架，而留痕
+// 是 EnableChannelModel 唯一的准入凭据，矛盾状态会让手动测活改错行。
+//
+// 语义上回到轮转是既有行为（与整渠道恢复一致）：那个模型会再失败一次并被重新
+// 禁用一轮，重试本身是正确的。
+func TestChannelUpdateClearsPerModelRecords(t *testing.T) {
+	setupChannelStatusTest(t)
+	channel := seedChannelWithModels(t, "edit-clears", []string{"m1", "m2"}, true)
+
+	_, err := DisableChannelModel(channel.Id, "m1", "模型不存在")
+	require.NoError(t, err)
+	require.False(t, abilityEnabled(t, channel.Id, "m1"), "前置：m1 已退出轮转")
+
+	var edited Channel
+	require.NoError(t, DB.First(&edited, channel.Id).Error)
+	edited.Priority = common.GetPointer(int64(9))
+	require.NoError(t, edited.Update())
+
+	assert.True(t, abilityEnabled(t, channel.Id, "m1"), "abilities 重建后 m1 回到轮转")
+	assert.True(t, abilityEnabled(t, channel.Id, "m2"), "m2 不受影响")
+
+	var stored Channel
+	require.NoError(t, DB.First(&stored, channel.Id).Error)
+	assert.Empty(t, stored.ChannelInfo.ModelDisabledReason, "留痕必须同步清空")
+	assert.Empty(t, stored.ChannelInfo.ModelDisabledTime)
+	require.NotNil(t, stored.Priority)
+	assert.Equal(t, int64(9), *stored.Priority, "编辑内容仍要正常落库")
+
+	cleared, err := EnableChannelModel(channel.Id, "m1")
+	require.NoError(t, err)
+	assert.False(t, cleared, "留痕已清，EnableChannelModel 不该再动 abilities")
+}

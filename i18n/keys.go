@@ -190,6 +190,7 @@ const (
 	MsgChannelNoValidUpstream    = "channel.no_valid_upstream"
 	MsgChannelUpstreamSaturated  = "channel.upstream_saturated"
 	MsgChannelGetAvailableFailed = "channel.get_available_failed"
+	MsgChannelStatusDedicated    = "channel.status_dedicated_endpoint"
 )
 
 // Model related messages
