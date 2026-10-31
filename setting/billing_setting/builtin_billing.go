@@ -237,7 +237,9 @@ var builtinBillingExpr = map[string]string{
 
 	// Other
 	"Qwen3Guard-Gen-0.6B":         `tier("standard", p * 0.1 + c * 0.2)`,
+	"qwen3guard-gen-0.6b":         `tier("standard", p * 0.1 + c * 0.2)`,
 	"Security-semantic-filtering": `tier("standard", p * 0.1 + c * 0.2)`,
+	"security-semantic-filtering": `tier("standard", p * 0.1 + c * 0.2)`,
 	"codex-auto-review":           `tier("standard", p * 1.75 + c * 14 + cr * 0.175)`,
 	"hy3":                         `tier("standard", p * 0.5 + c * 1.5)`,
 	"muse-spark-1.3":              `tier("standard", p * 1.0 + c * 3.0)`,
