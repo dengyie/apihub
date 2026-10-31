@@ -255,9 +255,18 @@ guard_conf_dir() {
 
 sup() { supervisorctl "$@"; }
 
-slot_state() { sup status "$1" 2>/dev/null | awk '{print $2}'; }
+# `supervisorctl status <program>` exits 3 whenever that program is not RUNNING
+# (STOPPED, EXITED, FATAL). Under `set -Eeuo pipefail` that made every status
+# read of a stopped slot a fatal error, even though "not running" is precisely
+# the answer a status query is asked for -- a handover that stops the idle slot
+# before starting it died on the very next read, with no message, after the
+# backup was taken. The exit code carries nothing the callers use (they read
+# stdout), so the query helpers answer and never fail; a caller that cares
+# compares the string. An empty answer still means supervisorctl could not
+# report at all, which callers treat as unknown.
+slot_state() { sup status "$1" 2>/dev/null | awk '{print $2}' || true; }
 
-slot_pid() { sup status "$1" 2>/dev/null | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p'; }
+slot_pid() { sup status "$1" 2>/dev/null | sed -n 's/.*pid \([0-9][0-9]*\).*/\1/p' || true; }
 
 running_slot() {
   local slot
@@ -865,9 +874,13 @@ apply_supervisor_conf() {
     warn "supervisorctl update exited $rc; supervisord may still be running the previous configs"
     return 1
   fi
-  local s
+  local s state pid
   for s in "${SLOTS[@]}"; do
-    log "$s -> $(slot_state "$s" || echo UNKNOWN)$(slot_pid "$s" >/dev/null 2>&1 && echo " pid=$(slot_pid "$s")")"
+    # slot_state answers "" (and never fails) when supervisorctl cannot report a
+    # state at all, so the default belongs here rather than in an `|| echo`.
+    state="$(slot_state "$s")"
+    pid="$(slot_pid "$s")"
+    log "$s -> ${state:-UNKNOWN}${pid:+ pid=$pid}"
   done
 }
 

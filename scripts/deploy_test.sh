@@ -738,6 +738,71 @@ grep -q 'sup stop apihub-green' "$SW_CALLS" \
   && ok "but a stop is still requested" \
   || bad "but a stop is still requested" "$(tr '\n' ';' <"$SW_CALLS")"
 
+echo "slot_state under errexit"
+
+# `supervisorctl status <program>` exits 3 for any program that is not RUNNING,
+# and deploy.sh runs under `set -Eeuo pipefail`. The handover stops the idle slot
+# and then reads its state again, so a status read that let that exit code
+# through aborted the deploy with exit 3 and no message -- between the stop and
+# the start. Every fake `sup` above returns 0, which is why nothing caught it, so
+# this case drives the real helpers against a subprocess that behaves like
+# supervisorctl.
+SUP_BIN="$WORK/supbin"
+mkdir -p "$SUP_BIN"
+cat >"$SUP_BIN/supervisorctl" <<'FAKE'
+#!/bin/sh
+# Supervisor's real contract: print the state, exit 3 unless the program is
+# RUNNING, and exit 4 for a program it does not know. stop/start exit 0.
+if [ "${1:-}" = status ]; then
+  case "${2:-}" in
+    apihub-green)      echo "apihub-green                     RUNNING   pid 4242, uptime 0:10:00"; exit 0 ;;
+    apihub-blue)       echo "apihub-blue                      STOPPED   Not started"; exit 3 ;;
+    apihub-slot-guard) echo "apihub-slot-guard                FATAL     Exited too quickly"; exit 3 ;;
+    *)                 echo "apihub: ERROR (no such program)" >&2; exit 4 ;;
+  esac
+fi
+exit 0
+FAKE
+chmod +x "$SUP_BIN/supervisorctl"
+
+# Source deploy.sh fresh in a subshell: the overrides above belong to this test
+# file, and the point of the case is what the real helpers do under the real
+# errexit mode.
+run_with_real_helpers() { # $1 shell code
+  PATH="$SUP_BIN:$PATH" DEPLOY_SH_LIB=1 bash -c "
+    set -Eeuo pipefail
+    source '$SCRIPT_DIR/deploy.sh'
+    $1" 2>&1
+}
+
+out="$(run_with_real_helpers 'state="$(slot_state apihub-blue)"; printf "%s" "$state"')"; rc=$?
+check "reading a stopped slot's state does not abort the script" "$rc" "0"
+check "and still reports the state" "$out" "STOPPED"
+
+out="$(run_with_real_helpers 'pid="$(slot_pid apihub-blue)"; printf "[%s]" "$pid"')"; rc=$?
+check "reading a stopped slot's pid does not abort either" "$rc" "0"
+check "and a stopped slot has no pid" "$out" "[]"
+
+out="$(run_with_real_helpers 'pid="$(slot_pid apihub-green)"; printf "%s" "$pid"')"; rc=$?
+check "a running slot's pid is still read" "$rc" "0"
+check "and it is the pid supervisor reported" "$out" "4242"
+
+# The production sequence: stop the idle slot, then read it. The stop leaves the
+# program in STOPPED, which is exactly the state whose status read exits 3.
+# Called as a plain command, not in an && list -- errexit is suppressed for every
+# command of an AND-OR list but the last, which would hide the very abort this
+# case is about.
+out="$(run_with_real_helpers 'stop_slot_and_wait apihub-blue 5
+echo continued')"; rc=$?
+check "a handover survives reading the slot it just stopped" "$rc" "0"
+check "and continues past it" "$out" "continued"
+
+# A program supervisor cannot report at all still reads as unknown rather than as
+# a state, so callers keep their own handling for it.
+out="$(run_with_real_helpers 'state="$(slot_state no-such-program)"; printf "[%s]" "$state"')"; rc=$?
+check "an unreadable program does not abort" "$rc" "0"
+check "and has no state" "$out" "[]"
+
 echo "apply_supervisor_conf"
 
 # A failed reload and "the config was already correct" must not look alike. The
