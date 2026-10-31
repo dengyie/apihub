@@ -160,6 +160,7 @@ var builtinBillingExpr = map[string]string{
 	"grok-4.20-0309-non-reasoning": `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 	"grok-4.20-0309-reasoning":     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 	"grok-4.20-multi-agent-0309":   `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
+	"grok-4.20-multi-agent":        `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 	"grok-4.3":                     `tier("standard", p * 1.25 + c * 2.5)`,
 	"grok-4.5":                     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.3)`,
 	"grok-4.5#1":                   `tier("standard", p * 2.0 + c * 6.0 + cr * 0.3)`,
