@@ -15,6 +15,13 @@ package billing_setting
 //
 // Free-tier models use tier("free", fixed(0)) for explicit zero pricing.
 // Image/video generation models use fixed per-request pricing.
+//
+// These are defaults, not the effective price. Production keeps an operator
+// override layer in the billing_setting.billing_expr / billing_mode options,
+// which is read first (see tiered_billing.go) and hot-reloads without a
+// restart. A model listed there ignores whatever this table says, so editing
+// this file alone does not change live prices. Keep the two in sync, and prefer
+// adding the override when a price must change before the next build ships.
 var builtinBillingExpr = map[string]string{
 	// https://developers.openai.com/api/docs/pricing (Standard, 2026-09-09).
 	// The Images API reports image output in output_tokens, normalized to c.
@@ -42,7 +49,14 @@ var builtinBillingExpr = map[string]string{
 	"gpt-5.6-terra":          `tier("standard", p * 2 + c * 12 + cr * 0.2)`,
 	"gpt-6-luna":             `tier("standard", p * 0.1 + c * 0.5 + cr * 0.01)`,
 	"gpt-6-sol":              `tier("standard", p * 2 + c * 10 + cr * 0.2)`,
+	"gpt-6.1-sol":            `tier("standard", p * 2 + c * 10 + cr * 0.2)`,
+	"gpt-6.1-terra":          `tier("standard", p * 1 + c * 5 + cr * 0.1)`,
 	"openai/gpt-6-luna":      `tier("standard", p * 0.1 + c * 0.5 + cr * 0.01)`,
+
+	// OpenAI Embeddings
+	"text-embedding-3-large": `tier("standard", p * 0.13)`,
+	"text-embedding-3-small": `tier("standard", p * 0.02)`,
+	"text-embedding-ada-002": `tier("standard", p * 0.1)`,
 
 	// OpenAI Image
 	"fal-ai/gpt-image-2": `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
@@ -58,6 +72,7 @@ var builtinBillingExpr = map[string]string{
 	"claude-fable-5-1":           `tier("standard", p * 10 + c * 50 + cr * 0.25 + cc * 12.5)`,
 	"claude-haiku-4-5":           `tier("standard", p * 1 + c * 5 + cr * 0.1 + cc * 1.25)`,
 	"claude-haiku-4-5-20251001":  `tier("standard", p * 1 + c * 5 + cr * 0.1 + cc * 1.25)`,
+	"claude-haiku-5.5":           `tier("standard", p * 1 + c * 5 + cr * 0.1 + cc * 1.25)`,
 	"claude-opus-4-1-20250805":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-4-20250514":     `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-4-5-20251101":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
@@ -65,9 +80,7 @@ var builtinBillingExpr = map[string]string{
 	"claude-opus-4-6-thinking":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-4-7":            `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-4-8":            `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
-	"claude-opus-4.6-thinking":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
-	"claude-opus-4.8":            `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
-	"claude-opus-4.8-thinking":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
+	"claude-opus-4-8-thinking":   `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-5":              `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
 	"claude-opus-5-5":            `tier("standard", p * 4 + c * 20 + cr * 0.2 + cc * 5.0)`,
 	"claude-opus-5-thinking":     `tier("standard", p * 5 + c * 25 + cr * 0.5 + cc * 6.25)`,
@@ -110,7 +123,7 @@ var builtinBillingExpr = map[string]string{
 	"GLM-5.2":               `tier("standard", p * 1.0 + c * 3.2)`,
 	"GLM-5.3":               `tier("standard", p * 1.0 + c * 3.2)`,
 	"GLM-5.3-1M":            `tier("standard", p * 1.0 + c * 3.2)`,
-	"GLM-5.3-Flash":         `tier("standard", p * 0.15 + c * 0.5)`,
+	"GLM-5.3-Flash":         `tier("standard", p * 0.15 + c * 0.5 + cr * 0.03)`,
 	"ZhipuAI/GLM-5.2":       `tier("standard", p * 1.0 + c * 3.2)`,
 	"glm-5-2":               `tier("standard", p * 1.0 + c * 3.2)`,
 	"glm-5-2-260617":        `tier("standard", p * 1.0 + c * 3.2)`,
@@ -120,40 +133,40 @@ var builtinBillingExpr = map[string]string{
 	"glm-5.2-thinking":      `tier("standard", p * 1.0 + c * 3.2)`,
 	"glm-5.3":               `tier("standard", p * 1.0 + c * 3.2)`,
 	"glm-5.3-200k":          `tier("standard", p * 1.0 + c * 3.2)`,
-	"glm-5.3-flash":         `tier("standard", p * 0.15 + c * 0.5)`,
+	"glm-5.3-flash":         `tier("standard", p * 0.15 + c * 0.5 + cr * 0.03)`,
 	"glm-5.3-flash-free":    `tier("free", fixed(0))`,
 	"glm5":                  `tier("standard", p * 1.0 + c * 3.2)`,
-	"nvidia/glm-5.3-flash":  `tier("standard", p * 0.15 + c * 0.5)`,
+	"nvidia/glm-5.3-flash":  `tier("standard", p * 0.15 + c * 0.5 + cr * 0.03)`,
 	"z-ai/glm-5.2":          `tier("standard", p * 1.0 + c * 3.2)`,
 	"z-ai/glm-5.3":          `tier("standard", p * 1.0 + c * 3.2)`,
-	"z-ai/glm-5.3-flash":    `tier("standard", p * 0.15 + c * 0.5)`,
+	"z-ai/glm-5.3-flash":    `tier("standard", p * 0.15 + c * 0.5 + cr * 0.03)`,
 	"z-ai/glm-5.3-free":     `tier("free", fixed(0))`,
-	"zai-org/GLM-5.3-Flash": `tier("standard", p * 0.15 + c * 0.5)`,
+	"zai-org/GLM-5.3-Flash": `tier("standard", p * 0.15 + c * 0.5 + cr * 0.03)`,
 	"智谱/GLM-5.2":            `tier("standard", p * 1.0 + c * 3.2)`,
 
 	// Gemini
-	"gemini-2.5-pro":         `tier("standard", p * 1.25 + c * 10)`,
-	"gemini-3.1-flash-lite":  `tier("standard", p * 0.25 + c * 1.5)`,
-	"gemini-3.1-pro":         `tier("standard", p * 2.0 + c * 12)`,
-	"gemini-3.1-pro-preview": `tier("standard", p * 2.0 + c * 12)`,
-	"gemini-3.5-flash":       `tier("standard", p * 1.5 + c * 9.0)`,
-	"gemini-3.6-flash":       `tier("standard", p * 0.75 + c * 3.75)`,
-	"gemini-3.7-flash":       `tier("standard", p * 0.75 + c * 3.75)`,
-	"gemini-3.7-flash-high":  `tier("standard", p * 0.75 + c * 3.75)`,
-	"gemini-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75)`,
-	"gemini-3.8-flash-high":  `tier("standard", p * 0.75 + c * 3.75)`,
+	"gemini-2.5-pro":         `tier("standard", p * 1.25 + c * 10 + cr * 0.125)`,
+	"gemini-3.1-flash-lite":  `tier("standard", p * 0.25 + c * 1.5 + cr * 0.025)`,
+	"gemini-3.1-pro":         `tier("standard", p * 2.0 + c * 12 + cr * 0.2)`,
+	"gemini-3.1-pro-preview": `tier("standard", p * 2.0 + c * 12 + cr * 0.2)`,
+	"gemini-3.5-flash":       `tier("standard", p * 1.5 + c * 9.0 + cr * 0.15)`,
+	"gemini-3.6-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"gemini-3.7-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"gemini-3.7-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"gemini-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"gemini-3.8-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 
 	// Grok (text)
-	"grok-4.20-0309-non-reasoning": `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.20-0309-reasoning":     `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.20-multi-agent-0309":   `tier("standard", p * 2.0 + c * 6.0)`,
+	"grok-4.20-0309-non-reasoning": `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
+	"grok-4.20-0309-reasoning":     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
+	"grok-4.20-multi-agent-0309":   `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 	"grok-4.3":                     `tier("standard", p * 1.25 + c * 2.5)`,
-	"grok-4.5":                     `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.5#1":                   `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.5#2":                   `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.6":                     `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-4.7":                     `tier("standard", p * 2.0 + c * 6.0)`,
-	"grok-build-0.1":               `tier("standard", p * 2.0 + c * 6.0)`,
+	"grok-4.5":                     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.3)`,
+	"grok-4.5#1":                   `tier("standard", p * 2.0 + c * 6.0 + cr * 0.3)`,
+	"grok-4.5#2":                   `tier("standard", p * 2.0 + c * 6.0 + cr * 0.3)`,
+	"grok-4.6":                     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
+	"grok-4.7":                     `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
+	"grok-build-0.1":               `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 
 	// Grok Imagine (image/video)
 	"grok-imagine-image":             `tier("standard", fixed(0.05))`,
@@ -174,8 +187,10 @@ var builtinBillingExpr = map[string]string{
 	"moonshotai/kimi-k3":   `tier("standard", p * 3.0 + c * 15.0 + cr * 0.3)`,
 
 	// MiniMax
-	"MiniMax-M3": `tier("standard", p * 0.5 + c * 2.0)`,
-	"minimax-m3": `tier("standard", p * 0.5 + c * 2.0)`,
+	"MiniMax-M3":         `tier("standard", p * 0.3 + c * 1.2 + cr * 0.06)`,
+	"minimax-m3":         `tier("standard", p * 0.3 + c * 1.2 + cr * 0.06)`,
+	"MiniMax-M3.1-Flash": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.015)`,
+	"minimax-m3.1-flash": `tier("standard", p * 0.15 + c * 0.6 + cr * 0.015)`,
 
 	// Mistral
 	"mistral-large-latest":  `tier("standard", p * 0.5 + c * 1.5)`,
@@ -193,12 +208,20 @@ var builtinBillingExpr = map[string]string{
 	"mimo-v2.5:free":            `tier("free", fixed(0))`,
 	"mimo-v2.6-flash:free":      `tier("free", fixed(0))`,
 	"xiaomi/mimo-v2.5-pro":      `tier("standard", p * 1.0 + c * 3.0)`,
+	// Cache-read price is the 10% convention used by this table, not a verified
+	// upstream rate: only 6 requests in 30 days, so it was never worth chasing.
+	"mimo-v2.6-flash": `tier("standard", p * 0.15 + c * 0.5 + cr * 0.015)`,
 
 	// TTS
 	"Spark-TTS-0.5B": `tier("standard", fixed(0.01))`,
 
 	// Qwen
 	"qwen3.8-flash": `tier("standard", p * 0.6 + c * 3.6)`,
+
+	// SenseNova
+	// Was unpriced, so it silently billed at the 37.5 self-use fallback ($75/M).
+	// Rate below is a flash-lite-class estimate, not a verified official price.
+	"sensenova-6.8-flash-lite": `tier("standard", p * 0.1 + c * 0.4 + cr * 0.01)`,
 
 	// Nano Banana (image)
 	"Nano Banana 2 Lite":     `tier("standard", fixed(0.05))`,
