@@ -207,14 +207,21 @@ func effectiveModelPricing(values map[string]map[string]any, name string) Pricin
 		configuredCompletion = &ratio
 	}
 	result["CompletionRatio"] = ratio_setting.ResolveCompletionRatio(name, configuredCompletion).Ratio
-	for key, fallback := range map[string]float64{
-		"CacheRatio":       ratio_setting.DefaultCacheRatio,
-		"CreateCacheRatio": ratio_setting.DefaultCreateCacheRatio,
-		"ImageRatio":       ratio_setting.DefaultImageRatio,
-	} {
-		if _, exists := result[key]; !exists {
-			result[key] = fallback
-		}
+	// Cache prices resolve through a snapshot-aware copy of the relay's lookup.
+	// Falling back to the bare 1.0 constant here would show an undiscounted cache
+	// price in the console for a model the relay bills with its built-in default.
+	var configuredCache *float64
+	if ratio, exists := result["CacheRatio"].(float64); exists {
+		configuredCache = &ratio
+	}
+	result["CacheRatio"] = ratio_setting.ResolveCacheRatio(name, configuredCache)
+	var configuredCreateCache *float64
+	if ratio, exists := result["CreateCacheRatio"].(float64); exists {
+		configuredCreateCache = &ratio
+	}
+	result["CreateCacheRatio"] = ratio_setting.ResolveCreateCacheRatio(name, configuredCreateCache)
+	if _, exists := result["ImageRatio"]; !exists {
+		result["ImageRatio"] = ratio_setting.DefaultImageRatio
 	}
 	return result
 }
