@@ -213,7 +213,10 @@ var builtinBillingExpr = map[string]string{
 	"mimo-v2.6-flash": `tier("standard", p * 0.15 + c * 0.5 + cr * 0.015)`,
 
 	// TTS
+	// The lowercase spelling is what the channel catalog advertises; without it
+	// the request has no price and falls through to the 37.5 self-use ratio.
 	"Spark-TTS-0.5B": `tier("standard", fixed(0.01))`,
+	"spark-tts-0.5b": `tier("standard", fixed(0.01))`,
 
 	// Qwen
 	"qwen3.8-flash": `tier("standard", p * 0.6 + c * 3.6)`,
@@ -241,6 +244,7 @@ var builtinBillingExpr = map[string]string{
 	"tencent/Hy-MT2-30B-A3B":      `tier("standard", p * 0.5 + c * 1.5)`,
 
 	// Free tier (explicit zero)
+	"beam-free":                      `tier("free", fixed(0))`,
 	"cline-free/deepseek-v4.1-flash": `tier("free", fixed(0))`,
 	"deepseek-v4-flash-0731-free-3":  `tier("free", fixed(0))`,
 	"deepseek-v4-flash-free":         `tier("free", fixed(0))`,
@@ -249,6 +253,7 @@ var builtinBillingExpr = map[string]string{
 	"deepseek-v4.1-flash:free":       `tier("free", fixed(0))`,
 	"hy3-free":                       `tier("free", fixed(0))`,
 	"nemotron-3-ultra-free":          `tier("free", fixed(0))`,
+	"nemotron-3.5-lightning-free":    `tier("free", fixed(0))`,
 	"north-mini-code-free":           `tier("free", fixed(0))`,
 	"openrouter/free":                `tier("free", fixed(0))`,
 	"qwen3.8-flash-free":             `tier("free", fixed(0))`,
