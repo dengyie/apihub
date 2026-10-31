@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -916,6 +917,13 @@ func TestIsUpstreamCapacityErrorBoundaries(t *testing.T) {
 	assert.False(t, IsUpstreamCapacityError(types.WithOpenAIError(types.OpenAIError{
 		Message: "codex_error_info=not overloaded",
 	}, 503)))
+
+	claudeOverloaded := types.WithClaudeError(types.ClaudeError{
+		Type:    "overloaded_error",
+		Message: "Overloaded",
+	}, http.StatusInternalServerError)
+	assert.True(t, IsUpstreamCapacityError(claudeOverloaded))
+	assert.True(t, IsUpstreamRateLimitError(claudeOverloaded))
 }
 
 func TestRateLimitBreakerShortCooldown(t *testing.T) {

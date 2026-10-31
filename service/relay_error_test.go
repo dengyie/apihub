@@ -441,6 +441,20 @@ func TestEvaluateRelayFailure(t *testing.T) {
 		assert.False(t, decision.IsPreStreamNonTTFT)
 	})
 
+	t.Run("claude overloaded error produces breaker_rate_limit and retry", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.WithClaudeError(types.ClaudeError{
+			Type:    "overloaded_error",
+			Message: "Overloaded",
+		}, http.StatusInternalServerError)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, "upstream_rate_limited", decision.PolicyDecision.Reason)
+		assert.Equal(t, "loadbalancer", decision.PolicyDecision.Source)
+		assert.Equal(t, BreakerRateLimit, decision.BreakerEffect)
+		assert.False(t, decision.IsPreStreamNonTTFT)
+	})
+
 	t.Run("curfew 403 sets BreakerCurfew and CurfewUntil", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		err := types.NewOpenAIError(errors.New("system_curfew: 00:00-8:00 账号宵禁"), types.ErrorCodeBadResponseStatusCode, http.StatusForbidden)

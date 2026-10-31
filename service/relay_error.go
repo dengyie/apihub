@@ -320,10 +320,16 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsUpstreamRelayError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}
 	}
+	// 明确的结构化容量错误即使返回 5xx，也要保留容量专用 reason；否则会被通用
+	// 状态码规则记为 retry_status_matched，丢失对应的可观测语义。普通 429 仍保留
+	// 既有的 retry_status_matched 契约，其他文本限流也继续走原有状态码/限流分支。
+	if loadbalancer.IsUpstreamCapacityError(err) {
+		return PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}
+	}
 	if operation_setting.ShouldRetryByStatusCode(code) {
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
-	// 智能负载：上游限流/并发超限（如 400 包装的并发限制、RPM 限流），换渠道重试
+	// 智能负载：上游限流/并发超限（如 400 包装的并发限制、RPM 限流），换渠道重试。
 	if loadbalancer.IsUpstreamRateLimitError(err) {
 		return PolicyDecision{Action: "retry", Reason: "upstream_rate_limited", Source: "loadbalancer"}
 	}

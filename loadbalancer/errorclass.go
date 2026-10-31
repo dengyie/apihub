@@ -125,6 +125,18 @@ func openAIErrorFields(value any) (code, typeStr, message string, ok bool) {
 	return "", "", "", false
 }
 
+func claudeErrorFields(value any) (typeStr, message string, ok bool) {
+	switch ce := value.(type) {
+	case types.ClaudeError:
+		return strings.ToLower(ce.Type), strings.ToLower(ce.Message), true
+	case *types.ClaudeError:
+		if ce != nil {
+			return strings.ToLower(ce.Type), strings.ToLower(ce.Message), true
+		}
+	}
+	return "", "", false
+}
+
 // IsUpstreamRoutingError 判断是否为上游网关会话路由头缺失错误（通常返回 400）。
 // 例如部分中间层中继（如 ioll.pp.ua）未正确透传 x-opencode-session / x-opencode-* 等请求头，
 // 导致目标上游（如 OpenCode）拒绝服务并返回 "Request is missing x-opencode-session and cannot be routed efficiently."
@@ -436,9 +448,13 @@ func upstreamCapacitySignal(err *types.NewAPIError) bool {
 	if err == nil || IsUpstreamQuotaError(err) {
 		return false
 	}
-	if err.GetErrorType() == types.ErrorTypeOpenAIError {
+	switch err.GetErrorType() {
+	case types.ErrorTypeOpenAIError:
 		code, typeStr, message, ok := openAIErrorFields(err.RelayError)
 		return ok && isCapacitySignal(code, typeStr, message)
+	case types.ErrorTypeClaudeError:
+		typeStr, message, ok := claudeErrorFields(err.RelayError)
+		return ok && isCapacitySignal("", typeStr, message)
 	}
 
 	// Some relay paths preserve an upstream JSON error inside a generic
