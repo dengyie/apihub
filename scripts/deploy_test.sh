@@ -641,6 +641,103 @@ else
   bad "keeps the binary it rolled back FROM" "$(ls -1 "$WORK/rb/backup")"
 fi
 
+echo "stop_slot_and_wait"
+
+# `supervisorctl start` on a RUNNING program succeeds without restarting
+# anything. A handover that starts an already-RUNNING idle slot therefore keeps
+# the previous process -- and the previous binary -- while every later gate
+# agrees, because that process reports the version string this deploy expects.
+# These cases pin the stop+wait that makes the start meaningful.
+SW_CALLS="$WORK/stop.calls"
+# slot_state is read through a command substitution, so every piece of fake
+# supervisor state has to live in FILES -- shell variables set inside the
+# substitution would be thrown away with the subshell.
+#   state  the state reported now
+#   queue  comma list of states to report on the following calls, popped one per
+#          call, so a slot that settles two polls after the stop is modelled
+#   polls  how many status reads happened
+SW_DIR="$WORK/stop-fake"
+sw_reset() { # $1 initial state, $2 optional queue
+  rm -rf "$SW_DIR"; mkdir -p "$SW_DIR"
+  # ${1-STOPPED}, not ${1:-STOPPED}: an explicitly empty state is one of the
+  # cases under test (supervisorctl answered with nothing).
+  printf '%s' "${1-STOPPED}" >"$SW_DIR/state"
+  printf '%s' "${2:-}" >"$SW_DIR/queue"
+  printf '0' >"$SW_DIR/polls"
+  : >"$SW_CALLS"
+}
+sup() {
+  printf 'sup %s\n' "$*" >>"$SW_CALLS"
+  if [[ ${1:-} == stop ]] && [[ ! -s $SW_DIR/queue ]]; then
+    printf '%s' "${SW_AFTER_STOP:-STOPPED}" >"$SW_DIR/state"
+  fi
+  return 0
+}
+slot_state() {
+  local polls queue head rest
+  polls=$(( $(cat "$SW_DIR/polls" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$polls" >"$SW_DIR/polls"
+  queue="$(cat "$SW_DIR/queue" 2>/dev/null)"
+  if [[ -n $queue ]]; then
+    head="${queue%%%,*}"
+    rest="${queue#*,}"
+    [[ $rest == "$queue" ]] && rest=""
+    printf '%s' "$head" >"$SW_DIR/state"
+    printf '%s' "$rest" >"$SW_DIR/queue"
+  fi
+  cat "$SW_DIR/state" 2>/dev/null
+}
+
+# Already down: no stop, no waiting. A deploy must not signal a slot that is
+# stopped or that supervisor just marked fatal.
+for state in STOPPED EXITED FATAL; do
+  sw_reset "$state"
+  ( stop_slot_and_wait apihub-green 5 ) >/dev/null 2>&1; rc=$?
+  check "a $state slot needs no stop" "$rc" "0"
+  [[ ! -s $SW_CALLS ]] && ok "and $state is not signalled" \
+    || bad "and $state is not signalled" "$(tr '\n' ';' <"$SW_CALLS")"
+done
+
+# A RUNNING idle slot: it must be stopped before anything starts it.
+sw_reset RUNNING
+out="$( ( stop_slot_and_wait apihub-green 5 ) 2>&1 )"; rc=$?
+check "a running idle slot is stopped" "$rc" "0"
+grep -q 'sup stop apihub-green' "$SW_CALLS" \
+  && ok "and the stop was actually issued" \
+  || bad "and the stop was actually issued" "$(tr '\n' ';' <"$SW_CALLS")"
+[[ $out == *RUNNING*must\ be\ down* ]] \
+  && ok "and says why it is stopping a healthy process" \
+  || bad "and says why it is stopping a healthy process" "$out"
+
+# The wait: a stop only delivers the signal, so the helper must poll until the
+# state settles instead of returning on the accepted signal.
+sw_reset RUNNING "STOPPING,STOPPING,STOPPED"
+stop_slot_and_wait apihub-green 10 >/dev/null 2>&1; rc=$?
+check "a draining slot is waited for" "$rc" "0"
+polls="$(cat "$SW_DIR/polls")"
+(( polls >= 3 )) && ok "and it polled until the state settled ($polls polls)" \
+  || bad "and it polled until the state settled" "only $polls polls"
+
+# A slot that never settles must fail the deploy instead of letting a second
+# copy be started on the same port.
+sw_reset RUNNING
+SW_AFTER_STOP="STOPPING"
+out="$( ( stop_slot_and_wait apihub-green 1 ) 2>&1 )"; rc=$?
+SW_AFTER_STOP=""
+check "a slot that will not stop is fatal" "$rc" "1"
+[[ $out == *still\ STOPPING* ]] \
+  && ok "and the failure names the state it is stuck in" \
+  || bad "and the failure names the state it is stuck in" "$out"
+
+# An unreadable state is not a reason to block until the deadline: ask for the
+# stop, then let the caller's pid and readiness checks decide.
+sw_reset ""
+( stop_slot_and_wait apihub-green 1 ) >/dev/null 2>&1; rc=$?
+check "an unknown state does not block" "$rc" "0"
+grep -q 'sup stop apihub-green' "$SW_CALLS" \
+  && ok "but a stop is still requested" \
+  || bad "but a stop is still requested" "$(tr '\n' ';' <"$SW_CALLS")"
+
 echo "apply_supervisor_conf"
 
 # A failed reload and "the config was already correct" must not look alike. The

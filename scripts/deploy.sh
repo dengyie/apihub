@@ -100,6 +100,10 @@ LOCK_FILE="${LOCK_FILE:-$APP_ROOT/.apihub-deploy.lock}"
 PORT="${PORT:-3000}"
 READY_TIMEOUT="${READY_TIMEOUT:-90}"
 FINGERPRINT_TIMEOUT="${FINGERPRINT_TIMEOUT:-20}"
+# How long to wait for the incoming slot to reach STOPPED before starting it.
+# Must exceed the application's own SHUTDOWN_TIMEOUT_SECONDS (default 120), or a
+# slot that is still draining its old requests would be declared stuck.
+STOP_TIMEOUT="${STOP_TIMEOUT:-150}"
 SLOTS=(apihub-blue apihub-green)
 
 # Completeness thresholds for a frontend bundle. These must stay equal to
@@ -142,6 +146,7 @@ die()  { printf '[%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 #   BACKUP_KEEP             (( n <= BACKUP_KEEP ))          prunes deploy backups
 #   READY_TIMEOUT           (( now + READY_TIMEOUT ))       handoff readiness deadline
 #   FINGERPRINT_TIMEOUT     (( now + FINGERPRINT_TIMEOUT )) rollback fingerprint deadline
+#   STOP_TIMEOUT            (( now + STOP_TIMEOUT ))        incoming-slot stop deadline
 #   MIN_WEB_INDEX_BYTES     (( bytes < MIN_WEB_INDEX_BYTES ))  web package check
 #   MIN_WEB_STATIC_FILES    (( count < MIN_WEB_STATIC_FILES )) web package check
 # A malformed value in any of them is either a silent prune-everything or a check
@@ -150,7 +155,7 @@ die()  { printf '[%s] FATAL: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 # Note this deliberately tests each variable by name rather than asserting the
 # value is non-empty. ${VAR:-default} substitutes on empty AND unset, so an
 # operator who exports an empty variable gets the default, not a failure here.
-for _numeric in WEB_KEEP BACKUP_KEEP READY_TIMEOUT FINGERPRINT_TIMEOUT \
+for _numeric in WEB_KEEP BACKUP_KEEP READY_TIMEOUT FINGERPRINT_TIMEOUT STOP_TIMEOUT \
                 MIN_WEB_INDEX_BYTES MIN_WEB_STATIC_FILES; do
   [[ ${!_numeric} =~ ^[0-9]+$ ]] ||
     die "$_numeric must be a non-negative integer, got '${!_numeric}'"
@@ -268,6 +273,61 @@ idle_slot() {
     [[ $slot != "$1" ]] && { echo "$slot"; return 0; }
   done
   die "could not determine the idle slot (active='$1')"
+}
+
+# stop_slot_and_wait <slot> [timeout]
+#
+# `supervisorctl start` on a program that is already RUNNING is a successful
+# no-op: it prints "already started" and exits 0. An idle slot can be RUNNING
+# anyway -- a handover aborted between starting the incoming slot and stopping
+# the outgoing one, an operator running `supervisorctl start` by hand, or a
+# release whose version string is unchanged. Starting it then restarts nothing:
+# the handover would keep the previous process (and therefore the previous
+# binary) while every later gate agrees, because the live process reports the
+# version string this deploy expects and serves the same frontend directory.
+#
+# So the incoming slot is stopped and observed to reach STOPPED before start.
+# The wait matters as much as the stop: supervisorctl returns as soon as the
+# signal is sent, and starting a process that is still draining its old
+# connections would briefly put two copies of the API on one port.
+stop_slot_and_wait() {
+  local slot="$1" timeout="${2:-$STOP_TIMEOUT}" state deadline
+  state="$(slot_state "$slot")"
+
+  case "$state" in
+    STOPPED|EXITED|FATAL)
+      # Already down: nothing to signal, and supervisorctl would only confirm it.
+      return 0
+      ;;
+    "")
+      # supervisorctl could not report a state (program not loaded yet, or the
+      # daemon is unreachable). Ask for the stop anyway but do not wait: with no
+      # readable state there is nothing to poll, and the caller's pid check and
+      # readiness probe still catch a process that turns out to be alive.
+      sup stop "$slot" || true
+      return 0
+      ;;
+  esac
+
+  log "$slot is $state and must be down; stopping it and waiting for the port to be released"
+  sup stop "$slot" || true
+
+  deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    state="$(slot_state "$slot")"
+    case "$state" in
+      STOPPED|EXITED|FATAL) return 0 ;;
+      "")
+        # The state stopped being readable mid-wait; treat it as down rather
+        # than blocking until the deadline on an unanswerable question.
+        return 0
+        ;;
+    esac
+    if (( $(date +%s) >= deadline )); then
+      die "$slot is still $state after $timeout seconds; it is holding the port and must be down before this step can continue"
+    fi
+    sleep 1
+  done
 }
 
 # The legacy single-process program that this script supersedes.
@@ -1057,7 +1117,10 @@ do_rollback() {
     log "kept the outgoing binary as new-api.rolled-back-from"
   fi
 
-  for slot in "${SLOTS[@]}"; do sup stop "$slot" >/dev/null 2>&1 || true; done
+  # Both slots must be fully down before the previous binary is swapped in: a
+  # stop only delivers the signal, and a process still draining keeps its old
+  # inode (the binary being replaced) mapped and the port occupied.
+  for slot in "${SLOTS[@]}"; do stop_slot_and_wait "$slot"; done
 
   cp -a "$backup/new-api.prev" "$BIN_DIR/new-api"
   chmod +x "$BIN_DIR/new-api"
@@ -1191,11 +1254,17 @@ main() {
     # apihub-blue is autostart, and starting it while the legacy process still
     # owns the port would crash-loop it on EADDRINUSE.
     log "BOOTSTRAP: stopping $LEGACY_PROGRAM (expect a short connection gap)"
-    sup stop "$LEGACY_PROGRAM"
+    # Wait for it to actually exit, not just for the signal to be delivered: the
+    # incumbent drains in-flight requests, and starting apihub-blue while it
+    # still owns the port crash-loops the slot on EADDRINUSE.
+    stop_slot_and_wait "$LEGACY_PROGRAM"
 
     source_environment
     write_slot_conf apihub-blue 1 "$NEW_WEB_DIR"
     write_slot_conf apihub-green 0 "$NEW_WEB_DIR"
+    # A previous aborted bootstrap can have left apihub-blue RUNNING; an
+    # autostart would then skip it and the old binary would keep serving.
+    stop_slot_and_wait apihub-blue
     # Fatal here in a way it is not elsewhere: the legacy program is already
     # stopped, so a failed reload means nothing is serving and the operator has
     # to read this message to find out.
@@ -1243,10 +1312,22 @@ main() {
   # reports success while serving the previous release.
   apply_supervisor_conf || die "supervisord did not accept the $NEW_SLOT config; $ACTIVE_SLOT is untouched and still serving"
 
+  # A stale RUNNING slot makes the start below a no-op, which would hand over to
+  # a process still running the previous binary. Stop it and wait first.
+  local idle_pid
+  idle_pid="$(slot_pid "$NEW_SLOT")"
+  stop_slot_and_wait "$NEW_SLOT"
+
   sup start "$NEW_SLOT"
   local new_pid
   new_pid="$(slot_pid "$NEW_SLOT")"
   [[ -n $new_pid ]] || { sup stop "$NEW_SLOT" || true; die "$NEW_SLOT failed to start"; }
+  if [[ -n $idle_pid && $new_pid == "$idle_pid" ]]; then
+    # start did not replace the process, so the handover would be to the old
+    # binary while every gate below still passes.
+    sup stop "$NEW_SLOT" || true
+    die "$NEW_SLOT is still the process that was running before (pid $new_pid); it did not restart, so the previous binary would keep serving"
+  fi
 
   if ! wait_ready "$NEW_SLOT" "$new_pid"; then
     warn "$NEW_SLOT failed readiness; aborting the handover and leaving $ACTIVE_SLOT serving"
