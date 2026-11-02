@@ -695,6 +695,179 @@ func TestStreamScannerHandler_ZeroFrameStreamIsEmpty(t *testing.T) {
 	assert.Equal(t, 0, info.ReceivedResponseCount)
 }
 
+// Reproduces the exact incident where upstream emits an uninitialized zero-valued Go struct
+// chunk followed by [DONE]. This must be recognized as an empty stream and trigger EmptyStreamError.
+func TestStreamScannerHandler_EmptyStructFrameStreamIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	body := "data: {\"id\":\"\",\"object\":\"\",\"created\":0,\"model\":\"\",\"system_fingerprint\":null,\"choices\":null,\"usage\":null}\ndata: [DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	var emptyErr *loadbalancer.EmptyStreamError
+	require.ErrorAs(t, err, &emptyErr)
+	assert.Equal(t, 0, info.ReceivedResponseCount)
+}
+
+func TestStreamScannerHandler_EmptyChoicesFrameStreamIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	body := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[]}\ndata: [DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	var emptyErr *loadbalancer.EmptyStreamError
+	require.ErrorAs(t, err, &emptyErr)
+	assert.Equal(t, 0, info.ReceivedResponseCount)
+}
+
+// 裸 [DONE]（不带 "data: " 前缀）是 SSE 规范合法的终止行。历史实现的固定偏移切片
+// 会把它切成 "]" 并当作垃圾数据帧转发；修复后必须走正常 done 路径。
+func TestStreamScannerHandler_BareDoneLine(t *testing.T) {
+	t.Parallel()
+
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n[DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	var received []string
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{`{"choices":[{"delta":{"content":"hi"}}]}`}, received, "裸 [DONE] 不得被切片成垃圾帧转发")
+	assert.Equal(t, 1, info.ReceivedResponseCount)
+}
+
+// 仅含裸 [DONE] 的流仍然是空流，必须触发 EmptyStreamError 而不是垃圾帧 + 假成功。
+func TestStreamScannerHandler_BareDoneOnlyStreamIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	body := "[DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	err := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	var emptyErr *loadbalancer.EmptyStreamError
+	require.ErrorAs(t, err, &emptyErr)
+	assert.Equal(t, 0, info.ReceivedResponseCount)
+}
+
+func TestIsEmptyStreamFrame(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{
+			name: "incident zero-valued Go struct frame",
+			data: `{"id":"","object":"","created":0,"model":"","system_fingerprint":null,"choices":null,"usage":null}`,
+			want: true,
+		},
+		{
+			name: "empty choices array",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[]}`,
+			want: true,
+		},
+		{
+			name: "empty choices array with spaces",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[   ]}`,
+			want: true,
+		},
+		{
+			name: "empty object with spaces",
+			data: `{   }`,
+			want: true,
+		},
+		{
+			name: "empty choices null",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":null}`,
+			want: true,
+		},
+		{
+			name: "empty choices null with space",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices": null}`,
+			want: true,
+		},
+		{
+			name: "empty object",
+			data: `{}`,
+			want: true,
+		},
+		{
+			name: "empty choices with empty delta",
+			data: `{"choices":[{"index":0,"delta":{},"finish_reason":null}]}`,
+			want: true,
+		},
+		{
+			name: "empty choices with empty content and null finish_reason",
+			data: `{"choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`,
+			want: true,
+		},
+		{
+			name: "valid standard text chunk",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]`,
+			want: false,
+		},
+		{
+			name: "valid role chunk",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+			want: false,
+		},
+		{
+			name: "valid reasoning chunk",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`,
+			want: false,
+		},
+		{
+			name: "refusal-only delta is real content and must never be dropped",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"refusal":"I can't help with that request."}}]}`,
+			want: false,
+		},
+		{
+			name: "annotations-only delta is real content and must never be dropped",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"annotations":[{"type":"url_citation","url":"https://example.com"}]}}]}`,
+			want: false,
+		},
+		{
+			name: "audio delta is real content and must never be dropped",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"audio":{"transcript":"hello"}}}]}`,
+			want: false,
+		},
+		{
+			name: "valid finish_reason chunk",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			want: false,
+		},
+		{
+			name: "valid usage chunk with empty choices",
+			data: `{"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"total_tokens":10}}`,
+			want: false,
+		},
+		{
+			name: "valid error chunk",
+			data: `{"id":"c1","error":{"message":"overloaded","type":"server_error"}}`,
+			want: false,
+		},
+		{
+			name: "valid Gemini content chunk",
+			data: `{"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}`,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsEmptyStreamFrame(tc.data)
+			assert.Equal(t, tc.want, got, "data: %s", tc.data)
+		})
+	}
+}
+
 // ---------- 客户端主动断开不得被当成上游流故障 ----------
 
 // blockedBody 在 Read 上一直阻塞，直到 Close 被调用才返回一个读错误——复刻生产上

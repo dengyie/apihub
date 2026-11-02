@@ -35,7 +35,7 @@ func (r *StreamResult) Error(err error) {
 // Stop records a fatal error and marks the stream to stop after this chunk.
 func (r *StreamResult) Stop(err error) {
 	r.Error(err)
-	r.status.SetEndReason(relaycommon.StreamEndReasonHandlerStop, err)
+	r.status.OverrideEndReason(relaycommon.StreamEndReasonHandlerStop, err)
 	r.stopped = true
 }
 

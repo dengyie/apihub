@@ -376,12 +376,23 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if len(data) < 6 {
 				continue
 			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
+			// SSE 行只有两种合法形态：带前缀的数据行，以及裸 [DONE] 行（部分 vLLM/One-API
+			// 部署确实发送不带 "data: " 前缀的终止行）。不能对两种形态共用固定偏移切片：
+			// data[5:] 会把 "[DONE]" 切成 "]"，被当成垃圾数据帧计数、转发，进而触发
+			// processTokenData 反序列化失败 → 流中断误判 → 烧光换渠道重试预算并误熔断健康渠道。
+			if strings.HasPrefix(data, "data:") {
+				data = strings.TrimSpace(data[5:])
+			} else if !strings.HasPrefix(data, "[DONE]") {
 				continue
 			}
-			data = data[5:]
-			data = strings.TrimSpace(data)
 			if data == "" {
+				continue
+			}
+
+			// 智能负载：过滤无有效负载的空帧/心跳空结构体，防止其污染响应计数或提前打断重试安全区。
+			// IsEmptyStreamFrame 对 "[DONE]" 恒返回 false，无需再判前缀。
+			if IsEmptyStreamFrame(data) {
+				logger.LogDebug(c, "stream scanner skipping empty frame: %s", data)
 				continue
 			}
 

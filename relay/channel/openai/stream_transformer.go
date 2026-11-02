@@ -77,7 +77,7 @@ func isNativeThinkingReasoningModel(model string) bool {
 // TransformPassthroughStreamFrame 对透传的原始 SSE 数据帧执行管道式链式处理：
 // 1. 若开启 ReasoningAsContent 且当前模型不属于原生思维链模型：将 reasoning 字段内容改写合并至 content
 // 2. 若开启 ThinkTagToReasoning：将内嵌的 <think>...</think> 标签拆分并转为 reasoning_content
-// 3. 始终清洗思考帧上的空 content: "" 字段（防止客户端渲染成逐词独立块）
+// 3. 始终清洗思考帧上的空 content: "" 字段并将非标 array 块解包为标准 delta 字段
 func TransformPassthroughStreamFrame(info *relaycommon.RelayInfo, data string) string {
 	if data == "" {
 		return ""
@@ -88,7 +88,7 @@ func TransformPassthroughStreamFrame(info *relaycommon.RelayInfo, data string) s
 	if info != nil && info.ChannelSetting.ThinkTagToReasoning {
 		data = applyThinkTagSplit(info, data)
 	}
-	return stripEmptyContentOnReasoningFrame(data)
+	return NormalizeStreamFrame(data)
 }
 
 // processThinkingToContentState 驱动流式响应中思考内容转正文的状态机转换：
@@ -157,7 +157,7 @@ func processThinkingToContentState(c *gin.Context, info *relaycommon.RelayInfo, 
 
 // sendStreamData 统一分发并发送流式数据帧给客户端。
 func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
-	if data == "" {
+	if data == "" || helper.IsEmptyStreamFrame(data) {
 		return nil
 	}
 

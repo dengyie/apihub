@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -98,6 +99,195 @@ type ChatCompletionsStreamResponseChoiceDelta struct {
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 }
 
+// appendDeltaString 追加合并 delta 的字符串字段。数组提取结果（content:[{type:"thinking"}]）
+// 与显式字符串字段（reasoning_content:"..."）可能同时出现在同一个 delta 里，且 JSON
+// 字段顺序不定，两侧必须统一追加而不是按「先到为准」覆盖，否则任意一侧的思考内容
+// 会被静默丢弃。空串不落地，保持 nil 语义不变。
+func appendDeltaString(dst *string, add string) *string {
+	if add == "" {
+		return dst
+	}
+	if dst == nil || *dst == "" {
+		return &add
+	}
+	combined := *dst + add
+	return &combined
+}
+
+func (c *ChatCompletionsStreamResponseChoiceDelta) UnmarshalJSON(b []byte) error {
+	type Alias ChatCompletionsStreamResponseChoiceDelta
+	var raw struct {
+		Alias
+		RawContent          json.RawMessage `json:"content"`
+		RawReasoningContent json.RawMessage `json:"reasoning_content"`
+		RawReasoning        json.RawMessage `json:"reasoning"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*c = ChatCompletionsStreamResponseChoiceDelta(raw.Alias)
+
+	if len(raw.RawContent) > 0 {
+		trimmed := bytes.TrimSpace(raw.RawContent)
+		if len(trimmed) > 0 && string(trimmed) != "null" {
+			if trimmed[0] == '"' {
+				var s string
+				if err := json.Unmarshal(trimmed, &s); err == nil {
+					c.Content = appendDeltaString(c.Content, s)
+				}
+			} else if trimmed[0] == '[' {
+				reasoning, text := ExtractArrayContent(trimmed)
+				c.ReasoningContent = appendDeltaString(c.ReasoningContent, reasoning)
+				c.Content = appendDeltaString(c.Content, text)
+			}
+		}
+	}
+
+	if len(raw.RawReasoningContent) > 0 {
+		trimmed := bytes.TrimSpace(raw.RawReasoningContent)
+		if len(trimmed) > 0 && string(trimmed) != "null" {
+			if trimmed[0] == '"' {
+				var s string
+				if err := json.Unmarshal(trimmed, &s); err == nil {
+					c.ReasoningContent = appendDeltaString(c.ReasoningContent, s)
+				}
+			} else if trimmed[0] == '[' {
+				reasoning, text := ExtractArrayContent(trimmed)
+				// reasoning 字段里的 text 块同样是思考内容：r 与 t 同时存在时两者都必须保留，
+				// 不得因 r 非空就丢弃 t（静默丢内容）。
+				c.ReasoningContent = appendDeltaString(c.ReasoningContent, reasoning)
+				c.ReasoningContent = appendDeltaString(c.ReasoningContent, text)
+			}
+		}
+	}
+
+	if len(raw.RawReasoning) > 0 {
+		trimmed := bytes.TrimSpace(raw.RawReasoning)
+		if len(trimmed) > 0 && string(trimmed) != "null" {
+			if trimmed[0] == '"' {
+				var s string
+				if err := json.Unmarshal(trimmed, &s); err == nil {
+					c.Reasoning = appendDeltaString(c.Reasoning, s)
+				}
+			} else if trimmed[0] == '[' {
+				reasoning, text := ExtractArrayContent(trimmed)
+				c.Reasoning = appendDeltaString(c.Reasoning, reasoning)
+				c.Reasoning = appendDeltaString(c.Reasoning, text)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ExtractArrayContent parses non-standard or multi-part content block arrays
+// (such as [{"type":"thinking", ...}], [{"type":"text", ...}]) and extracts
+// thinking into reasoning and text into content string.
+func ExtractArrayContent(raw []byte) (string, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "", ""
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err == nil {
+			return "", s
+		}
+		return "", ""
+	}
+	if trimmed[0] != '[' {
+		return "", ""
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return "", ""
+	}
+	var reasoningBuilder strings.Builder
+	var contentBuilder strings.Builder
+
+	for _, item := range items {
+		itemTrimmed := bytes.TrimSpace(item)
+		if len(itemTrimmed) == 0 {
+			continue
+		}
+		if itemTrimmed[0] == '"' {
+			var s string
+			if err := json.Unmarshal(itemTrimmed, &s); err == nil {
+				contentBuilder.WriteString(s)
+			}
+			continue
+		}
+		if itemTrimmed[0] == '{' {
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(itemTrimmed, &m); err != nil {
+				continue
+			}
+			var typeStr string
+			if typeRaw, ok := m["type"]; ok {
+				_ = json.Unmarshal(typeRaw, &typeStr)
+			}
+			typeStr = strings.ToLower(typeStr)
+
+			isThinking := typeStr == "thinking" || typeStr == "thinking_delta" || typeStr == "reasoning"
+
+			if isThinking {
+				if thinkingRaw, ok := m["thinking"]; ok {
+					extractTextOrNested(thinkingRaw, &reasoningBuilder)
+				}
+				if textRaw, ok := m["text"]; ok {
+					extractTextOrNested(textRaw, &reasoningBuilder)
+				}
+				if contentRaw, ok := m["content"]; ok {
+					extractTextOrNested(contentRaw, &reasoningBuilder)
+				}
+			} else {
+				if textRaw, ok := m["text"]; ok {
+					extractTextOrNested(textRaw, &contentBuilder)
+				} else if contentRaw, ok := m["content"]; ok {
+					extractTextOrNested(contentRaw, &contentBuilder)
+				}
+			}
+		}
+	}
+	return reasoningBuilder.String(), contentBuilder.String()
+}
+
+func extractTextOrNested(raw json.RawMessage, b *strings.Builder) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err == nil {
+			b.WriteString(s)
+		}
+		return
+	}
+	if trimmed[0] == '[' {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(trimmed, &arr); err == nil {
+			for _, sub := range arr {
+				extractTextOrNested(sub, b)
+			}
+		}
+		return
+	}
+	if trimmed[0] == '{' {
+		var subMap map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &subMap); err == nil {
+			if tRaw, ok := subMap["text"]; ok {
+				extractTextOrNested(tRaw, b)
+			} else if thRaw, ok := subMap["thinking"]; ok {
+				extractTextOrNested(thRaw, b)
+			} else if cRaw, ok := subMap["content"]; ok {
+				extractTextOrNested(cRaw, b)
+			}
+		}
+	}
+}
+
 func (c *ChatCompletionsStreamResponseChoiceDelta) SetContentString(s string) {
 	c.Content = &s
 }
@@ -156,6 +346,23 @@ type ChatCompletionsStreamResponse struct {
 	SystemFingerprint *string                               `json:"system_fingerprint"`
 	Choices           []ChatCompletionsStreamResponseChoice `json:"choices"`
 	Usage             *Usage                                `json:"usage"`
+	Error             any                                   `json:"error,omitempty"`
+}
+
+type chatCompletionsStreamResponseAlias ChatCompletionsStreamResponse
+
+// MarshalJSON guarantees that Choices is always serialized as an array (at least "[]"),
+// never JSON "null", preventing Zod/Vercel AI SDK union validation errors on client side.
+func (c ChatCompletionsStreamResponse) MarshalJSON() ([]byte, error) {
+	if c.Choices == nil {
+		c.Choices = make([]ChatCompletionsStreamResponseChoice, 0)
+	}
+	return json.Marshal(chatCompletionsStreamResponseAlias(c))
+}
+
+// GetOpenAIError extracts OpenAIError structure if Error field is present
+func (c *ChatCompletionsStreamResponse) GetOpenAIError() *types.OpenAIError {
+	return GetOpenAIError(c.Error)
 }
 
 func (c *ChatCompletionsStreamResponse) IsFinished() bool {

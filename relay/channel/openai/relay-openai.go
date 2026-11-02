@@ -49,9 +49,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	// 智能负载：首字节前 TTFT 超时返回可重试错误，触发透明换渠道（客户端无感知）
 	if streamErr := helper.ToNewAPIError(helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		data = NormalizeStreamFrame(data)
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
+				if c != nil && c.Writer != nil && !c.Writer.Written() {
+					sr.Stop(err)
+					return
+				}
 				sr.Error(err)
 			}
 		}
@@ -64,6 +69,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
 			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
+				if c != nil && c.Writer != nil && !c.Writer.Written() {
+					sr.Stop(err)
+					return
+				}
 				sr.Error(err)
 			}
 		}

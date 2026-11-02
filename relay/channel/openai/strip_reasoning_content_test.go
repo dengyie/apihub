@@ -72,11 +72,91 @@ func TestStripEmptyContentOnReasoningFrame(t *testing.T) {
 			in:   `{"choices":[{"delta":{"content":"",`,
 			want: `{"choices":[{"delta":{"content":"",`,
 		},
+		{
+			name: "incident array thinking content is unpacked to reasoning_content",
+			in:   `{"id":"953d65ca8d6043b3aef2e91783888f48","object":"chat.completion.chunk","created":1793563373,"model":"deepseek-v4-1-flash-1017","choices":[{"index":0,"delta":{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"All"}],"closed":true}]},"finish_reason":null}]}`,
+			want: `{"id":"953d65ca8d6043b3aef2e91783888f48","object":"chat.completion.chunk","created":1793563373,"model":"deepseek-v4-1-flash-1017","choices":[{"index":0,"delta":{"index":0,"reasoning_content":"All"},"finish_reason":null}]}`,
+		},
+		{
+			name: "array thinking string is unpacked to reasoning_content",
+			in:   `{"choices":[{"delta":{"content":[{"type":"thinking","thinking":"let me think"}]}}]}`,
+			want: `{"choices":[{"delta":{"reasoning_content":"let me think"}}]}`,
+		},
+		{
+			name: "array text block is unpacked to string content",
+			in:   `{"choices":[{"delta":{"content":[{"type":"text","text":"hello world"}]}}]}`,
+			want: `{"choices":[{"delta":{"content":"hello world"}}]}`,
+		},
+		{
+			name: "mixed thinking and text blocks in reasoning array are both preserved",
+			in:   `{"choices":[{"delta":{"reasoning":[{"type":"thinking","thinking":"a"},{"type":"text","text":"b"}]}}]}`,
+			want: `{"choices":[{"delta":{"reasoning_content":"ab"}}]}`,
+		},
+		{
+			name: "mixed thinking and text blocks in content array",
+			in:   `{"choices":[{"delta":{"content":[{"type":"thinking","thinking":"think"},{"type":"text","text":"answer"}]}}]}`,
+			want: `{"choices":[{"delta":{"content":"answer","reasoning_content":"think"}}]}`,
+		},
+		{
+			name: "choices null is normalized to empty array",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":null,"usage":{"total_tokens":10}}`,
+			want: `{"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"total_tokens":10}}`,
+		},
+		{
+			name: "choices null with space is normalized to empty array",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices": null,"usage":{"total_tokens":10}}`,
+			want: `{"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"total_tokens":10}}`,
+		},
+		{
+			name: "choices null without usage is normalized too",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":null}`,
+			want: `{"id":"c1","object":"chat.completion.chunk","choices":[]}`,
+		},
+		{
+			name: "content string mentioning escaped choices null survives verbatim",
+			in:   `{"choices":[{"delta":{"content":"the literal \"choices\":null means no choices"}}]}`,
+			want: `{"choices":[{"delta":{"content":"the literal \"choices\":null means no choices"}}]}`,
+		},
+		{
+			name: "cpa rate limit miscode is rewritten to rate_limit_exceeded",
+			in:   `{"error":{"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error","code":"insufficient_quota"}}`,
+			want: `{"error":{"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+		},
+		{
+			name: "auth error code and type are sanitized to upstream_error",
+			in:   `{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`,
+			want: `{"error":{"message":"Incorrect API key provided","type":"upstream_error","code":"upstream_error"}}`,
+		},
+		{
+			name: "genuine quota error without rate limit wording is sanitized to upstream_error",
+			in:   `{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}`,
+			want: `{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"upstream_error","code":"upstream_error"}}`,
+		},
+		{
+			name: "account deactivation code is sanitized, honest type and message survive",
+			in:   `{"error":{"message":"This organization has been deactivated.","type":"invalid_request_error","code":"account_deactivated"}}`,
+			want: `{"error":{"message":"This organization has been deactivated.","type":"invalid_request_error","code":"upstream_error"}}`,
+		},
+		{
+			name: "numeric code and honest type are untouched",
+			in:   `{"error":{"code":429,"type":"rate_limit_error","message":"Rate limit reached for requests"}}`,
+			want: `{"error":{"code":429,"type":"rate_limit_error","message":"Rate limit reached for requests"}}`,
+		},
+		{
+			name: "error frame with null choices and usage is fully normalized",
+			in:   `{"error":{"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error","code":"insufficient_quota"},"choices":null,"usage":{"total_tokens":1}}`,
+			want: `{"error":{"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error","code":"rate_limit_exceeded"},"choices":[],"usage":{"total_tokens":1}}`,
+		},
+		{
+			name: "error object without misleading values is untouched",
+			in:   `{"error":{"message":"upstream overloaded","type":"server_error","code":"internal_error"}}`,
+			want: `{"error":{"message":"upstream overloaded","type":"server_error","code":"internal_error"}}`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := stripEmptyContentOnReasoningFrame(tc.in)
+			got := NormalizeStreamFrame(tc.in)
 			if got != tc.want {
 				t.Fatalf("mismatch\n in: %s\nwant: %s\n got: %s", tc.in, tc.want, got)
 			}
@@ -87,7 +167,7 @@ func TestStripEmptyContentOnReasoningFrame(t *testing.T) {
 // A rewritten frame must still parse to the same object minus the dropped key.
 func TestStripEmptyContentPreservesEverythingElse(t *testing.T) {
 	in := `{"id":"c1","model":"m","created":1,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":"We","extra_fields":{"a":1},"tool_calls":[{"id":"t","type":"function"}]},"finish_reason":null}],"usage":{"total_tokens":9}}`
-	got := stripEmptyContentOnReasoningFrame(in)
+	got := NormalizeStreamFrame(in)
 
 	var wantMap, gotMap map[string]any
 	if err := json.Unmarshal([]byte(in), &wantMap); err != nil {
@@ -122,7 +202,7 @@ func TestStripEmptyContentPreservesEverythingElse(t *testing.T) {
 // Key order must survive, since this runs on a passthrough path.
 func TestStripEmptyContentPreservesKeyOrder(t *testing.T) {
 	in := `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":"a"},"finish_reason":null}],"usage":null}`
-	got := stripEmptyContentOnReasoningFrame(in)
+	got := NormalizeStreamFrame(in)
 	for _, want := range []string{`"id"`, `"object"`, `"choices"`, `"usage"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %s in %s", want, got)
@@ -139,7 +219,7 @@ func TestStripEmptyContentPreservesKeyOrder(t *testing.T) {
 // The frame we observed in production must come out with no content field left.
 func TestStripEmptyContentOnProductionFrame(t *testing.T) {
 	in := `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"","reasoning_content":" answer","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null},"finish_reason":null,"logprobs":null}]}`
-	got := stripEmptyContentOnReasoningFrame(in)
+	got := NormalizeStreamFrame(in)
 	if strings.Contains(got, `"content"`) {
 		t.Fatalf("empty content survived: %s", got)
 	}
@@ -157,4 +237,70 @@ func jsonEqual(a, b any) bool {
 	ab, err1 := json.Marshal(a)
 	bb, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(ab) == string(bb)
+}
+
+func TestMightNeedNormalization(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{
+			name: "standard text chunk without reasoning bypasses normalization",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" hello world"},"finish_reason":null}]}`,
+			want: false,
+		},
+		{
+			name: "incident array thinking content needs normalization",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":"think"}]}}]}`,
+			want: true,
+		},
+		{
+			name: "standard reasoning frame needs normalization",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":"think"}}]}`,
+			want: true,
+		},
+		{
+			name: "empty or done chunk bypasses normalization",
+			in:   `[DONE]`,
+			want: false,
+		},
+		{
+			name: "mid-stream error frame needs sanitization",
+			in:   `{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`,
+			want: true,
+		},
+		{
+			name: "top level choices null needs normalization",
+			in:   `{"id":"c1","object":"chat.completion.chunk","choices":null,"usage":{"total_tokens":10}}`,
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mightNeedNormalization(tc.in)
+			if got != tc.want {
+				t.Errorf("mightNeedNormalization() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func BenchmarkNormalizeStreamFrame_StandardTextChunk(b *testing.B) {
+	frame := `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" hello world"},"finish_reason":null}]}`
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NormalizeStreamFrame(frame)
+	}
+}
+
+func BenchmarkNormalizeStreamFrame_ArrayThinkingChunk(b *testing.B) {
+	frame := `{"id":"953d65ca8d6043b3aef2e91783888f48","object":"chat.completion.chunk","created":1793563373,"model":"deepseek-v4-1-flash-1017","choices":[{"index":0,"delta":{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"All"}],"closed":true}]},"finish_reason":null}]}`
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NormalizeStreamFrame(frame)
+	}
 }

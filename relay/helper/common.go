@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/logger"
@@ -224,4 +225,124 @@ func GenerateFinalUsageResponse(id string, createAt int64, model string, usage d
 		Choices:           make([]dto.ChatCompletionsStreamResponseChoice, 0),
 		Usage:             &usage,
 	}
+}
+
+// IsEmptyStreamFrame detects whether an SSE data chunk carries zero useful information
+// (e.g. keep-alive frames, empty objects "{}", empty choices "[]", or zero-valued Go structs
+// `{"id":"","object":"","created":0,"model":"","system_fingerprint":null,"choices":null,"usage":null}`).
+//
+// Suppressing these empty frames prevents committing the HTTP response with invalid schema
+// chunks, and allows StreamScannerHandler to detect real empty streams and trigger load balancer failover.
+func IsEmptyStreamFrame(data string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return true
+	}
+	if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+		if strings.TrimSpace(trimmed[1:len(trimmed)-1]) == "" {
+			return true
+		}
+	}
+	if trimmed == "[DONE]" {
+		return false
+	}
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+
+	// 1. Error chunks must never be treated as empty
+	if strings.Contains(trimmed, `"error"`) {
+		return false
+	}
+
+	// 2. Usage chunks must never be treated as empty (needed for token tracking and stream_options)
+	if strings.Contains(trimmed, `"prompt_tokens"`) ||
+		strings.Contains(trimmed, `"total_tokens"`) ||
+		strings.Contains(trimmed, `"completion_tokens"`) ||
+		strings.Contains(trimmed, `"input_tokens"`) ||
+		strings.Contains(trimmed, `"output_tokens"`) {
+		return false
+	}
+
+	// 3. Typed event streams (OpenAI Responses API, Claude SSE, Realtime, Images)
+	if strings.Contains(trimmed, `"type"`) {
+		return false
+	}
+
+	// 4. OpenAI Chat Completions choices handling
+	if strings.Contains(trimmed, `"choices"`) {
+		// Case A: choices is explicitly null or empty array
+		if strings.Contains(trimmed, `"choices":null`) || strings.Contains(trimmed, `"choices": null`) ||
+			strings.Contains(trimmed, `"choices":[]`) || strings.Contains(trimmed, `"choices": []`) {
+			return true
+		}
+
+		// Case B: choices is present, check if it carries any substantive delta or finish_reason.
+		// 白名单必须是「真实承载内容的字段」而非「碰巧认识的字段」：OpenAI 官方流式 delta 还有
+		// refusal（拒答文本）、audio（语音转写）、annotations（引用标注），漏掉任何一个都会把
+		// 真实内容帧判成空帧，触发误换渠道甚至误熔断。新增官方 delta 字段时必须同步补录到这里。
+		if strings.Contains(trimmed, `"role"`) ||
+			strings.Contains(trimmed, `"tool_calls"`) ||
+			strings.Contains(trimmed, `"function_call"`) ||
+			hasNonEmptyField(trimmed, "content") ||
+			hasNonEmptyField(trimmed, "reasoning_content") ||
+			hasNonEmptyField(trimmed, "reasoning") ||
+			hasNonEmptyField(trimmed, "thinking") ||
+			hasNonEmptyField(trimmed, "text") ||
+			hasNonEmptyField(trimmed, "finish_reason") ||
+			hasNonEmptyField(trimmed, "refusal") ||
+			hasNonEmptyField(trimmed, "audio") ||
+			hasNonEmptyField(trimmed, "annotations") {
+			return false
+		}
+
+		// choices is present but has empty delta and null/empty finish_reason -> empty frame!
+		return true
+	}
+
+	// 5. If it does not have choices, but has other content/metadata indicators:
+	if strings.Contains(trimmed, `"candidates"`) ||
+		strings.Contains(trimmed, `"parts"`) ||
+		hasNonEmptyField(trimmed, "text") ||
+		hasNonEmptyField(trimmed, "delta") {
+		return false
+	}
+
+	return false
+}
+
+func hasNonEmptyField(data string, field string) bool {
+	target := `"` + field + `"`
+	idx := strings.Index(data, target)
+	for idx != -1 {
+		tail := data[idx+len(target):]
+		colon := strings.IndexByte(tail, ':')
+		if colon != -1 {
+			val := strings.TrimLeft(tail[colon+1:], " \t\r\n")
+			if len(val) > 0 {
+				if val[0] == '"' && len(val) > 1 && val[1] != '"' {
+					return true
+				}
+				if val[0] == '[' {
+					inner := strings.TrimSpace(val[1:])
+					if len(inner) > 0 && inner[0] != ']' {
+						return true
+					}
+				}
+				if val[0] == '{' {
+					inner := strings.TrimSpace(val[1:])
+					if len(inner) > 0 && inner[0] != '}' {
+						return true
+					}
+				}
+			}
+		}
+		next := strings.Index(tail, target)
+		if next == -1 {
+			break
+		}
+		idx += len(target) + next
+	}
+	return false
 }

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/dengyie/apihub/common"
@@ -21,6 +22,9 @@ import (
 
 // 辅助函数
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
+	if helper.IsEmptyStreamFrame(data) {
+		return nil
+	}
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		info.SendResponseCount++
@@ -147,6 +151,9 @@ func processTokenData(info *relaycommon.RelayInfo, data string, responseTextBuil
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			return err
 		}
+		if oaiErr := streamResponse.GetOpenAIError(); oaiErr != nil && (oaiErr.Type != "" || oaiErr.Message != "") {
+			return types.WithOpenAIError(*oaiErr, http.StatusOK)
+		}
 		info.ObserveResponseModel(streamResponse.Model)
 		return ProcessStreamResponse(streamResponse, responseTextBuilder, toolCount)
 	case relayconstant.RelayModeCompletions:
@@ -180,14 +187,36 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	*systemFingerprint = lastStreamResponse.GetSystemFingerprint()
 	*model = lastStreamResponse.Model
 
+	hasContent := lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
+		return choice.Delta.GetContentString() != "" ||
+			choice.Delta.GetReasoningContent() != "" ||
+			len(choice.Delta.ToolCalls) > 0 ||
+			choice.Delta.Role != "" ||
+			(choice.FinishReason != nil && *choice.FinishReason != "")
+	})
+
+	// 上游错误帧是流的真实终态，不是空帧：清洗后的帧（NormalizeStreamFrame 已把
+	// insufficient_quota 等误导值改为 upstream_error / rate_limit_*）必须送达客户端，
+	// SDK 才能判定本次响应失败并提供重试。若按「无 choices 内容」抑制，流以错误收尾时
+	// 客户端看到的将是一次看似完整、实则截断的回答，且无从重试。
+	hasError := false
+	if oaiErr := lastStreamResponse.GetOpenAIError(); oaiErr != nil && (oaiErr.Type != "" || oaiErr.Message != "") {
+		hasError = true
+	}
+
+	if hasError {
+		*shouldSendLastResp = true
+	}
+
 	if service.ValidUsage(lastStreamResponse.Usage) {
 		*containStreamUsage = true
 		*usage = dto.MergeUsageNonZero(*usage, lastStreamResponse.Usage)
 		if !info.ShouldIncludeUsage {
-			*shouldSendLastResp = lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
-				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != ""
-			})
+			*shouldSendLastResp = hasContent || hasError
 		}
+	} else if !hasContent && !hasError {
+		// 既无有效 usage、也无任何有效 choices 内容或错误终态（如上游异常吐出的空 struct），坚决不向下游下发
+		*shouldSendLastResp = false
 	}
 
 	return nil
