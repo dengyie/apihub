@@ -367,3 +367,102 @@ func TestRetryLoop_ClientCanceledOverwritesPriorAttemptError(t *testing.T) {
 	assert.True(t, types.IsClientAbortedError(finalAPIError), "客户端取消必须覆盖前序尝试的 500 错误，返回 499 client_aborted")
 	assert.Equal(t, 499, finalAPIError.StatusCode)
 }
+
+func TestWriteRelayTerminalErrorShieldsUpstreamQuotaInNonSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 1. 模拟上游渠道 #65 返回 429，内部携带错配的 code: "insufficient_quota"，status 被盾标映射为 503
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("use_channel", []string{"281", "238", "318", "157", "150", "65"})
+
+	upstreamErr := types.WithOpenAIError(types.OpenAIError{
+		Code:    "insufficient_quota",
+		Message: "inference exceeds tpm/rpm limit",
+		Type:    "rate_limit_error",
+	}, http.StatusTooManyRequests)
+
+	applyRelayTerminalStatusShield(c, upstreamErr)
+	// 即使因为其他判定映射为 503，或者未被映射保持 429
+	writeRelayTerminalError(c, nil, types.RelayFormatOpenAI, upstreamErr)
+
+	assert.NotEqual(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	assert.NotContains(t, body, `"insufficient_quota"`, "上游渠道的 insufficient_quota 绝不能泄漏给客户端")
+	assert.Contains(t, body, "inference exceeds tpm/rpm limit")
+
+	// 2. 验证真实用户欠费时（ErrorCodeInsufficientUserQuota），必须正常返回 403 和 insufficient_user_quota
+	wUser := httptest.NewRecorder()
+	cUser, _ := gin.CreateTestContext(wUser)
+	cUser.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	userErr := types.NewErrorWithStatusCode(
+		errors.New("用户额度不足, 剩余额度: 0"),
+		types.ErrorCodeInsufficientUserQuota,
+		http.StatusForbidden,
+	)
+	writeRelayTerminalError(cUser, nil, types.RelayFormatOpenAI, userErr)
+	assert.Equal(t, http.StatusForbidden, wUser.Code)
+	assert.Contains(t, wUser.Body.String(), "insufficient_user_quota", "客户端用户自身欠费必须如实告知客户端")
+}
+
+func TestWriteRelayTerminalErrorShieldsClaudeAndSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Claude 格式下上游 503
+	wClaude := httptest.NewRecorder()
+	cClaude, _ := gin.CreateTestContext(wClaude)
+	cClaude.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	cClaude.Set("use_channel", []string{"120"})
+
+	upstreamErr := types.WithOpenAIError(types.OpenAIError{
+		Code:    "insufficient_quota",
+		Message: "upstream out of credits",
+		Type:    "insufficient_quota",
+	}, http.StatusServiceUnavailable)
+
+	writeRelayTerminalError(cClaude, nil, types.RelayFormatClaude, upstreamErr)
+	assert.Equal(t, http.StatusServiceUnavailable, wClaude.Code)
+	assert.NotContains(t, wClaude.Body.String(), `"insufficient_quota"`)
+	assert.Contains(t, wClaude.Body.String(), `"api_error"`)
+
+	// SSE 流式下已写入部分数据后发生故障
+	wSSE := httptest.NewRecorder()
+	cSSE, _ := gin.CreateTestContext(wSSE)
+	cSSE.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	cSSE.Set("use_channel", []string{"65"})
+	_, _ = cSSE.Writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"test\"}}]}\n\n"))
+
+	sseErr := types.WithOpenAIError(types.OpenAIError{
+		Code:    "insufficient_quota",
+		Message: "inference exceeds tpm/rpm limit",
+		Type:    "rate_limit_error",
+	}, http.StatusServiceUnavailable)
+
+	writeRelayTerminalError(cSSE, nil, types.RelayFormatOpenAI, sseErr)
+	assert.NotContains(t, wSSE.Body.String(), `"insufficient_quota"`)
+	assert.Contains(t, wSSE.Body.String(), `"code":503`)
+
+	// 401 鉴权失败上游错误被盾标映射为 503 时，Code 和 Type 必须清洗为 upstream_error
+	wAuth := httptest.NewRecorder()
+	cAuth, _ := gin.CreateTestContext(wAuth)
+	cAuth.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	cAuth.Set("use_channel", []string{"77"})
+
+	authErr := types.WithOpenAIError(types.OpenAIError{
+		Code:    "invalid_api_key",
+		Message: "Incorrect API key provided",
+		Type:    "authentication_error",
+	}, http.StatusUnauthorized)
+
+	applyRelayTerminalStatusShield(cAuth, authErr)
+	assert.Equal(t, relayGatewayFaultStatus, authErr.StatusCode)
+
+	writeRelayTerminalError(cAuth, nil, types.RelayFormatOpenAI, authErr)
+	assert.Equal(t, relayGatewayFaultStatus, wAuth.Code)
+	authBody := wAuth.Body.String()
+	assert.NotContains(t, authBody, `"invalid_api_key"`)
+	assert.NotContains(t, authBody, `"authentication_error"`)
+	assert.Contains(t, authBody, `"upstream_error"`)
+	assert.Contains(t, authBody, `"code":503`)
+}

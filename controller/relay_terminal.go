@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
@@ -90,24 +91,97 @@ func applyRelayTerminalStatusShield(c *gin.Context, newAPIError *types.NewAPIErr
 	}
 }
 
+// clientFacingOpenAIError 构造向客户端透出的 OpenAIError。
+//
+// 核心原则：绝不能把渠道上游的额度耗尽（insufficient_quota）、鉴权失败（invalid_api_key）
+// 或账号停用（account_deactivated）泄漏给客户端，除非本次请求确认是客户端用户自身的余额不足（ErrorCodeInsufficientUserQuota）。
+// 很多 AI SDK（如 Vercel AI SDK、ZCode、Cursor）一旦在响应中看到 code="insufficient_quota"，
+// 无论 HTTP 状态码是 429 还是 503，都会判定为不可恢复的账户欠费，直接终止执行并禁用后续重试（retryable: false）。
+//
+//  1. 若终结状态码被盾标改写为 5xx（如 503 relayGatewayFaultStatus），错误码必须对齐到该服务端状态码，
+//     且 type 统一清洗为 upstream_error，确保客户端正确识别为服务端瞬时故障并正常重试。
+//  2. 若走到了上游渠道（len(use_channel) > 0）且非用户自身欠费，即使状态码为 429（如聚合站 CPA 错报 code="insufficient_quota"），
+//     也必须清洗渠道侧的误导性错误码，改写为 rate_limit_exceeded / rate_limit_error。
+func clientFacingOpenAIError(c *gin.Context, newAPIError *types.NewAPIError, statusCode int) types.OpenAIError {
+	openAIErr := newAPIError.ToOpenAIError()
+	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
+	isUserQuotaDepleted := newAPIError.GetErrorCode() == types.ErrorCodeInsufficientUserQuota
+
+	if statusCode >= http.StatusInternalServerError {
+		openAIErr.Code = statusCode
+		typeStr := strings.ToLower(openAIErr.Type)
+		if typeStr == "" || typeStr == "insufficient_quota" || typeStr == "invalid_request_error" ||
+			strings.Contains(typeStr, "auth") || strings.Contains(typeStr, "permission") ||
+			strings.Contains(typeStr, "key") || strings.Contains(typeStr, "quota") {
+			openAIErr.Type = "upstream_error"
+		}
+	} else if isUpstreamChannelError && !isUserQuotaDepleted {
+		codeStr := strings.ToLower(fmt.Sprintf("%v", openAIErr.Code))
+		if strings.Contains(codeStr, "quota") || strings.Contains(codeStr, "insufficient") ||
+			strings.Contains(codeStr, "invalid_api_key") || strings.Contains(codeStr, "account_deactivated") {
+			if statusCode == http.StatusTooManyRequests || loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+				openAIErr.Code = "rate_limit_exceeded"
+			} else {
+				openAIErr.Code = statusCode
+			}
+		}
+		if openAIErr.Type == "insufficient_quota" {
+			if statusCode == http.StatusTooManyRequests || loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+				openAIErr.Type = "rate_limit_error"
+			} else {
+				openAIErr.Type = "upstream_error"
+			}
+		}
+	}
+	return openAIErr
+}
+
+// clientFacingClaudeError 构造向客户端透出的 ClaudeError。
+//
+// Claude 错误协议中没有独立的 code 字段，错误类别全靠 type（如 api_error、rate_limit_error、overloaded_error）。
+// 同样必须防止渠道侧的 upstream 4xx 错误码（如 insufficient_quota、invalid_api_key）污染 type。
+func clientFacingClaudeError(c *gin.Context, newAPIError *types.NewAPIError, statusCode int) types.ClaudeError {
+	claudeErr := newAPIError.ToClaudeError()
+	isUpstreamChannelError := c != nil && len(c.GetStringSlice("use_channel")) > 0
+	isUserQuotaDepleted := newAPIError.GetErrorCode() == types.ErrorCodeInsufficientUserQuota
+
+	if statusCode >= http.StatusInternalServerError {
+		claudeErr.Type = "api_error"
+	} else if isUpstreamChannelError && !isUserQuotaDepleted {
+		typeStr := strings.ToLower(claudeErr.Type)
+		if strings.Contains(typeStr, "quota") || strings.Contains(typeStr, "insufficient") ||
+			strings.Contains(typeStr, "invalid_api_key") || strings.Contains(typeStr, "account_deactivated") {
+			if statusCode == http.StatusTooManyRequests || loadbalancer.IsUpstreamRateLimitError(newAPIError) {
+				claudeErr.Type = "rate_limit_error"
+			} else {
+				claudeErr.Type = "api_error"
+			}
+		}
+	}
+	return claudeErr
+}
+
 func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat types.RelayFormat, newAPIError *types.NewAPIError) {
 	if c == nil || newAPIError == nil {
 		return
 	}
 	// 客户端读到的状态码在最后一跳统一改写，见 clientFacingGatewayStatus。
 	statusCode := clientFacingGatewayStatus(newAPIError.StatusCode)
+	openAIErr := clientFacingOpenAIError(c, newAPIError, statusCode)
+	claudeErr := clientFacingClaudeError(c, newAPIError, statusCode)
+
 	if !c.Writer.Written() {
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
-			helper.WssError(c, ws, newAPIError.ToOpenAIError())
+			helper.WssError(c, ws, openAIErr)
 		case types.RelayFormatClaude:
 			c.JSON(statusCode, gin.H{
 				"type":  "error",
-				"error": newAPIError.ToClaudeError(),
+				"error": claudeErr,
 			})
 		default:
 			c.JSON(statusCode, gin.H{
-				"error": newAPIError.ToOpenAIError(),
+				"error": openAIErr,
 			})
 		}
 		return
@@ -120,12 +194,10 @@ func writeRelayTerminalError(c *gin.Context, ws *websocket.Conn, relayFormat typ
 	case types.RelayFormatClaude:
 		errJSON, _ := common.Marshal(gin.H{
 			"type":  "error",
-			"error": newAPIError.ToClaudeError(),
+			"error": claudeErr,
 		})
 		sseErrData = fmt.Sprintf("event: error\ndata: %s\n\n", string(errJSON))
 	default:
-		openAIErr := newAPIError.ToOpenAIError()
-		openAIErr.Code = statusCode
 		errJSON, _ := common.Marshal(gin.H{
 			"error": openAIErr,
 		})

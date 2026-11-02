@@ -823,6 +823,15 @@ func TestIsUpstreamRateLimitError(t *testing.T) {
 	}
 	assert.True(t, IsUpstreamRateLimitError(errTPM))
 
+	// 聚合站（如 CPA/One-API）在 429 限流时错配了 code: "insufficient_quota" 的情况
+	errCPARateLimit := types.WithOpenAIError(types.OpenAIError{
+		Code:    "insufficient_quota",
+		Message: "inference exceeds tpm/rpm limit",
+		Type:    "rate_limit_error",
+	}, 429)
+	assert.False(t, IsUpstreamQuotaError(errCPARateLimit), "TPM/RPM 限流即使 code 错写为 insufficient_quota 也不得判为额度耗尽")
+	assert.True(t, IsUpstreamRateLimitError(errCPARateLimit), "TPM/RPM 限流必须识别为瞬时限流")
+
 	// 临时超额冻结
 	errFrozen := &types.NewAPIError{
 		StatusCode: 429,

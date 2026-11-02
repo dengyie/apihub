@@ -74,11 +74,59 @@ func CurfewEndTime(now time.Time) time.Time {
 	return end
 }
 
+// hasExplicitRateLimitSignal 识别报文中是否包含明确的瞬时限流信号（如 TPM/RPM、并发限制、频次限制等）。
+// 很多聚合中继站（如 CPA/One-API）在包装上游 429 时，会将 code 错配或泛化为 "insufficient_quota"。
+// 若报文内容明确说明是 TPM/RPM 或频次限流，绝不能按永久额度耗尽处理。
+func hasExplicitRateLimitSignal(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "并发请求数限制") ||
+		strings.Contains(msg, "最多同时处理") ||
+		strings.Contains(msg, "请求数限制") ||
+		strings.Contains(msg, "总请求数限制") ||
+		rateLimitUnitRe.MatchString(msg) ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate_limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "超额临时冻结") {
+		return true
+	}
+	if code, typeStr, message, ok := openAIErrorFields(err.RelayError); ok {
+		if typeStr == "rate_limit_error" || typeStr == "requests" || typeStr == "tokens" ||
+			typeStr == "requests_per_minute" || typeStr == "tokens_per_minute" ||
+			code == "rate_limit_exceeded" ||
+			rateLimitUnitRe.MatchString(message) ||
+			strings.Contains(message, "rate limit") ||
+			strings.Contains(message, "rate_limit") ||
+			strings.Contains(message, "too many requests") {
+			return true
+		}
+	}
+	if typeStr, message, ok := claudeErrorFields(err.RelayError); ok {
+		if typeStr == "rate_limit_error" ||
+			rateLimitUnitRe.MatchString(message) ||
+			strings.Contains(message, "rate limit") ||
+			strings.Contains(message, "rate_limit") ||
+			strings.Contains(message, "too many requests") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsUpstreamQuotaError 判断是否为上游中继站或渠道自身的额度耗尽/欠费错误（通常返回 400/402/403/429）。
 // 很多聚合中继站（如 One-API、New-API 等）在上游额度不足时会返回 400 且附带 "credit insufficient balance"
 // 或 "insufficient_user_quota"，这属于渠道侧可用性故障而非客户端 Bad Request，应触发换渠道重试与熔断。
 func IsUpstreamQuotaError(err *types.NewAPIError) bool {
 	if err == nil {
+		return false
+	}
+	// 如果上游错误明确包含 TPM/RPM 限流、并发超限或频次超限等瞬时限流信号，
+	// 即使带有 quota 字眼或 code 为 "insufficient_quota"（常见于 CPA/One-API 聚合站包装 429 时的通用 code 错配），
+	// 也必须归为限流而非额度耗尽（限流仅需短冷却 30s 且会自动恢复，额度耗尽则会长时间熔断 1800s 甚至误导客户端判定为用户账户欠费）。
+	if hasExplicitRateLimitSignal(err) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
@@ -493,22 +541,7 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 	if upstreamCapacitySignal(err) {
 		return true
 	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "并发请求数限制") ||
-		strings.Contains(msg, "最多同时处理") ||
-		strings.Contains(msg, "请求数限制") ||
-		strings.Contains(msg, "总请求数限制") ||
-		// rpm/tpm 必须是独立词：裸子串会把 request id、base64 片段里的
-		// "rpm"/"tpm" 字母序列（如 "...a1rpm2x..."）误判成限流。词边界后，
-		// "tpm/rpm limit"、"30 rpm" 仍命中，token 内嵌序列不再命中。
-		rateLimitUnitRe.MatchString(msg) ||
-		strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "rate_limit") ||
-		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "超额临时冻结") {
-		return true
-	}
-	return false
+	return hasExplicitRateLimitSignal(err)
 }
 
 // IsCodexValidationBadRequest 判断是否为 Codex / Responses 接口由于请求参数格式、缺失必要字段或特定后端协议校验返回的 400 Bad Request（如 "invalid codex request"、code="invalid_responses_request"）。
