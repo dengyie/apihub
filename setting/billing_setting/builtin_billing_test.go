@@ -149,6 +149,41 @@ func TestImageModelBuiltinPricesAndOverrides(t *testing.T) {
 	}
 }
 
+func TestGrokImagineImageVariantsAreAllPriced(t *testing.T) {
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	saved := *settings
+	savedRatios, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		*settings = saved
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	*settings = billing_setting.BillingSetting{BillingMode: map[string]string{}, BillingExpr: map[string]string{}}
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+
+	// Channels advertise every variant of this family; a variant without a
+	// builtin entry bills at the 37.5 self-use fallback instead of the per-image
+	// price its siblings use. Edit was exactly that gap.
+	for _, name := range []string{
+		"grok-imagine",
+		"grok-imagine-image",
+		"grok-imagine-image-2.0",
+		"grok-imagine-image-edit",
+		"grok-imagine-image-lite",
+		"grok-imagine-image-quality",
+		"grok-imagine-video",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, billing_setting.BillingModeTieredExpr, billing_setting.GetBillingMode(name),
+				"%s must not fall back to the ratio path", name)
+			expression, ok := billing_setting.GetBillingExpr(name)
+			require.True(t, ok, "%s has no billing expression", name)
+			assert.Equal(t, `tier("standard", fixed(0.05))`, expression)
+		})
+	}
+}
+
 func TestAllBuiltinBillingExpressionsSmokeTest(t *testing.T) {
 	for model, expr := range billing_setting.GetBuiltinBillingExprCopy() {
 		t.Run(model, func(t *testing.T) {

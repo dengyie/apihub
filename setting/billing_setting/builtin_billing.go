@@ -179,9 +179,14 @@ var builtinBillingExpr = map[string]string{
 	"grok-build-0.1":               `tier("standard", p * 2.0 + c * 6.0 + cr * 0.5)`,
 
 	// Grok Imagine (image/video)
+	// Every image variant is priced per image here, including edit. A variant
+	// missing from this table is not harmlessly unpriced: the relay answers an
+	// unknown model with the 37.5 self-use fallback ratio, so it would quietly
+	// bill each image at $75/M tokens-equivalent instead.
 	"grok-imagine":                   `tier("standard", fixed(0.05))`,
 	"grok-imagine-image":             `tier("standard", fixed(0.05))`,
 	"grok-imagine-image-2.0":         `tier("standard", fixed(0.05))`,
+	"grok-imagine-image-edit":        `tier("standard", fixed(0.05))`,
 	"grok-imagine-image-lite":        `tier("standard", fixed(0.05))`,
 	"grok-imagine-image-quality":     `tier("standard", fixed(0.05))`,
 	"grok-imagine-video":             `tier("standard", fixed(0.05))`,
