@@ -920,11 +920,17 @@ do_backup() {
 
   local db="$DB_PATH"
   if [[ -f $db ]]; then
-    if command -v sqlite3 >/dev/null 2>&1; then
-      sqlite3 "$db" ".backup '$dest/new-api.db'" && log "database snapshotted via sqlite3 .backup"
+    # In WAL mode under continuous live traffic, a bare `sqlite3 .backup` can live-lock indefinitely.
+    # Passively checkpoint first, try .backup with a strict timeout, and fall back to copying
+    # the database plus its WAL/SHM companion files so rollback is always crash-consistent.
+    command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$db" "PRAGMA wal_checkpoint(PASSIVE);" >/dev/null 2>&1 || true
+    if command -v sqlite3 >/dev/null 2>&1 && timeout 15 sqlite3 "$db" ".backup '$dest/new-api.db'" >/dev/null 2>&1; then
+      log "database snapshotted via sqlite3 .backup"
     else
       cp -a "$db" "$dest/new-api.db"
-      warn "sqlite3 not found; took a plain database copy"
+      [[ -f "$db-wal" ]] && cp -a "$db-wal" "$dest/new-api.db-wal" || true
+      [[ -f "$db-shm" ]] && cp -a "$db-shm" "$dest/new-api.db-shm" || true
+      log "database snapshotted via consistent file copy (with wal/shm)"
     fi
   fi
 
