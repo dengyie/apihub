@@ -352,12 +352,59 @@ func TestIsParamNotSupportedErrorInvalidRequestParamsNoFalsePositive(t *testing.
 	for _, msg := range []string{
 		"invalid request body: json: unknown field \"enable_thinking\"",
 		"invalid request",
-		"invalid request parameters are not acceptable here",
-		"internal server error",
-	} {
-		e := &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New(msg)}
-		p, ok := IsParamNotSupportedError(e)
-		assert.False(t, ok, "无关文案不得被误判成参数问题: %s", msg)
-		assert.Empty(t, p, "误判时不应带出参数名: %s", msg)
+			"invalid request parameters are not acceptable here",
+			"internal server error",
+		} {
+			e := &types.NewAPIError{StatusCode: http.StatusBadRequest, Err: errors.New(msg)}
+			p, ok := IsParamNotSupportedError(e)
+			assert.False(t, ok, "无关文案不得被误判成参数问题: %s", msg)
+			assert.Empty(t, p, "误判时不应带出参数名: %s", msg)
+		}
 	}
-}
+
+	func TestIsParamNotSupportedErrorReasoningEffortVariants(t *testing.T) {
+		testCases := []struct {
+			name       string
+			statusCode int
+			msg        string
+		}{
+			{
+				name:       "AMD stream broken error with 502 status",
+				statusCode: http.StatusBadGateway,
+				msg:        `loadbalancer: upstream stream broken: reason=handler_stop end_error="Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low." soft_errors=1: Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.`,
+			},
+			{
+				name:       "AMD error in 400",
+				statusCode: http.StatusBadRequest,
+				msg:        `Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.`,
+			},
+			{
+				name:       "Wrapped 500 unsupported reasoning effort",
+				statusCode: http.StatusInternalServerError,
+				msg:        `status_code=500, unsupported reasoning effort 'max'`,
+			},
+			{
+				name:       "SenseNova reasoning effort invalid",
+				statusCode: http.StatusBadRequest,
+				msg:        `status_code=400, field ReasoningEffort invalid, should be one of: low, medium, high, xhigh, none`,
+			},
+			{
+				name:       "Level not supported in 502 stream error",
+				statusCode: http.StatusBadGateway,
+				msg:        `loadbalancer: upstream stream broken: level 'xhigh' not supported`,
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				e := &types.NewAPIError{
+					StatusCode: tc.statusCode,
+					Err:        errors.New(tc.msg),
+				}
+				param, ok := IsParamNotSupportedError(e)
+				assert.True(t, ok, "expected reasoning_effort to be recognized for %s", tc.name)
+				assert.Equal(t, "reasoning_effort", param)
+				assert.False(t, IsUpstreamRelayError(e), "must not be classified as upstream relay error")
+			})
+		}
+	}

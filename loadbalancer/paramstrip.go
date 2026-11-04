@@ -418,6 +418,25 @@ func isParamValidationStatusCode(code int) bool {
 		(code >= 500 && code <= 599)
 }
 
+func isReasoningEffortNotSupportedMessage(msgLower, msg string) bool {
+	if strings.Contains(msgLower, "valid levels:") ||
+		(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
+		reReasoningEffortLevel.MatchString(msg) {
+		return true
+	}
+	if strings.Contains(msgLower, "reasoning effort") || strings.Contains(msgLower, "reasoning_effort") {
+		if strings.Contains(msgLower, "supported types are") ||
+			strings.Contains(msgLower, "unexpected") ||
+			strings.Contains(msgLower, "not supported") ||
+			strings.Contains(msgLower, "unsupported") ||
+			strings.Contains(msgLower, "invalid") ||
+			strings.Contains(msgLower, "should be one of") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsParamNotSupportedError 判断是否为「参数不支持」错误，是则返回参数名。
 // 支持 thinking/reasoning_effort/enable_thinking/stream_options 等。
 //
@@ -437,10 +456,10 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 	// 行为与既往逐位一致 —— 那 71 条生产 400 正是靠它自愈的，不能动。
 	if err.StatusCode == http.StatusBadRequest {
 		// 特殊识别 reasoning_effort 等级/参数不支持错误：
-		// 例如：level "max" not supported, valid levels: low, medium, high
-		if strings.Contains(msgLower, "valid levels:") ||
-			(strings.Contains(msgLower, "level") && strings.Contains(msgLower, "not supported") && (strings.Contains(msgLower, "low") || strings.Contains(msgLower, "medium") || strings.Contains(msgLower, "high") || strings.Contains(msgLower, "max") || strings.Contains(msgLower, "xhigh"))) ||
-			reReasoningEffortLevel.MatchString(msg) {
+		// 例如：
+		// - level "max" not supported, valid levels: low, medium, high
+		// - Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.
+		if isReasoningEffortNotSupportedMessage(msgLower, msg) {
 			return "reasoning_effort", true
 		}
 		if param, ok := matchParamPatterns(msg, unsupportedParamPatterns); ok {
@@ -478,6 +497,9 @@ func IsParamNotSupportedError(err *types.NewAPIError) (string, bool) {
 	// 散文式措辞会把无关故障误判成参数问题。
 	if !isParamValidationStatusCode(err.StatusCode) {
 		return "", false
+	}
+	if isReasoningEffortNotSupportedMessage(msgLower, msg) {
+		return "reasoning_effort", true
 	}
 	if param, ok := matchParamPatterns(msg, unsupportedParamPatternsStrict); ok {
 		return param, true
