@@ -9,9 +9,11 @@ import (
 
 func resetCatalogVisibilityTestTables(t *testing.T) {
 	t.Helper()
+	InvalidateCatalogMetadataCache()
 	require.NoError(t, DB.AutoMigrate(&Model{}))
 	require.NoError(t, DB.Exec("DELETE FROM models").Error)
 	t.Cleanup(func() {
+		InvalidateCatalogMetadataCache()
 		require.NoError(t, DB.Exec("DELETE FROM models").Error)
 	})
 }
@@ -22,6 +24,7 @@ func insertCatalogVisibilityRow(t *testing.T, name string, nameRule int, status 
 	require.NoError(t, DB.Create(row).Error)
 	// status has a gorm default of 1, so a zero value must be written explicitly.
 	require.NoError(t, DB.Model(&Model{}).Where("id = ?", row.Id).Update("status", status).Error)
+	InvalidateCatalogMetadataCache()
 }
 
 func TestFilterCatalogHiddenModels(t *testing.T) {
@@ -47,4 +50,19 @@ func TestFilterCatalogHiddenModelsEmptyInput(t *testing.T) {
 	resetCatalogVisibilityTestTables(t)
 	assert.Empty(t, GetCatalogHiddenModels(nil))
 	assert.Empty(t, FilterCatalogHiddenModels(nil))
+}
+
+func TestCatalogMetadataCacheAndInvalidate(t *testing.T) {
+	resetCatalogVisibilityTestTables(t)
+
+	insertCatalogVisibilityRow(t, "cached-model", NameRuleExact, 0)
+	assert.Equal(t, map[string]struct{}{"cached-model": {}}, GetCatalogHiddenModels([]string{"cached-model"}))
+
+	// Directly update DB without invalidating cache: cached result must persist
+	require.NoError(t, DB.Model(&Model{}).Where("model_name = ?", "cached-model").Update("status", 1).Error)
+	assert.Equal(t, map[string]struct{}{"cached-model": {}}, GetCatalogHiddenModels([]string{"cached-model"}))
+
+	// Invalidate cache: fresh DB value must be seen
+	InvalidateCatalogMetadataCache()
+	assert.Empty(t, GetCatalogHiddenModels([]string{"cached-model"}))
 }

@@ -186,6 +186,9 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	*createAt = lastStreamResponse.Created
 	*systemFingerprint = lastStreamResponse.GetSystemFingerprint()
 	*model = lastStreamResponse.Model
+	if info != nil && info.OriginModelName != "" {
+		*model = info.OriginModelName
+	}
 
 	hasContent := lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
 		return choice.Delta.GetContentString() != "" ||
@@ -234,7 +237,11 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {
-			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+			finalModel := model
+			if info != nil && info.OriginModelName != "" {
+				finalModel = info.OriginModelName
+			}
+			response := helper.GenerateFinalUsageResponse(responseId, createAt, finalModel, *usage)
 			response.SetSystemFingerprint(systemFingerprint)
 			helper.ObjectData(c, response)
 		}

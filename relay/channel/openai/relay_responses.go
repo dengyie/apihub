@@ -38,6 +38,9 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 	info.ObserveResponseModel(responsesResponse.Model)
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
+	if info != nil && info.OriginModelName != "" {
+		responseBody = helper.RewriteResponsesResponseModelBytes(info, responseBody)
+	}
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -103,10 +106,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			// 成功率统计、熔断判读全部跟着错，而且不会有任何报错。
 			service.ObserveResponsesOutcome(info, &streamResponse)
 		}
-		if streamResponse.Response != nil {
-			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
-		}
-		sendResponsesStreamData(c, streamResponse, data)
+			if streamResponse.Response != nil {
+				data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
+			}
+			if info != nil && info.OriginModelName != "" {
+				data = helper.RewriteResponsesResponseModelString(info, data)
+			}
+			sendResponsesStreamData(c, streamResponse, data)
 		accumulator.Observe(&streamResponse)
 	})); streamErr != nil {
 		// 上游故障导致的流中断：客户端已经收到了中断前的部分输出。结算不能跟着

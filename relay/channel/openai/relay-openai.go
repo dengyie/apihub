@@ -330,6 +330,10 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		responseBody = geminiRespStr
 	}
 
+	if info != nil && info.OriginModelName != "" {
+		responseBody = helper.RewriteResponseModelBytes(info, responseBody)
+	}
+
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &simpleResponse.Usage, nil

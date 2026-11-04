@@ -90,20 +90,30 @@ func TestTransformPassthroughStreamFrame(t *testing.T) {
 		assert.NotContains(t, out, `"content":"deep thought"`)
 	})
 
-	t.Run("splits think tags into reasoning when ThinkTagToReasoning enabled", func(t *testing.T) {
-		input := `{"choices":[{"delta":{"content":"<think>deep thought</think>answer"}}]}`
-		info := &relaycommon.RelayInfo{
-			ChannelMeta: &relaycommon.ChannelMeta{
-				ChannelSetting: dto.ChannelSettings{
-					ThinkTagToReasoning: true,
+		t.Run("splits think tags into reasoning when ThinkTagToReasoning enabled", func(t *testing.T) {
+			input := `{"choices":[{"delta":{"content":"<think>deep thought</think>answer"}}]}`
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelSetting: dto.ChannelSettings{
+						ThinkTagToReasoning: true,
+					},
 				},
-			},
-		}
-		out := TransformPassthroughStreamFrame(info, input)
-		assert.Contains(t, out, `"reasoning_content":"deep thought"`)
-		assert.Contains(t, out, `"content":"answer"`)
-	})
-}
+			}
+			out := TransformPassthroughStreamFrame(info, input)
+			assert.Contains(t, out, `"reasoning_content":"deep thought"`)
+			assert.Contains(t, out, `"content":"answer"`)
+		})
+
+		t.Run("rewrites upstream model to OriginModelName", func(t *testing.T) {
+			input := `{"id":"chatcmpl-1","model":"qwen3.8-27b-coder-plus-step1940","choices":[{"delta":{"content":"hi"}}]}`
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "qwen3.8-flash",
+			}
+			out := TransformPassthroughStreamFrame(info, input)
+			assert.Contains(t, out, `"model":"qwen3.8-flash"`)
+			assert.NotContains(t, out, "qwen3.8-27b-coder-plus-step1940")
+		})
+	}
 
 func TestSendStreamData_FastPassthrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)

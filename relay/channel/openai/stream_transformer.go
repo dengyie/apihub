@@ -85,10 +85,14 @@ func TransformPassthroughStreamFrame(info *relaycommon.RelayInfo, data string) s
 	if ShouldApplyReasoningAsContent(info) {
 		data = reasoningAsContentFrame(data)
 	}
-	if info != nil && info.ChannelSetting.ThinkTagToReasoning {
+	if info != nil && info.ChannelMeta != nil && info.ChannelSetting.ThinkTagToReasoning {
 		data = applyThinkTagSplit(info, data)
 	}
-	return NormalizeStreamFrame(data)
+	data = NormalizeStreamFrame(data)
+	if info != nil && info.OriginModelName != "" {
+		data = helper.RewriteResponseModelString(info, data)
+	}
+	return data
 }
 
 // processThinkingToContentState 驱动流式响应中思考内容转正文的状态机转换：
@@ -171,6 +175,10 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
 	if err := common.UnmarshalJsonStr(data, &lastStreamResponse); err != nil {
 		return err
+	}
+
+	if info != nil && info.OriginModelName != "" {
+		lastStreamResponse.Model = info.OriginModelName
 	}
 
 	if !thinkToContent {

@@ -263,3 +263,56 @@ func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
 	require.Nil(t, apiErr)
 	assert.Nil(t, info.ResponseModel)
 }
+
+func TestResponseOutboundModelRewrittenToOriginModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+
+	t.Run("non-stream chat completion rewrites model", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		info := &relaycommon.RelayInfo{
+			OriginModelName: "qwen3.8-flash",
+			RelayFormat:     types.RelayFormatOpenAI,
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "qwen3.8-27b-coder-plus-step1940"},
+		}
+		upstreamBody := `{"id":"chatcmpl-1","model":"qwen3.8-27b-coder-plus-step1940","choices":[{"message":{"role":"assistant","content":"hello"}}]}`
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+		}
+		_, err := openai.OpenaiHandler(c, info, resp)
+		require.Nil(t, err)
+		assert.Contains(t, w.Body.String(), `"model":"qwen3.8-flash"`)
+		assert.NotContains(t, w.Body.String(), "qwen3.8-27b-coder-plus-step1940")
+	})
+
+	t.Run("streaming chat completion rewrites model", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		info := &relaycommon.RelayInfo{
+			OriginModelName: "qwen3.8-flash",
+			RelayFormat:     types.RelayFormatOpenAI,
+			IsStream:        true,
+			DisablePing:     true,
+			StartTime:       time.Now(),
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "qwen3.8-27b-coder-plus-step1940"},
+		}
+		upstreamStream := "data: {\"id\":\"chatcmpl-1\",\"model\":\"qwen3.8-27b-coder-plus-step1940\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(upstreamStream)),
+		}
+		_, err := openai.OaiStreamHandler(c, info, resp)
+		require.Nil(t, err)
+		assert.Contains(t, w.Body.String(), `"model":"qwen3.8-flash"`)
+		assert.NotContains(t, w.Body.String(), "qwen3.8-27b-coder-plus-step1940")
+	})
+}
+

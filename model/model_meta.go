@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/dengyie/apihub/common"
 
@@ -100,6 +102,46 @@ func resolveModelMetadata(records []Model, names []string) map[string]*Model {
 	return resolved
 }
 
+var (
+	catalogMetadataLock         sync.RWMutex
+	cachedCatalogMetadata       []Model
+	cachedCatalogMetadataExpiry time.Time
+)
+
+// InvalidateCatalogMetadataCache clears the in-memory catalog metadata cache,
+// forcing subsequent catalog visibility queries to reload from the database.
+func InvalidateCatalogMetadataCache() {
+	catalogMetadataLock.Lock()
+	defer catalogMetadataLock.Unlock()
+	cachedCatalogMetadata = nil
+	cachedCatalogMetadataExpiry = time.Time{}
+}
+
+func getCatalogMetadata() ([]Model, error) {
+	catalogMetadataLock.RLock()
+	if cachedCatalogMetadata != nil && time.Now().Before(cachedCatalogMetadataExpiry) {
+		metadata := cachedCatalogMetadata
+		catalogMetadataLock.RUnlock()
+		return metadata, nil
+	}
+	catalogMetadataLock.RUnlock()
+
+	catalogMetadataLock.Lock()
+	defer catalogMetadataLock.Unlock()
+
+	if cachedCatalogMetadata != nil && time.Now().Before(cachedCatalogMetadataExpiry) {
+		return cachedCatalogMetadata, nil
+	}
+
+	var metadata []Model
+	if err := DB.Find(&metadata).Error; err != nil {
+		return nil, err
+	}
+	cachedCatalogMetadata = metadata
+	cachedCatalogMetadataExpiry = time.Now().Add(30 * time.Second)
+	return cachedCatalogMetadata, nil
+}
+
 // GetCatalogHiddenModels returns the subset of names that are hidden from the
 // public catalog. It resolves metadata with the same precedence the pricing
 // catalog uses, so every discovery surface agrees on visibility. A name without
@@ -109,8 +151,8 @@ func GetCatalogHiddenModels(names []string) map[string]struct{} {
 	if len(names) == 0 {
 		return hidden
 	}
-	var metadata []Model
-	if err := DB.Find(&metadata).Error; err != nil {
+	metadata, err := getCatalogMetadata()
+	if err != nil {
 		common.SysLog(fmt.Sprintf("load model metadata for catalog visibility error: %v", err))
 		return hidden
 	}
@@ -299,7 +341,7 @@ func IsModelNameDuplicated(id int, name string) (bool, error) {
 }
 
 func (mi *Model) Update() error {
-	return metadataTransaction(func(tx *gorm.DB) error {
+	err := metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
 		}
@@ -307,6 +349,10 @@ func (mi *Model) Update() error {
 		return tx.Model(&Model{}).Where("id = ?", mi.Id).
 			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
 	})
+	if err == nil {
+		InvalidateCatalogMetadataCache()
+	}
+	return err
 }
 
 func (mi *Model) Delete() error {
