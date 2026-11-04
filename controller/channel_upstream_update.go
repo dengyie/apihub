@@ -264,19 +264,28 @@ func getUpstreamModelUpdateMinCheckIntervalSeconds() int64 {
 }
 
 func parseOpenAIModelIDs(body []byte) ([]string, error) {
+	if common.IsHtmlOrXmlResponse("", body) {
+		return nil, fmt.Errorf("invalid OpenAI Models response: %w", common.FormatUpstreamResponseError(http.StatusOK, "", body))
+	}
 	var result struct {
 		Data *[]OpenAIModel `json:"data"`
 	}
 	if err := common.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("invalid OpenAI Models response: %w", err)
+		return nil, fmt.Errorf("invalid OpenAI Models response: %w", common.FormatUpstreamResponseError(http.StatusOK, "", body))
 	}
 	if result.Data == nil {
+		if errMsg := common.ExtractJsonErrorMessage(body); errMsg != "" {
+			return nil, fmt.Errorf("上游返回错误: %s", errMsg)
+		}
 		return nil, fmt.Errorf("invalid OpenAI Models response: data is required")
 	}
 	ids := normalizeModelNames(lo.Map(*result.Data, func(item OpenAIModel, _ int) string {
 		return item.ID
 	}))
 	if len(ids) == 0 {
+		if errMsg := common.ExtractJsonErrorMessage(body); errMsg != "" {
+			return nil, fmt.Errorf("上游返回错误: %s", errMsg)
+		}
 		return nil, fmt.Errorf("OpenAI Models response contains no valid model IDs")
 	}
 	return ids, nil
@@ -355,10 +364,22 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 		return nil, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status code: %d", response.StatusCode)
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取上游响应失败: %w", err)
 	}
-	return io.ReadAll(response.Body)
+
+	contentType := response.Header.Get("Content-Type")
+	if response.StatusCode != http.StatusOK {
+		return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+	}
+
+	if common.IsHtmlOrXmlResponse(contentType, body) {
+		return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+	}
+
+	return body, nil
 }
 
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
@@ -453,7 +474,12 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 
 	var result OpenAIModelsResponse
 	if err := common.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, common.FormatUpstreamResponseError(http.StatusOK, "", body)
+	}
+	if len(result.Data) == 0 {
+		if errMsg := common.ExtractJsonErrorMessage(body); errMsg != "" {
+			return nil, fmt.Errorf("上游返回错误 (status code: 200): %s", errMsg)
+		}
 	}
 	ids := lo.Map(result.Data, func(item OpenAIModel, _ int) string {
 		if channel.Type == constant.ChannelTypeGemini {

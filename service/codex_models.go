@@ -151,7 +151,17 @@ func FetchCodexModels(
 		return resp.StatusCode, nil, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if common.IsHtmlOrXmlResponse(resp.Header.Get("Content-Type"), body) {
+			return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		}
+		if jsonErr := common.ExtractJsonErrorMessage(body); jsonErr != "" {
+			return resp.StatusCode, nil, fmt.Errorf("上游返回错误 (status code: %d): %s", resp.StatusCode, jsonErr)
+		}
 		return resp.StatusCode, nil, nil
+	}
+
+	if common.IsHtmlOrXmlResponse(resp.Header.Get("Content-Type"), body) {
+		return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
 
 	var result struct {
@@ -160,7 +170,7 @@ func FetchCodexModels(
 		} `json:"models"`
 	}
 	if err := common.Unmarshal(body, &result); err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
 
 	seen := make(map[string]struct{}, len(result.Models))

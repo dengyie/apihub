@@ -447,6 +447,101 @@ func TestSubtractModelNames(t *testing.T) {
 	require.Equal(t, []string{"gpt-4o", "gpt-4.1-mini"}, result)
 }
 
+func TestFetchChannelUpstreamModelIDs_HtmlResponse(t *testing.T) {
+	// 模拟 zzzcoding 等站点在号池耗尽时返回 HTTP 200 + HTML 页面的场景
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>号池已耗尽，请关注帖子</title></head>
+<body><h1>号池已耗尽</h1><p>请关注帖子</p></body>
+</html>`))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+		Name:    "zzzcoding",
+	}
+
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.Error(t, err)
+	require.Nil(t, models)
+	// 验证不再报 invalid character '<' 裸反序列化错误，而是友好诊断
+	require.NotContains(t, err.Error(), "invalid character '<'")
+	require.Contains(t, err.Error(), "上游返回了 HTML 页面")
+	require.Contains(t, err.Error(), "号池已耗尽，请关注帖子")
+	require.Contains(t, err.Error(), "status code: 200")
+}
+
+func TestFetchChannelUpstreamModelIDs_HtmlErrorPage(t *testing.T) {
+	// 模拟 Cloudflare 502 / WAF 拦截页面
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`<html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>`))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.Error(t, err)
+	require.Nil(t, models)
+	require.NotContains(t, err.Error(), "invalid character '<'")
+	require.Contains(t, err.Error(), "上游返回了 HTML 页面")
+	require.Contains(t, err.Error(), "502 Bad Gateway")
+	require.Contains(t, err.Error(), "status code: 502")
+}
+
+func TestFetchChannelUpstreamModelIDs_JsonError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}`))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-test",
+		BaseURL: &baseURL,
+	}
+
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.Error(t, err)
+	require.Nil(t, models)
+	require.Contains(t, err.Error(), "This account only allows Codex official clients")
+	require.Contains(t, err.Error(), "status code: 403")
+}
+
+func TestBuildFetchModelsHeaders_CodexChannel(t *testing.T) {
+	baseURL := "https://api666.zzzcoding.org"
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-codex-test",
+		BaseURL: &baseURL,
+		Name:    "Codex-zzzcoding",
+	}
+
+	headers, err := buildFetchModelsHeaders(channel, channel.Key)
+	require.NoError(t, err)
+	require.Equal(t, "codex-cli/0.44.0", headers.Get("User-Agent"))
+	require.Equal(t, "codex_cli_rs", headers.Get("originator"))
+	require.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	require.Equal(t, "Bearer sk-codex-test", headers.Get("Authorization"))
+}
+
 func TestIntersectModelNames(t *testing.T) {
 	result := intersectModelNames(
 		[]string{"gpt-4o", "gpt-4.1", "gpt-4.1", "not-exists"},

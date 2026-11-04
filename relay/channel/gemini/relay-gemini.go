@@ -625,13 +625,6 @@ func FetchGeminiModels(baseURL, apiKey, proxyURL string) ([]string, error) {
 			return nil, fmt.Errorf("请求失败: %v", err)
 		}
 
-		if response.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(response.Body)
-			response.Body.Close()
-			cancel()
-			return nil, fmt.Errorf("服务器返回错误 %d: %s", response.StatusCode, string(body))
-		}
-
 		body, err := io.ReadAll(response.Body)
 		response.Body.Close()
 		cancel()
@@ -639,9 +632,18 @@ func FetchGeminiModels(baseURL, apiKey, proxyURL string) ([]string, error) {
 			return nil, fmt.Errorf("读取响应失败: %v", err)
 		}
 
+		contentType := response.Header.Get("Content-Type")
+		if response.StatusCode != http.StatusOK {
+			return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+		}
+
+		if common.IsHtmlOrXmlResponse(contentType, body) {
+			return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+		}
+
 		var modelsResponse GeminiModelsResponse
 		if err = common.Unmarshal(body, &modelsResponse); err != nil {
-			return nil, fmt.Errorf("解析响应失败: %v", err)
+			return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
 		}
 
 		for _, model := range modelsResponse.Models {

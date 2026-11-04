@@ -351,20 +351,24 @@ func FetchOllamaModels(baseURL, apiKey string) ([]OllamaModel, error) {
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		return nil, fmt.Errorf("服务器返回错误 %d: %s", response.StatusCode, string(body))
-	}
-
-	var tagsResponse OllamaTagsResponse
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %v", err)
 	}
 
+	contentType := response.Header.Get("Content-Type")
+	if response.StatusCode != http.StatusOK {
+		return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+	}
+
+	if common.IsHtmlOrXmlResponse(contentType, body) {
+		return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
+	}
+
+	var tagsResponse OllamaTagsResponse
 	err = common.Unmarshal(body, &tagsResponse)
 	if err != nil {
-		return nil, fmt.Errorf("解析响应失败: %v", err)
+		return nil, common.FormatUpstreamResponseError(response.StatusCode, contentType, body)
 	}
 
 	return tagsResponse.Models, nil

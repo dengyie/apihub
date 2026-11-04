@@ -295,6 +295,12 @@ func buildFetchModelsHeaders(channel *model.Channel, key string) (http.Header, e
 		headers = GetAuthHeader(key)
 	}
 
+	if isCodexChannel(channel) {
+		headers.Set("User-Agent", "codex-cli/0.44.0")
+		headers.Set("originator", "codex_cli_rs")
+		headers.Set("OpenAI-Beta", "responses=experimental")
+	}
+
 	if err := applyFetchModelsHeaderOverrides(channel, key, headers); err != nil {
 		return nil, err
 	}
@@ -1495,6 +1501,8 @@ type fetchModelsRequest struct {
 	AdvancedCustom *string `json:"advanced_custom"`
 	HeaderOverride *string `json:"header_override"`
 	Proxy          *string `json:"proxy"`
+	Name           *string `json:"name"`
+	Tag            *string `json:"tag"`
 }
 
 func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
@@ -1604,6 +1612,22 @@ func FetchModels(c *gin.Context) {
 			Type:    req.Type,
 			Key:     key,
 			BaseURL: &baseURL,
+		}
+		if req.Name != nil {
+			channel.Name = strings.TrimSpace(*req.Name)
+		}
+		if req.Tag != nil {
+			tag := strings.TrimSpace(*req.Tag)
+			channel.Tag = &tag
+		}
+		if req.Proxy != nil {
+			channelSettings := channel.GetSetting()
+			channelSettings.Proxy = strings.TrimSpace(*req.Proxy)
+			channel.SetSetting(channelSettings)
+		}
+		if req.HeaderOverride != nil {
+			rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
+			channel.HeaderOverride = &rawHeaderOverride
 		}
 	}
 
