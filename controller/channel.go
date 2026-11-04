@@ -543,10 +543,42 @@ func GetChannelKey(c *gin.Context) {
 // extended with; it comfortably covers every built-in and installed plugin.
 const maxTaskExtendPluginKeys = 32
 
+// validateModelMappingJSON 校验渠道模型重定向配置：必须是「字符串到字符串」的
+// JSON 对象。nil 或空串表示没有配置重定向，直接放行。
+//
+// 热路径（relay/helper.ModelMappedHelper）只能把解析失败当成「无映射」跳过，
+// 所以脏配置一旦入库，线上只会表现为静默失效、不会报错——把校验放在写侧是
+// 唯一能让配置错误在保存那一刻暴露的地方。
+func validateModelMappingJSON(modelMapping *string) error {
+	if modelMapping == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*modelMapping)
+	if trimmed == "" || trimmed == "{}" {
+		return nil
+	}
+	parsed := make(map[string]string)
+	if err := common.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return fmt.Errorf("模型重定向[model_mapping] 必须是 JSON 对象且值必须是字符串，例如 {\"客户端模型\":\"上游模型\"}：%s", err.Error())
+	}
+	for source := range parsed {
+		if strings.TrimSpace(source) == "" {
+			return fmt.Errorf("模型重定向[model_mapping] 不能包含空白的客户端模型名")
+		}
+	}
+	return nil
+}
+
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
+	}
+
+	// 模型重定向是热路径上每个请求都要解析的配置，写库前必须挡住脏 JSON：
+	// 一旦存进去，重定向逻辑只能跳过它，渠道表现为「映射神秘失效」。
+	if err := validateModelMappingJSON(channel.ModelMapping); err != nil {
+		return err
 	}
 
 	// 校验 channel settings
@@ -1064,6 +1096,15 @@ func EditTagChannels(c *gin.Context) {
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
 		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
 		return
+	}
+	if channelTag.ModelMapping != nil {
+		if err := validateModelMappingJSON(channelTag.ModelMapping); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 	if channelTag.ParamOverride != nil {
 		trimmed := strings.TrimSpace(*channelTag.ParamOverride)

@@ -114,6 +114,57 @@ func TestValidateChannelRequiresNewAPIBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidateModelMappingJSON(t *testing.T) {
+	tests := []struct {
+		name         string
+		modelMapping *string
+		wantErr      string
+	}{
+		{name: "unset"},
+		{name: "empty", modelMapping: common.GetPointer("")},
+		{name: "blank", modelMapping: common.GetPointer("   ")},
+		{name: "empty object", modelMapping: common.GetPointer("{}")},
+		{name: "valid", modelMapping: common.GetPointer(`{"gemini-3.8-flash":"gemini-3.8-flash-high"}`)},
+		{
+			name:         "duplicate source sentinel",
+			modelMapping: common.GetPointer(`{ "duplicate_source_models": `),
+			wantErr:      "模型重定向[model_mapping] 必须是 JSON 对象",
+		},
+		{
+			name:         "truncated object",
+			modelMapping: common.GetPointer(`{"gemini-3.8-flash":"gemini-3.8-flash-high"`),
+			wantErr:      "模型重定向[model_mapping] 必须是 JSON 对象",
+		},
+		{
+			name:         "array",
+			modelMapping: common.GetPointer(`["gemini-3.8-flash-high"]`),
+			wantErr:      "模型重定向[model_mapping] 必须是 JSON 对象",
+		},
+		{
+			name:         "non string value",
+			modelMapping: common.GetPointer(`{"gemini-3.8-flash":1}`),
+			wantErr:      "模型重定向[model_mapping] 必须是 JSON 对象",
+		},
+		{
+			name:         "blank source",
+			modelMapping: common.GetPointer(`{"  ":"gemini-3.8-flash-high"}`),
+			wantErr:      "不能包含空白的客户端模型名",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateModelMappingJSON(test.modelMapping)
+
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestNewAPIChannelRegistration(t *testing.T) {
 	apiType, ok := common.ChannelType2APIType(constant.ChannelTypeNewAPI)
 
