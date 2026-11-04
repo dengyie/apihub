@@ -35,15 +35,17 @@ func TestModelMappedHelper_AliasNormalizedFallback(t *testing.T) {
 	t.Run("resolves mapping via normalized key", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Set("model_mapping", `{"gemini-3.8-flash":"gemini-3.8-flash-high"}`)
+		// 渠道显式映射以规范名 qwen-3.8-flash 为 key，
+		// 下游用无连字符变体 qwen3.8-flash 请求时也能命中。
+		c.Set("model_mapping", `{"qwen-3.8-flash":"Qwen3.8-Flash-Next"}`)
 
 		info := &relaycommon.RelayInfo{
-			OriginModelName: "Google-3.8-flash",
+			OriginModelName: "qwen3.8-flash",
 		}
 		err := ModelMappedHelper(c, info, nil)
 		require.NoError(t, err)
 		assert.True(t, info.IsModelMapped)
-		assert.Equal(t, "gemini-3.8-flash-high", info.UpstreamModelName)
+		assert.Equal(t, "Qwen3.8-Flash-Next", info.UpstreamModelName)
 	})
 
 	t.Run("normalizes model when mapping is empty", func(t *testing.T) {
@@ -51,24 +53,26 @@ func TestModelMappedHelper_AliasNormalizedFallback(t *testing.T) {
 		c, _ := gin.CreateTestContext(w)
 
 		info := &relaycommon.RelayInfo{
-			OriginModelName: "Google-3.8-flash",
+			OriginModelName: "qwen3.8-flash",
 		}
 		err := ModelMappedHelper(c, info, nil)
 		require.NoError(t, err)
 		assert.True(t, info.IsModelMapped)
-		assert.Equal(t, "gemini-3.8-flash", info.UpstreamModelName)
+		assert.Equal(t, "qwen-3.8-flash", info.UpstreamModelName)
 	})
 
-	t.Run("normalizes qwen-3.8-flash to qwen3.8-flash", func(t *testing.T) {
+	t.Run("keeps canonical qwen-3.8-flash as-is", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 
 		info := &relaycommon.RelayInfo{
 			OriginModelName: "qwen-3.8-flash",
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "qwen-3.8-flash"},
 		}
 		err := ModelMappedHelper(c, info, nil)
 		require.NoError(t, err)
-		assert.True(t, info.IsModelMapped)
-		assert.Equal(t, "qwen3.8-flash", info.UpstreamModelName)
+		// 规范名无需归一化：既不标记映射，也不改写上游模型名。
+		assert.False(t, info.IsModelMapped)
+		assert.Equal(t, "qwen-3.8-flash", info.UpstreamModelName)
 	})
 }

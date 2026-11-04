@@ -10,11 +10,14 @@ import (
 )
 
 func TestFormatMatchingModelNameDoesNotStripBase(t *testing.T) {
-	assert.Equal(t, "gemini-3.8-flash", FormatMatchingModelName("Google-3.8-flash"))
-	assert.Equal(t, "gemini-3.8-flash", FormatMatchingModelName("google-3.8flash"))
-	assert.Equal(t, "gemini-3.8-flash-high", FormatMatchingModelName("Google-3.8-flash-high"))
-	assert.Equal(t, "qwen3.8-flash", FormatMatchingModelName("qwen-3.8-flash"))
-	assert.Equal(t, "qwen3.8-flash", FormatMatchingModelName("qwen-3.8flash"))
+	// qwen-3.8-flash 是下游唯一规范名，其余写法归一化到它。
+	assert.Equal(t, "qwen-3.8-flash", FormatMatchingModelName("qwen-3.8-flash"))
+	assert.Equal(t, "qwen-3.8-flash", FormatMatchingModelName("qwen3.8-flash"))
+	assert.Equal(t, "qwen-3.8-flash", FormatMatchingModelName("qwen-3.8flash"))
+	// 厂商名不是模型名：Google-3.8-flash 不得被解析成 gemini 模型。
+	assert.Equal(t, "Google-3.8-flash", FormatMatchingModelName("Google-3.8-flash"))
+	assert.Equal(t, "gemini-3.8-flash", FormatMatchingModelName("gemini-3.8-flash"))
+	assert.Equal(t, "gemini-3.8-flash-high", FormatMatchingModelName("gemini-3.8-flash-high"))
 	assert.Equal(t, "qwen3-max@thinking:on", FormatMatchingModelName("qwen3-max@thinking:on"))
 	assert.Equal(t, "claude-3-7-sonnet-thinking", FormatMatchingModelName("claude-3-7-sonnet-thinking"))
 	assert.Equal(t, "gemini-2.5-flash-thinking-*", FormatMatchingModelName("gemini-2.5-flash-thinking-8192"))

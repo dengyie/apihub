@@ -158,10 +158,6 @@ var builtinBillingExpr = map[string]string{
 	"gemini-3.7-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
-	"Google-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
-	"Google-3.8flash":        `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
-	"google-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
-	"google-3.8flash":        `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	// Official launch rate $2 / $10 per 1M (cached input ~95% off). Google's
 	// published promo ends 2026-11-30, after which it becomes $4 / $20; update
 	// this entry on that date.

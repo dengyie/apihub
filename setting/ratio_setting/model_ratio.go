@@ -724,12 +724,10 @@ func HasConfiguredModelRatio(name string) bool {
 func FormatMatchingModelName(name string) string {
 	lower := strings.ToLower(name)
 	switch lower {
-	case "google-3.8-flash", "google-3.8flash":
-		return "gemini-3.8-flash"
-	case "google-3.8-flash-high", "google-3.8flash-high":
-		return "gemini-3.8-flash-high"
-	case "qwen-3.8-flash", "qwen-3.8flash":
-		return "qwen3.8-flash"
+	// qwen-3.8-flash 是下游唯一规范名；qwen3.8-flash 与 qwen-3.8flash 只是
+	// 同一模型的书写变体，统一归一化到规范名，避免被当成三个不同模型。
+	case "qwen3.8-flash", "qwen-3.8flash":
+		return "qwen-3.8-flash"
 	}
 
 	if strings.HasPrefix(name, "gemini-2.5-flash-lite") {
