@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,45 @@ func resolveModelMetadata(records []Model, names []string) map[string]*Model {
 		}
 	}
 	return resolved
+}
+
+// GetCatalogHiddenModels returns the subset of names that are hidden from the
+// public catalog. It resolves metadata with the same precedence the pricing
+// catalog uses, so every discovery surface agrees on visibility. A name without
+// metadata stays visible.
+func GetCatalogHiddenModels(names []string) map[string]struct{} {
+	hidden := make(map[string]struct{})
+	if len(names) == 0 {
+		return hidden
+	}
+	var metadata []Model
+	if err := DB.Find(&metadata).Error; err != nil {
+		common.SysLog(fmt.Sprintf("load model metadata for catalog visibility error: %v", err))
+		return hidden
+	}
+	for name, meta := range resolveModelMetadata(metadata, names) {
+		if meta != nil && meta.Status != 1 {
+			hidden[name] = struct{}{}
+		}
+	}
+	return hidden
+}
+
+// FilterCatalogHiddenModels drops names hidden from the public catalog while
+// preserving order. Visibility only affects discovery: hidden models stay
+// routable, so existing integrations keep working.
+func FilterCatalogHiddenModels(names []string) []string {
+	hidden := GetCatalogHiddenModels(names)
+	if len(hidden) == 0 {
+		return names
+	}
+	visible := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, ok := hidden[name]; !ok {
+			visible = append(visible, name)
+		}
+	}
+	return visible
 }
 
 // FillModelSquareStates applies the same metadata policy as the public catalog

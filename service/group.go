@@ -106,7 +106,8 @@ func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
 	return FilterUserTokenAutoGroups(userGroup, groups)
 }
 
-// GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重
+// GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重。
+// 目录可见性（models.status）在此统一生效：隐藏的模型不对外暴露，但仍可按名称调用。
 func GetGroupsEnabledModels(groups []string) []string {
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
@@ -118,7 +119,7 @@ func GetGroupsEnabledModels(groups []string) []string {
 			}
 		}
 	}
-	return models
+	return model.FilterCatalogHiddenModels(models)
 }
 
 // GetUserGroupRatio 获取用户使用某个分组的倍率
