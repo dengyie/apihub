@@ -138,12 +138,15 @@ func buildRealisticChatProbe(model string, endpointType constant.EndpointType, i
 		}
 	case constant.EndpointTypeOpenAIResponse:
 		// Compact 端点由 buildTestRequest 自行构造 CompactionRequest，不经过这里。
-		return &dto.OpenAIResponsesRequest{
+		req := &dto.OpenAIResponsesRequest{
 			Model:        model,
 			Instructions: probeResponsesInstructions(),
 			Input:        probeResponsesInput(),
 			Stream:       lo.ToPtr(isStream),
+			Store:        json.RawMessage("false"),
 		}
+		req.EnsureCodexFields()
+		return req
 	default:
 		// OpenAI chat completions（含自动检测兜底路径）
 		req := &dto.GeneralOpenAIRequest{

@@ -158,6 +158,10 @@ var builtinBillingExpr = map[string]string{
 	"gemini-3.7-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	"gemini-3.8-flash-high":  `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"Google-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"Google-3.8flash":        `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"google-3.8-flash":       `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
+	"google-3.8flash":        `tier("standard", p * 0.75 + c * 3.75 + cr * 0.075)`,
 	// Official launch rate $2 / $10 per 1M (cached input ~95% off). Google's
 	// published promo ends 2026-11-30, after which it becomes $4 / $20; update
 	// this entry on that date.
@@ -241,7 +245,9 @@ var builtinBillingExpr = map[string]string{
 	"spark-tts-0.5b": `tier("standard", fixed(0.01))`,
 
 	// Qwen
-	"qwen3.8-flash": `tier("standard", p * 0.6 + c * 3.6)`,
+	"qwen3.8-flash":  `tier("standard", p * 0.6 + c * 3.6)`,
+	"qwen-3.8-flash": `tier("standard", p * 0.6 + c * 3.6)`,
+	"qwen-3.8flash":  `tier("standard", p * 0.6 + c * 3.6)`,
 	// 27B dense sibling: same Qwen3.8 family, priced between flash and max.
 	// Not a verified official number, but any real rate beats the 37.5 fallback.
 	"qwen3.8-27b": `tier("standard", p * 0.4 + c * 2.4 + cr * 0.04)`,

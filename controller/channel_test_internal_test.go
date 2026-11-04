@@ -493,3 +493,128 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
 }
+
+func TestCodexChannelAdaptation(t *testing.T) {
+	tagZzz := "zzzcoding-tag"
+	tagCodex := "codex-pool"
+	tagOther := "other"
+	baseURLZzz := "https://api666.zzzcoding.org"
+	baseURLCodex := "https://newcodex.cn"
+	baseURLNormal := "https://api.openai.com"
+
+	tests := []struct {
+		name       string
+		channel    *model.Channel
+		wantCodex  bool
+		wantStream bool
+	}{
+		{
+			name: "Type Codex",
+			channel: &model.Channel{
+				Type: constant.ChannelTypeCodex,
+				Name: "official-codex",
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "zzzcoding by name",
+			channel: &model.Channel{
+				Type: constant.ChannelTypeOpenAI,
+				Name: "zzzcoding",
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "zzzcoding by baseURL",
+			channel: &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Name:    "proxy-152",
+				BaseURL: &baseURLZzz,
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "zzzcoding by tag",
+			channel: &model.Channel{
+				Type: constant.ChannelTypeOpenAI,
+				Name: "channel-1",
+				Tag:  &tagZzz,
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "codex proxy by name",
+			channel: &model.Channel{
+				Type: constant.ChannelTypeOpenAI,
+				Name: "https://api.abuai.chat-codex",
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "codex proxy by baseURL",
+			channel: &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Name:    "newcodex",
+				BaseURL: &baseURLCodex,
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "codex proxy by tag",
+			channel: &model.Channel{
+				Type: constant.ChannelTypeOpenAI,
+				Name: "any-proxy",
+				Tag:  &tagCodex,
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "normal OpenAI channel",
+			channel: &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Name:    "openai-official",
+				BaseURL: &baseURLNormal,
+				Tag:     &tagOther,
+			},
+			wantCodex:  false,
+			wantStream: false,
+		},
+		{
+			name:       "nil channel",
+			channel:    nil,
+			wantCodex:  false,
+			wantStream: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantCodex, isCodexChannel(tt.channel))
+			assert.Equal(t, tt.wantStream, shouldUseStreamForAutomaticChannelTest(tt.channel))
+
+			endpoint := normalizeChannelTestEndpoint(tt.channel, "")
+			if tt.wantCodex {
+				assert.Equal(t, string(constant.EndpointTypeOpenAIResponse), endpoint)
+			} else {
+				assert.Empty(t, endpoint)
+			}
+		})
+	}
+}
+
+func TestCodexProbeRequestShape(t *testing.T) {
+	req := buildRealisticChatProbe("gpt-6-astra", constant.EndpointTypeOpenAIResponse, true)
+	respReq, ok := req.(*dto.OpenAIResponsesRequest)
+	require.True(t, ok)
+	require.NotNil(t, respReq.Stream)
+	assert.True(t, *respReq.Stream)
+	assert.Equal(t, string(respReq.Store), "false", "Codex endpoint requires store: false")
+	assert.Contains(t, string(respReq.Include), "reasoning.encrypted_content", "Codex endpoint requires encrypted reasoning in include")
+}

@@ -62,6 +62,12 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 		if info.IsStream && c.Request.Header.Get("Accept") == "" {
 			req.Set("Accept", "text/event-stream")
 		}
+		if beta := c.Request.Header.Get("OpenAI-Beta"); beta != "" {
+			req.Set("OpenAI-Beta", beta)
+		}
+		if originator := c.Request.Header.Get("originator"); originator != "" {
+			req.Set("originator", originator)
+		}
 	}
 }
 
@@ -313,6 +319,11 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+const (
+	channelTestUserAgentKey = "channel_test_user_agent"
+	channelTestIsCodexKey   = "channel_test_is_codex"
+)
+
 // 用户定制：渠道测试时从 gin 上下文读取测试 UA 并应用到上游请求。
 // 仅当 controller/channel-test.go 设置了 channel_test_user_agent 时生效，
 // 正常转发流程不受影响。
@@ -320,7 +331,7 @@ func applyChannelTestUserAgent(c *gin.Context, req *http.Request) {
 	if c == nil || req == nil {
 		return
 	}
-	v, ok := c.Get("channel_test_user_agent")
+	v, ok := c.Get(channelTestUserAgentKey)
 	if !ok {
 		return
 	}
@@ -329,6 +340,41 @@ func applyChannelTestUserAgent(c *gin.Context, req *http.Request) {
 		return
 	}
 	req.Header.Set("User-Agent", ua)
+}
+
+// 用户定制：渠道测试时应用 Codex 协议等测试专属请求头。
+// 放在 Header Override 之前，渠道管理员显式配置的 header_override 仍优先。
+func applyChannelTestHeaders(c *gin.Context, info *common.RelayInfo, req *http.Request) {
+	if c == nil || req == nil {
+		return
+	}
+	applyChannelTestUserAgent(c, req)
+
+	isCodexTest := false
+	if v, ok := c.Get(channelTestIsCodexKey); ok {
+		if b, ok := v.(bool); ok && b {
+			isCodexTest = true
+		}
+	}
+	if !isCodexTest && info != nil && info.IsChannelTest {
+		if info.RelayMode == constant.RelayModeResponses || info.RelayMode == constant.RelayModeResponsesCompact {
+			if strings.HasPrefix(req.Header.Get("User-Agent"), "codex-cli") {
+				isCodexTest = true
+			}
+		}
+	}
+
+	if isCodexTest {
+		if req.Header.Get("originator") == "" {
+			req.Header.Set("originator", "codex_cli_rs")
+		}
+		if req.Header.Get("OpenAI-Beta") == "" {
+			req.Header.Set("OpenAI-Beta", "responses=experimental")
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "text/event-stream")
+		}
+	}
 }
 
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
@@ -352,9 +398,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	// 用户定制：渠道测试时按模型类型设置 UA（绕过部分上游的 UA 拦截，如 nailao）。
+	// 用户定制：渠道测试时按模型类型设置 UA 与 Codex 模拟签名（绕过上游的客户端校验，如 zzzcoding、nailao）。
 	// 放在 Header Override 之前，渠道管理员显式配置的 header_override 仍优先。
-	applyChannelTestUserAgent(c, req)
+	applyChannelTestHeaders(c, info, req)
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	headerOverride, err := processHeaderOverride(info, c)

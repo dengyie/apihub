@@ -12,6 +12,7 @@ import (
 
 	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
+	relayconstant "github.com/dengyie/apihub/relay/constant"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -466,4 +467,70 @@ func TestDoRequest_UpstreamErrorWhenClientConnectedDoesNotAbort(t *testing.T) {
 	// 客户端依然在线，上游网络失败绝不能被判定为 ClientAbortedError (499)
 	assert.False(t, types.IsClientAbortedError(err))
 	assert.False(t, loadbalancer.IsTTFTTimeout(err))
+}
+
+func TestApplyChannelTestHeaders(t *testing.T) {
+	t.Run("Codex test context sets official codex headers", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Set(channelTestUserAgentKey, "codex-cli/0.44.0")
+		c.Set(channelTestIsCodexKey, true)
+
+		req, err := http.NewRequest(http.MethodPost, "https://api666.zzzcoding.org/v1/responses", nil)
+		require.NoError(t, err)
+
+		info := &relaycommon.RelayInfo{
+			IsChannelTest: true,
+			RelayMode:     relayconstant.RelayModeResponses,
+		}
+
+		applyChannelTestHeaders(c, info, req)
+
+		assert.Equal(t, "codex-cli/0.44.0", req.Header.Get("User-Agent"))
+		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+	})
+
+	t.Run("Non-codex test does not set originator", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Set(channelTestUserAgentKey, "claude-code/2.0.0")
+
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+		require.NoError(t, err)
+
+		info := &relaycommon.RelayInfo{
+			IsChannelTest: true,
+			RelayMode:     relayconstant.RelayModeChatCompletions,
+		}
+
+		applyChannelTestHeaders(c, info, req)
+
+		assert.Equal(t, "claude-code/2.0.0", req.Header.Get("User-Agent"))
+		assert.Empty(t, req.Header.Get("originator"))
+		assert.Empty(t, req.Header.Get("OpenAI-Beta"))
+	})
+}
+
+func TestSetupApiRequestHeader_ForwardsCodexHeaders(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+
+	info := &relaycommon.RelayInfo{
+		IsStream:  true,
+		RelayMode: relayconstant.RelayModeResponses,
+	}
+
+	headers := http.Header{}
+	SetupApiRequestHeader(info, c, &headers)
+
+	assert.Equal(t, "application/json", headers.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream", headers.Get("Accept"))
+	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
 }

@@ -722,6 +722,16 @@ func HasConfiguredModelRatio(name string) bool {
 
 // 转换模型名，减少渠道必须配置各种带参数模型
 func FormatMatchingModelName(name string) string {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "google-3.8-flash", "google-3.8flash":
+		return "gemini-3.8-flash"
+	case "google-3.8-flash-high", "google-3.8flash-high":
+		return "gemini-3.8-flash-high"
+	case "qwen-3.8-flash", "qwen-3.8flash":
+		return "qwen3.8-flash"
+	}
+
 	if strings.HasPrefix(name, "gemini-2.5-flash-lite") {
 		name = handleThinkingBudgetModel(name, "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-thinking-*")
 	} else if strings.HasPrefix(name, "gemini-2.5-flash") {

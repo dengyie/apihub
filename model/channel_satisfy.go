@@ -34,7 +34,8 @@ func IsChannelEnabledForGroupModel(group string, modelName string, channelID int
 	}
 	if group2model2channels[group] != nil {
 		for m, list := range group2model2channels[group] {
-			if strings.EqualFold(m, modelName) || (normalized != "" && strings.EqualFold(m, normalized)) {
+			if strings.EqualFold(m, modelName) || (normalized != "" && strings.EqualFold(m, normalized)) ||
+				(normalized != "" && strings.EqualFold(ratio_setting.RoutingMatchModelName(m), normalized)) {
 				if isChannelIDInList(list, channelID) {
 					return true
 				}

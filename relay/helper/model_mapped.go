@@ -8,6 +8,7 @@ import (
 	rootcommon "github.com/dengyie/apihub/common"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/dto"
+	"github.com/dengyie/apihub/setting/ratio_setting"
 	hostreasoning "github.com/dengyie/apihub/setting/reasoning"
 	"github.com/gin-gonic/gin"
 )
@@ -54,6 +55,21 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 						}
 					}
 				}
+				if !exists || mappedModel == "" {
+					normalized := ratio_setting.RoutingMatchModelName(currentModel)
+					if normalized != "" && normalized != currentModel {
+						mappedModel, exists = modelMap[normalized]
+						if !exists || mappedModel == "" {
+							for k, v := range modelMap {
+								if strings.EqualFold(k, normalized) {
+									mappedModel = v
+									exists = true
+									break
+								}
+							}
+						}
+					}
+				}
 			}
 			if exists && mappedModel != "" {
 				// 模型重定向循环检测，避免无限循环
@@ -78,6 +94,14 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 		}
 		if info.IsModelMapped {
 			info.UpstreamModelName = currentModel
+		}
+	}
+
+	if !info.IsModelMapped && info.OriginModelName != "" {
+		normalized := ratio_setting.RoutingMatchModelName(info.OriginModelName)
+		if normalized != "" && normalized != info.OriginModelName {
+			info.UpstreamModelName = normalized
+			info.IsModelMapped = true
 		}
 	}
 

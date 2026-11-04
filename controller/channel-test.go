@@ -51,7 +51,45 @@ const (
 	channelTestClaudeUserAgent = "claude-code/2.0.0"
 	// gin 上下文中传递测试 UA 的 key
 	channelTestUserAgentKey = "channel_test_user_agent"
+	// gin 上下文中传递是否为 Codex 测试渠道的 key
+	channelTestIsCodexKey = "channel_test_is_codex"
 )
+
+// isCodexChannel 判断渠道是否为 Codex 渠道（包含官方 Codex 渠道以及类似 zzzcoding 的反代渠道）
+func isCodexChannel(channel *model.Channel) bool {
+	if channel == nil {
+		return false
+	}
+	if channel.Type == constant.ChannelTypeCodex {
+		return true
+	}
+	name := strings.ToLower(channel.Name)
+	if strings.Contains(name, "zzzcoding") || strings.Contains(name, "codex") {
+		return true
+	}
+	baseURL := strings.ToLower(channel.GetBaseURL())
+	if strings.Contains(baseURL, "zzzcoding") || strings.Contains(baseURL, "codex") {
+		return true
+	}
+	if channel.Tag != nil {
+		tag := strings.ToLower(*channel.Tag)
+		if strings.Contains(tag, "zzzcoding") || strings.Contains(tag, "codex") {
+			return true
+		}
+	}
+	return false
+}
+
+// isCodexTest 判断当前测试是否为 Codex 协议测试
+func isCodexTest(channel *model.Channel, testModel string, endpointType string) bool {
+	if isCodexChannel(channel) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(testModel), "codex") {
+		return true
+	}
+	return false
+}
 
 // 用户定制：根据模型名自动选择测试请求格式
 // - claude 模型 → anthropic 格式（模拟 Claude 客户端请求）
@@ -87,7 +125,7 @@ func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) s
 	if normalized != "" {
 		return normalized
 	}
-	if channel != nil && channel.Type == constant.ChannelTypeCodex {
+	if isCodexChannel(channel) {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
 	return normalized
@@ -156,6 +194,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	// 用户定制：测试请求 UA 随 gin 上下文传递，DoApiRequest 中应用
 	c.Set(channelTestUserAgentKey, channelTestUserAgent(testModel))
+
+	// Codex 渠道或测试强制使用流式与官方 Codex 客户端签名
+	if isCodexTest(channel, testModel, endpointType) {
+		isStream = true
+		c.Set(channelTestIsCodexKey, true)
+	}
 
 	requestPath := "/v1/chat/completions"
 
@@ -713,7 +757,7 @@ func validateTestResponseBody(respBody []byte, isStream bool) error {
 }
 
 func shouldUseStreamForAutomaticChannelTest(channel *model.Channel) bool {
-	return channel != nil && channel.Type == constant.ChannelTypeCodex
+	return isCodexChannel(channel)
 }
 
 func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {

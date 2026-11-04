@@ -195,7 +195,8 @@ func cachedChannelCandidates(group string, modelName string, filters []dto.Chann
 		normalized := ratio_setting.RoutingMatchModelName(modelName)
 		seen := make(map[int]struct{})
 		for k, candidateIDs := range group2model2channels[group] {
-			if strings.EqualFold(k, modelName) || (normalized != "" && strings.EqualFold(k, normalized)) {
+			if strings.EqualFold(k, modelName) || (normalized != "" && strings.EqualFold(k, normalized)) ||
+				(normalized != "" && strings.EqualFold(ratio_setting.RoutingMatchModelName(k), normalized)) {
 				filtered, _ := filterCandidateIDs(candidateIDs, modelName, filters)
 				for _, cid := range filtered {
 					if _, dup := seen[cid]; !dup {
