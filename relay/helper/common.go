@@ -227,6 +227,44 @@ func GenerateFinalUsageResponse(id string, createAt int64, model string, usage d
 	}
 }
 
+// anthropicHeartbeatEventTypes 是 Anthropic Messages SSE 里只承载保活语义、
+// 不含任何内容的纯心跳事件类型。
+var anthropicHeartbeatEventTypes = map[string]struct{}{
+	"ping": {},
+}
+
+// IsAnthropicHeartbeatFrame 判定 data 是否为 Anthropic 协议的裸心跳帧
+// （`{"type":"ping"}`）。部分 OpenAI 兼容上游其实是 Anthropic wire 协议的薄封装，
+// 会把上游保活心跳原样混进本就是 OpenAI 形状的流里。
+//
+// 这类帧必须当空帧丢弃，不能透传：chat.completions 客户端（ZCode / Vercel AI SDK）
+// 对每个 data 帧都按「choices 数组 or error 对象」的联合类型严格校验，第三种形状
+// 会直接让整个 Turn 失败且不可重试：
+//
+//	Type validation failed: Value: {"type":"ping"} ... invalid_union
+//
+// 匹配刻意收窄：只认「JSON 对象 + 顶层 type 命中 Anthropic 心跳事件」的帧。
+// Responses / Realtime / Images 同样是 typed-event 协议，用「没有 choices 就当心跳」
+// 的宽判据会把它们自己的生命周期帧一并吞掉。
+func IsAnthropicHeartbeatFrame(data string) bool {
+	trimmed := strings.TrimSpace(data)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+		return false
+	}
+	// 廉价前置门：只有真正提到 ping 的帧才值得反序列化。
+	if !strings.Contains(trimmed, `"ping"`) {
+		return false
+	}
+	var frame struct {
+		Type string `json:"type"`
+	}
+	if err := common.UnmarshalJsonStr(trimmed, &frame); err != nil {
+		return false
+	}
+	_, heartbeat := anthropicHeartbeatEventTypes[frame.Type]
+	return heartbeat
+}
+
 // IsEmptyStreamFrame detects whether an SSE data chunk carries zero useful information
 // (e.g. keep-alive frames, empty objects "{}", empty choices "[]", or zero-valued Go structs
 // `{"id":"","object":"","created":0,"model":"","system_fingerprint":null,"choices":null,"usage":null}`).
@@ -265,12 +303,19 @@ func IsEmptyStreamFrame(data string) bool {
 		return false
 	}
 
-	// 3. Typed event streams (OpenAI Responses API, Claude SSE, Realtime, Images)
+	// 3. Anthropic 保活心跳：对 chat.completions 客户端来说既不是内容也不是错误，
+	//    透传会击穿其联合类型校验（见 IsAnthropicHeartbeatFrame）。必须在下面
+	//    「含 type 即视为 typed event」的宽豁免之前拦下。
+	if IsAnthropicHeartbeatFrame(trimmed) {
+		return true
+	}
+
+	// 4. Typed event streams (OpenAI Responses API, Claude SSE, Realtime, Images)
 	if strings.Contains(trimmed, `"type"`) {
 		return false
 	}
 
-	// 4. OpenAI Chat Completions choices handling
+	// 5. OpenAI Chat Completions choices handling
 	if strings.Contains(trimmed, `"choices"`) {
 		// Case A: choices is explicitly null or empty array
 		if strings.Contains(trimmed, `"choices":null`) || strings.Contains(trimmed, `"choices": null`) ||
@@ -301,7 +346,7 @@ func IsEmptyStreamFrame(data string) bool {
 		return true
 	}
 
-	// 5. If it does not have choices, but has other content/metadata indicators:
+	// 6. If it does not have choices, but has other content/metadata indicators:
 	if strings.Contains(trimmed, `"candidates"`) ||
 		strings.Contains(trimmed, `"parts"`) ||
 		hasNonEmptyField(trimmed, "text") ||

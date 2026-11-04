@@ -858,6 +858,36 @@ func TestIsEmptyStreamFrame(t *testing.T) {
 			data: `{"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]}}]}`,
 			want: false,
 		},
+		{
+			name: "anthropic keepalive ping leaked from compatible upstream",
+			data: `{"type":"ping"}`,
+			want: true,
+		},
+		{
+			name: "anthropic keepalive ping with surrounding spaces",
+			data: `  { "type" : "ping" }  `,
+			want: true,
+		},
+		{
+			name: "anthropic keepalive ping carrying extra bookkeeping members",
+			data: `{"type":"ping","seq":7}`,
+			want: true,
+		},
+		{
+			name: "payload merely mentioning ping is not a heartbeat",
+			data: `{"delta":"ping"}`,
+			want: false,
+		},
+		{
+			name: "responses lifecycle frame is a typed event, never a heartbeat",
+			data: `{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
+			want: false,
+		},
+		{
+			name: "responses delta frame carrying the word ping stays content",
+			data: `{"type":"response.output_text.delta","delta":"ping"}`,
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {
