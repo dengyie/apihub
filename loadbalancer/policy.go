@@ -16,6 +16,18 @@ const DefaultRequestTimeoutMs = 180000
 // DefaultTTFTTimeoutMs 默认首字超时（毫秒）。
 const DefaultTTFTTimeoutMs = 15000
 
+// DefaultHeaderTimeoutMs 默认上游 HTTP 响应头等待超时（毫秒）。
+// 上游建立连接后，必须在此时间内返回 HTTP 状态行与响应头。
+// 避免本地号池死锁或上游反代无响应时长时间挂死请求。
+const DefaultHeaderTimeoutMs = 15000
+
+// DefaultClientSafetyDeadlineMs 默认下游客户端安全死线（毫秒）。
+// 绝大多数现代 AI 客户端（如 ZCode、Claude Code、OpenAI SDK、Node.js 运行时）
+// 底层 HTTP 请求超时为 120 秒左右。
+// 流式请求在首字未出（零字节）状态下的总等待预算必须严格受控于此死线（保留至少 15s 缓冲），
+// 避免超时撞车被下游掐线导致底层 Socket EPIPE，并使网关能够抢在客户端掐线前主动返回合法的 504 响应。
+const DefaultClientSafetyDeadlineMs = 105000
+
 // DefaultEmptyStreamRetryBudgetMs 流式请求在「客户端仍未收到任何内容字节」
 // 时，换渠道重试的墙钟默认值（毫秒）。长流出字后立即作废，不套到
 // request_timeout_ms 上。
@@ -46,6 +58,10 @@ type Policy struct {
 	// 换渠道重试的墙钟（毫秒）。指针三态：缺省 DefaultEmptyStreamRetryBudgetMs；
 	// 显式 0 = 关闭。不作用于已开始出字的长流，也不套到 request context 上。
 	EmptyStreamRetryBudgetMs *int `yaml:"empty_stream_retry_budget_ms"`
+
+	// ClientSafetyDeadlineMs 下游客户端安全死线（毫秒）。
+	// 截断流式零字节等待总预算。指针三态：缺省 DefaultClientSafetyDeadlineMs；显式 0 = 关闭。
+	ClientSafetyDeadlineMs *int `yaml:"client_safety_deadline_ms"`
 
 	// EmptyStreamTripThreshold 同一渠道连续空流达到此次数后熔断。
 	// 指针三态：缺省 DefaultEmptyStreamTripThreshold；显式 0 = 关闭。
@@ -81,11 +97,31 @@ func GetRequestTimeout() time.Duration {
 	return GetPolicy().RequestTimeout()
 }
 
+// ClientSafetyDeadline 返回流式零字节安全死线；0 表示关闭。
+func (p *Policy) ClientSafetyDeadline() time.Duration {
+	if p == nil {
+		return time.Duration(DefaultClientSafetyDeadlineMs) * time.Millisecond
+	}
+	if p.ClientSafetyDeadlineMs == nil {
+		return time.Duration(DefaultClientSafetyDeadlineMs) * time.Millisecond
+	}
+	if *p.ClientSafetyDeadlineMs <= 0 {
+		return 0
+	}
+	return time.Duration(*p.ClientSafetyDeadlineMs) * time.Millisecond
+}
+
+// GetClientSafetyDeadline 返回当前生效策略的客户端安全死线。
+func GetClientSafetyDeadline() time.Duration {
+	return GetPolicy().ClientSafetyDeadline()
+}
+
 // EmptyStreamRetryBudget 返回流式零字节换渠道重试墙钟；0 表示禁用。
 func (p *Policy) EmptyStreamRetryBudget() time.Duration {
 	if p == nil {
 		return time.Duration(DefaultEmptyStreamRetryBudgetMs) * time.Millisecond
 	}
+	safety := p.ClientSafetyDeadline()
 	if p.EmptyStreamRetryBudgetMs != nil {
 		if *p.EmptyStreamRetryBudgetMs <= 0 {
 			return 0
@@ -93,6 +129,9 @@ func (p *Policy) EmptyStreamRetryBudget() time.Duration {
 		configured := time.Duration(*p.EmptyStreamRetryBudgetMs) * time.Millisecond
 		if reqTimeout := p.RequestTimeout(); reqTimeout > 0 && configured > reqTimeout {
 			configured = reqTimeout
+		}
+		if safety > 0 && configured > safety {
+			configured = safety
 		}
 		return configured
 	}
@@ -117,6 +156,9 @@ func (p *Policy) EmptyStreamRetryBudget() time.Duration {
 	}
 	if reqTimeout := p.RequestTimeout(); reqTimeout > 0 && baseBudget > reqTimeout {
 		baseBudget = reqTimeout
+	}
+	if safety > 0 && baseBudget > safety {
+		baseBudget = safety
 	}
 	return baseBudget
 }
@@ -154,6 +196,11 @@ type ChannelPolicy struct {
 	// 0 表示不启用首字超时检测。
 	TTFTTimeoutMs int64 `yaml:"ttft_timeout_ms"`
 
+	// HeaderTimeoutMs 上游 HTTP 响应头等待超时（毫秒）。
+	// 若超过此时长上游未返回响应头，判定为 Header 等待超时，快速熔断并触发换渠道重试。
+	// 0 表示未设置（按 DefaultHeaderTimeoutMs 与 TTFTTimeoutMs 动态取较小值）。
+	HeaderTimeoutMs int64 `yaml:"header_timeout_ms"`
+
 	// Breaker 熔断器参数
 	Breaker BreakerPolicy `yaml:"breaker"`
 
@@ -165,6 +212,24 @@ type ChannelPolicy struct {
 	// 代价是 CPA 真的宕机时每个请求都会先撞一次快速失败的本地调用，
 	// 但本机 loopback 失败是毫秒级的，远小于失去兜底的代价。
 	BreakerExempt bool `yaml:"breaker_exempt"`
+}
+
+// ResolveHeaderTimeout 返回生效的 HTTP 响应头等待超时。
+// 取 HeaderTimeoutMs 与 TTFTTimeoutMs 中的较小者（未配置时回退到默认值），
+// 确保 Header 等待既能快速熔断，又绝不超过该渠道的 TTFT 预期。
+func (cp ChannelPolicy) ResolveHeaderTimeout() time.Duration {
+	ttft := cp.TTFTTimeoutMs
+	if ttft <= 0 {
+		ttft = DefaultTTFTTimeoutMs
+	}
+	header := cp.HeaderTimeoutMs
+	if header <= 0 {
+		header = int64(DefaultHeaderTimeoutMs)
+	}
+	if ttft < header {
+		header = ttft
+	}
+	return time.Duration(header) * time.Millisecond
 }
 
 // BreakerPolicy 熔断器策略
@@ -331,6 +396,9 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	}
 	if cp.TTFTTimeoutMs != 0 {
 		resolved.TTFTTimeoutMs = cp.TTFTTimeoutMs
+	}
+	if cp.HeaderTimeoutMs != 0 {
+		resolved.HeaderTimeoutMs = cp.HeaderTimeoutMs
 	}
 	if cp.Breaker.FailureThreshold != 0 {
 		resolved.Breaker.FailureThreshold = cp.Breaker.FailureThreshold

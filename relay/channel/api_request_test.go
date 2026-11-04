@@ -279,6 +279,45 @@ func TestDoRequest_HeaderTTFTTimeout(t *testing.T) {
 	assert.Equal(t, int64(80), ttftErr.TimeoutMs)
 }
 
+func TestDoRequest_IndependentHeaderTimeout(t *testing.T) {
+	hangServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hangServer.Close()
+
+	policy := loadbalancer.DefaultPolicy()
+	policy.Enabled = true
+	// TTFT 是 60 秒，但 HeaderTimeout 是 70 毫秒
+	policy.Default.TTFTTimeoutMs = 60000
+	policy.Default.HeaderTimeoutMs = 70
+	loadbalancer.SetPolicy(policy)
+	defer loadbalancer.SetPolicy(nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("req-body"))
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 99,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hangServer.URL, strings.NewReader("req-body"))
+	require.NoError(t, err)
+
+	resp, err := DoRequest(c, req, info)
+	require.Error(t, err)
+	require.Nil(t, resp)
+
+	assert.True(t, loadbalancer.IsTTFTTimeout(err))
+	var ttftErr *loadbalancer.TTFTTimeoutError
+	require.ErrorAs(t, err, &ttftErr)
+	assert.Equal(t, 99, ttftErr.ChannelID)
+	assert.Equal(t, int64(70), ttftErr.TimeoutMs)
+}
+
 func TestDoRequest_HeaderFastSuccess(t *testing.T) {
 	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

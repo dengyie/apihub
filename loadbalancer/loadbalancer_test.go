@@ -1258,7 +1258,10 @@ func TestEmptyStreamPolicyAndTracker(t *testing.T) {
 	var adaptive Policy
 	adaptive.MaxRetries = 2
 	adaptive.Default.TTFTTimeoutMs = 75000 // 75s
-	// (2 + 1) * 75s = 225s，受 DefaultRequestTimeoutMs (180s) 钳制为 180s
+	// (2 + 1) * 75s = 225s，默认受 ClientSafetyDeadline (105s) 钳制为 105s，若关闭 safety 则受 RequestTimeout (180s) 钳制
+	assert.Equal(t, 105*time.Second, adaptive.EmptyStreamRetryBudget())
+	disabledSafety := 0
+	adaptive.ClientSafetyDeadlineMs = &disabledSafety
 	assert.Equal(t, 180*time.Second, adaptive.EmptyStreamRetryBudget())
 
 	var adaptiveChannel Policy

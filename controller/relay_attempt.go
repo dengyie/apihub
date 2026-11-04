@@ -243,25 +243,49 @@ func executeRelayAttempt(
 	if wasEmptyStream {
 		loadbalancer.GlobalTracker().RecordEmptyStream(lbAttempt, channel.Id, relayInfo.OriginModelName)
 	}
+
+	// 仅流式请求需要下游客户端安全死线兜底（防止 120s 掐线报 EPIPE）；
+	// 非流式请求已有 requestBudgetCtx 严格管控整请求墙钟预算（如默认 180s）。
+	var safetyCeiling time.Time
+	if relayInfo != nil && relayInfo.IsStream {
+		safetyLimit := loadbalancer.GetClientSafetyDeadline()
+		if safetyLimit > 0 {
+			reqStart := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+			if reqStart.IsZero() {
+				reqStart = attemptStartTime
+			}
+			safetyCeiling = reqStart.Add(safetyLimit)
+		}
+	}
+
 	if zeroByteDeadline != nil && !zeroByteDeadline.IsZero() && !time.Now().Before(*zeroByteDeadline) &&
 		zeroByteRetryable(newAPIError) {
+		channelTTFT := loadbalancer.GetPolicy().Resolve(channel.Id).TTFTTimeoutMs
+		if channelTTFT <= 0 {
+			channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
+		}
+		// 预算可行性感知：如果延展后的时间将超出客户端安全死线（或剩余时间不足最小重试窗口 10s），
+		// 必须停止盲目重试，抢在客户端掐线前主动返回标准的 504 错误。
+		minRetryWindow := 10 * time.Second
+		isBudgetFeasible := safetyCeiling.IsZero() || time.Now().Add(minRetryWindow).Before(safetyCeiling)
+
 		if loadbalancer.IsTTFTTimeout(newAPIError) &&
 			c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
-			retryParam.GetRetry() < common.RetryTimes {
-			channelTTFT := loadbalancer.GetPolicy().Resolve(channel.Id).TTFTTimeoutMs
-			if channelTTFT <= 0 {
-				channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
+			retryParam.GetRetry() < common.RetryTimes && isBudgetFeasible {
+			newDeadline := time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
+			if !safetyCeiling.IsZero() && newDeadline.After(safetyCeiling) {
+				newDeadline = safetyCeiling
 			}
-			*zeroByteDeadline = time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
+			*zeroByteDeadline = newDeadline
 		} else {
 			newAPIError = types.NewErrorWithStatusCode(
 				&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
 				types.ErrorCodeEmptyStreamBudgetExhausted,
-				http.StatusBadGateway,
+				http.StatusGatewayTimeout,
 				types.ErrOptionWithSkipRetry(),
 			)
 			relayInfo.LastError = newAPIError
-			logger.LogInfo(c, "空流零字节重试墙钟耗尽，停止重试")
+			logger.LogInfo(c, "空流零字节重试墙钟耗尽（或触及客户端安全死线），停止重试")
 			lbAttempt.EndCancelled()
 			return relayAttemptOutcome{Success: false, WillRetry: false, Err: newAPIError}
 		}
@@ -303,6 +327,21 @@ func executeRelayAttempt(
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			logger.LogInfo(c, "请求预算耗尽（网关侧总超时），停止重试")
 		}
+		return relayAttemptOutcome{Success: false, WillRetry: false, Err: newAPIError}
+	}
+
+	// 动态预算可行性兜底检查：即便 decision 决定 retry，若当前时间已逼近 safetyCeiling（剩余小于 10s），
+	// 则下一次尝试注定无法在客户端断开前完成，应在此时主动刹车并返回 504，避免客户端掐线报 EPIPE。
+	if !safetyCeiling.IsZero() && time.Now().Add(10*time.Second).After(safetyCeiling) {
+		newAPIError = types.NewErrorWithStatusCode(
+			&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
+			types.ErrorCodeEmptyStreamBudgetExhausted,
+			http.StatusGatewayTimeout,
+			types.ErrOptionWithSkipRetry(),
+		)
+		relayInfo.LastError = newAPIError
+		logger.LogInfo(c, "剩余时间不足以安全完成下一次重试（逼近客户端安全死线），主动以 504 终止重试")
+		lbAttempt.EndCancelled()
 		return relayAttemptOutcome{Success: false, WillRetry: false, Err: newAPIError}
 	}
 

@@ -181,6 +181,22 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "response committed never retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
 			_, _ = c.Writer.Write([]byte("data: partial response\n\n"))
 		}, want: PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}},
+		{name: "stream ping keepalive written without content still retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{
+				IsStream:              true,
+				ReceivedResponseCount: 0,
+				ReceivedContentBytes:  0,
+			})
+			_, _ = c.Writer.Write([]byte(": PING\n\n"))
+		}, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
+		{name: "stream content delivered never retries", err: upstream(http.StatusBadGateway), retries: 2, setup: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyRelayInfo, &relaycommon.RelayInfo{
+				IsStream:              true,
+				ReceivedResponseCount: 1,
+				ReceivedContentBytes:  25,
+			})
+			_, _ = c.Writer.Write([]byte("data: {\"choices\":[...]}\n\n"))
+		}, want: PolicyDecision{Action: "stop", Reason: "response_committed", Source: "system"}},
 		{name: "upstream model disabled on gateway 400 retries", err: types.NewOpenAIError(errors.New("model is disabled on this gateway: deepseek/deepseek-v4.1-flash"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}},
 		{name: "upstream model temporarily unavailable 400 retries", err: types.NewOpenAIError(errors.New("模型 'deepseek-v4-pro-free' 暂不可用，请稍后重试。"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest), retries: 1, want: PolicyDecision{Action: "retry", Reason: "upstream_relay_error", Source: "loadbalancer"}},
 		{name: "empty stream budget exhausted never retries", err: types.NewErrorWithStatusCode(&loadbalancer.EmptyStreamBudgetError{ChannelID: 1}, types.ErrorCodeEmptyStreamBudgetExhausted, http.StatusBadGateway, types.ErrOptionWithSkipRetry()), retries: 3, want: PolicyDecision{Action: "stop", Reason: "empty_stream_budget_exhausted", Source: "loadbalancer"}},

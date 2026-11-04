@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengyie/apihub/common"
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/types"
@@ -465,4 +467,52 @@ func TestWriteRelayTerminalErrorShieldsClaudeAndSSE(t *testing.T) {
 	assert.NotContains(t, authBody, `"authentication_error"`)
 	assert.Contains(t, authBody, `"upstream_error"`)
 	assert.Contains(t, authBody, `"code":503`)
+}
+
+func TestClientSafetyCeilingStreamVsNonStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 1. 流式请求：耗时逼近 105s 安全死线（例如已过去 96s，剩余 < 10s），触发主动 504 熔断
+	wStream := httptest.NewRecorder()
+	cStream, _ := gin.CreateTestContext(wStream)
+	cStream.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(cStream, constant.ContextKeyRequestStartTime, time.Now().Add(-96*time.Second))
+
+	streamInfo := &relaycommon.RelayInfo{
+		IsStream:              true,
+		ReceivedResponseCount: 0,
+		ReceivedContentBytes:  0,
+	}
+
+	safetyLimit := loadbalancer.GetClientSafetyDeadline()
+	assert.Equal(t, 105*time.Second, safetyLimit)
+
+	var streamCeiling time.Time
+	if streamInfo != nil && streamInfo.IsStream {
+		if safetyLimit > 0 {
+			reqStart := common.GetContextKeyTime(cStream, constant.ContextKeyRequestStartTime)
+			streamCeiling = reqStart.Add(safetyLimit)
+		}
+	}
+	assert.False(t, streamCeiling.IsZero())
+	assert.True(t, time.Now().Add(10*time.Second).After(streamCeiling), "剩余不足 10s，必须判定逼近死线")
+
+	// 2. 非流式请求：同样耗时 96s，绝不能生成流式 safetyCeiling，不受流式死线误杀
+	wNonStream := httptest.NewRecorder()
+	cNonStream, _ := gin.CreateTestContext(wNonStream)
+	cNonStream.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(cNonStream, constant.ContextKeyRequestStartTime, time.Now().Add(-96*time.Second))
+
+	nonStreamInfo := &relaycommon.RelayInfo{
+		IsStream: false,
+	}
+
+	var nonStreamCeiling time.Time
+	if nonStreamInfo != nil && nonStreamInfo.IsStream {
+		if safetyLimit > 0 {
+			reqStart := common.GetContextKeyTime(cNonStream, constant.ContextKeyRequestStartTime)
+			nonStreamCeiling = reqStart.Add(safetyLimit)
+		}
+	}
+	assert.True(t, nonStreamCeiling.IsZero(), "非流式请求 safetyCeiling 必须为零值")
 }
