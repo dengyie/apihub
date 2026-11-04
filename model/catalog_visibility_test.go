@@ -10,7 +10,7 @@ import (
 func resetCatalogVisibilityTestTables(t *testing.T) {
 	t.Helper()
 	InvalidateCatalogMetadataCache()
-	require.NoError(t, DB.AutoMigrate(&Model{}))
+	require.NoError(t, DB.AutoMigrate(&Model{}, &Option{}, &Vendor{}))
 	require.NoError(t, DB.Exec("DELETE FROM models").Error)
 	t.Cleanup(func() {
 		InvalidateCatalogMetadataCache()
@@ -65,4 +65,14 @@ func TestCatalogMetadataCacheAndInvalidate(t *testing.T) {
 	// Invalidate cache: fresh DB value must be seen
 	InvalidateCatalogMetadataCache()
 	assert.Empty(t, GetCatalogHiddenModels([]string{"cached-model"}))
+
+	// Model.Insert invalidates cache
+	newRow := &Model{ModelName: "new-hidden-model", NameRule: NameRuleExact, Status: 2}
+	require.NoError(t, newRow.Insert())
+	assert.Equal(t, map[string]struct{}{"new-hidden-model": {}}, GetCatalogHiddenModels([]string{"new-hidden-model"}))
+
+	// DeleteModelMetadata invalidates cache
+	_, err := DeleteModelMetadata([]int{newRow.Id}, false, false)
+	require.NoError(t, err)
+	assert.Empty(t, GetCatalogHiddenModels([]string{"new-hidden-model"}))
 }

@@ -316,7 +316,7 @@ func SearchModelsWithChannels(keyword, vendor, status, syncOfficial string, offs
 }
 
 func (mi *Model) Insert() error {
-	return metadataTransaction(func(tx *gorm.DB) error {
+	err := metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
 		}
@@ -329,6 +329,10 @@ func (mi *Model) Insert() error {
 		mi.Status, mi.SyncOfficial = status, syncOfficial
 		return tx.Model(&Model{}).Where("id = ?", mi.Id).Updates(map[string]any{"status": status, "sync_official": syncOfficial}).Error
 	})
+	if err == nil {
+		InvalidateCatalogMetadataCache()
+	}
+	return err
 }
 
 func IsModelNameDuplicated(id int, name string) (bool, error) {
@@ -461,6 +465,7 @@ func DeleteModelMetadata(ids []int, removeFromChannels, removePricing bool) (Mod
 	if err != nil {
 		return ModelDeleteResult{}, err
 	}
+	InvalidateCatalogMetadataCache()
 	if result.UpdatedChannels > 0 {
 		InitChannelCache()
 	}

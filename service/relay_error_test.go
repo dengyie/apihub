@@ -514,6 +514,22 @@ func TestEvaluateRelayFailure(t *testing.T) {
 		assert.False(t, decision.IsPreStreamNonTTFT)
 	})
 
+	t.Run("stream broken due to unsupported parameter sets BreakerNone and bad_request_retry", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		brokenMsg := `loadbalancer: upstream stream broken: reason=handler_stop end_error="Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low." soft_errors=1: Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.`
+		err := types.NewErrorWithStatusCode(&loadbalancer.StreamBrokenError{
+			ChannelID: 10,
+			Reason:    brokenMsg,
+			Err:       errors.New(brokenMsg),
+		}, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		decision := EvaluateRelayFailure(c, err, 2)
+		assert.Equal(t, "retry", decision.PolicyDecision.Action)
+		assert.Equal(t, "bad_request_retry", decision.PolicyDecision.Reason, "参数不支持引发的流中断应当判定为参数自愈重试")
+		assert.Equal(t, BreakerNone, decision.BreakerEffect, "参数不支持引发的流中断绝不应触发熔断")
+		assert.Equal(t, "reasoning_effort", decision.LearnedParam, "应当正确提取待裁剪参数")
+		assert.False(t, decision.IsPreStreamNonTTFT)
+	})
+
 	t.Run("upstream quota exhausted sets BreakerQuota", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		err := types.NewOpenAIError(errors.New("credit insufficient balance: balance=0"), types.ErrorCodeBadResponseStatusCode, http.StatusBadRequest)

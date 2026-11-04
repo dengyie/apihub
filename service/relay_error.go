@@ -56,6 +56,11 @@ func ClassifyBreakerEffect(err *types.NewAPIError) (BreakerEffectType, time.Time
 	if err == nil {
 		return BreakerNone, time.Time{}
 	}
+	// 智能负载：参数不支持（无论是 400、422、5xx 还是流中断 502 返回）属于请求形状问题，
+	// 换渠道/裁剪参数即可自愈，绝不计入渠道故障熔断。
+	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
+		return BreakerNone, time.Time{}
+	}
 	if loadbalancer.IsUpstreamRateLimitError(err) {
 		return BreakerRateLimit, time.Time{}
 	}
@@ -287,6 +292,12 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if types.IsChannelError(err) {
 		return PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}
 	}
+	// 智能负载：参数不支持的错误（无论是 400、422、5xx 还是流中断 502 返回）换渠道重试并自动学习裁剪参数，但不计入熔断。
+	// 必须排在 IsStreamBroken 之前：当流式响应因上游不认 reasoning_effort/thinking 等参数而在流首/流中返回错误帧时，
+	// 错误会被流扫描器包装为 StreamBrokenError；若不在此处优先截获，将被判为 stream_broken 渠道故障并误熔断健康渠道。
+	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
+		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
+	}
 	// 智能负载：空流视同渠道失败，换渠道重试（客户端尚未收到任何数据）
 	if loadbalancer.IsEmptyStream(err) {
 		return PolicyDecision{Action: "retry", Reason: "empty_stream", Source: "loadbalancer"}
@@ -316,11 +327,6 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	}
 	if operation_setting.IsAlwaysSkipRetryCode(err.GetErrorCode()) || operation_setting.IsAlwaysSkipRetryStatusCode(code) {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
-	}
-	// 智能负载：参数不支持的 400 错误换渠道重试（不同上游对参数的支持不同，
-	// 如 "thinking" / "reasoning_effort" 等），但不计入熔断。
-	if _, ok := loadbalancer.IsParamNotSupportedError(err); ok {
-		return PolicyDecision{Action: "retry", Reason: "bad_request_retry", Source: "loadbalancer"}
 	}
 	// 智能负载：思考模式历史消息校验不兼容（如 "The `reasoning_content` in the thinking mode must be passed back"），换渠道重试
 	if loadbalancer.IsThinkingModeHistoryError(err) {

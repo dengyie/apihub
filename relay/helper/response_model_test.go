@@ -31,6 +31,11 @@ func TestRewriteResponseModelBytes(t *testing.T) {
 	// No model field -> unchanged
 	noModel := []byte(`{"id":"chatcmpl-1","choices":[]}`)
 	assert.Equal(t, string(noModel), string(RewriteResponseModelBytes(info, noModel)))
+
+	// Empty model field -> patched to OriginModelName
+	emptyModel := []byte(`{"id":"chatcmpl-1","model":"","choices":[]}`)
+	expectedEmptyPatched := `{"id":"chatcmpl-1","model":"qwen3.8-flash","choices":[]}`
+	assert.JSONEq(t, expectedEmptyPatched, string(RewriteResponseModelBytes(info, emptyModel)))
 }
 
 func TestRewriteResponseModelString(t *testing.T) {
@@ -41,6 +46,9 @@ func TestRewriteResponseModelString(t *testing.T) {
 	frame := `{"id":"chatcmpl-1","model":"qwen3.8-27b-free","choices":[{"delta":{"content":"hi"}}]}`
 	expected := `{"id":"chatcmpl-1","model":"qwen3.8-flash","choices":[{"delta":{"content":"hi"}}]}`
 	assert.JSONEq(t, expected, RewriteResponseModelString(info, frame))
+
+	emptyModelFrame := `{"id":"chatcmpl-1","model":"","choices":[{"delta":{"content":"hi"}}]}`
+	assert.JSONEq(t, expected, RewriteResponseModelString(info, emptyModelFrame))
 
 	// Nil info or empty OriginModelName
 	assert.Equal(t, frame, RewriteResponseModelString(nil, frame))

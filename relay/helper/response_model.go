@@ -14,7 +14,7 @@ func RewriteResponseModelBytes(info *relaycommon.RelayInfo, payload []byte) []by
 		return payload
 	}
 	modelNode := gjson.GetBytes(payload, "model")
-	if !modelNode.Exists() || modelNode.Str == "" || modelNode.Str == info.OriginModelName {
+	if !modelNode.Exists() || modelNode.Str == info.OriginModelName {
 		return payload
 	}
 	if patched, err := sjson.SetBytes(payload, "model", info.OriginModelName); err == nil {
@@ -30,7 +30,7 @@ func RewriteResponseModelString(info *relaycommon.RelayInfo, data string) string
 		return data
 	}
 	modelNode := gjson.Get(data, "model")
-	if !modelNode.Exists() || modelNode.Str == "" || modelNode.Str == info.OriginModelName {
+	if !modelNode.Exists() || modelNode.Str == info.OriginModelName {
 		return data
 	}
 	if patched, err := sjson.Set(data, "model", info.OriginModelName); err == nil {
