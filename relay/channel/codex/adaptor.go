@@ -181,11 +181,17 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	req.Set("Authorization", "Bearer "+accessToken)
 	req.Set("chatgpt-account-id", accountID)
 
+	if req.Get("User-Agent") == "" {
+		req.Set("User-Agent", "codex-cli/0.44.0")
+	}
 	if req.Get("OpenAI-Beta") == "" {
 		req.Set("OpenAI-Beta", "responses=experimental")
 	}
 	if req.Get("originator") == "" {
 		req.Set("originator", "codex_cli_rs")
+	}
+	if req.Get("X-Codex-Beta-Features") == "" {
+		req.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 	}
 
 	// chatgpt.com/backend-api/codex/responses is strict about Content-Type.

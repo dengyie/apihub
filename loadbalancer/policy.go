@@ -20,9 +20,14 @@ const DefaultRequestTimeoutMs = 180000
 // 同时 30s 仍远小于 105s 客户端安全死线，超时后仍留得下换渠道重试的窗口。
 const DefaultTTFTTimeoutMs = 30000
 
-// DefaultHeaderTimeoutMs 默认上游 HTTP 响应头等待超时（毫秒）。
-// 上游建立连接后，必须在此时间内返回 HTTP 状态行与响应头。
-// 避免本地号池死锁或上游反代无响应时长时间挂死请求。
+// DefaultHeaderTimeoutMs 已废弃：响应头闸门未配置时改为跟随 TTFT 预期。
+//
+// 曾固定为 15s，但它与 TTFT 取 min 之后就成了实际生效的首字闸门：线上把
+// ttft_timeout_ms 配成 100s 的运维意图被这个未配置的默认值静默压回 15s，
+// 13 万 token 的长上下文请求被成批判成「响应头等待超时」换渠道，还会连带
+// 喂给熔断器把健康渠道判死。响应头等待本就是首字等待的一部分
+// （stream_scanner 的 TTFT 定时器会扣减已消耗的响应头时间），因此它不该比
+// 运维显式配置的首字预期更短。保留常量只为外部引用兼容，内部不再使用。
 const DefaultHeaderTimeoutMs = 15000
 
 // DefaultClientSafetyDeadlineMs 默认下游客户端安全死线（毫秒）。
@@ -202,7 +207,7 @@ type ChannelPolicy struct {
 
 	// HeaderTimeoutMs 上游 HTTP 响应头等待超时（毫秒）。
 	// 若超过此时长上游未返回响应头，判定为 Header 等待超时，快速熔断并触发换渠道重试。
-	// 0 表示未设置（按 DefaultHeaderTimeoutMs 与 TTFTTimeoutMs 动态取较小值）。
+	// 0 表示未设置：跟随该渠道生效的 TTFTTimeoutMs（见 ResolveHeaderTimeout）。
 	HeaderTimeoutMs int64 `yaml:"header_timeout_ms"`
 
 	// Breaker 熔断器参数
@@ -219,8 +224,12 @@ type ChannelPolicy struct {
 }
 
 // ResolveHeaderTimeout 返回生效的 HTTP 响应头等待超时。
-// 取 HeaderTimeoutMs 与 TTFTTimeoutMs 中的较小者（未配置时回退到默认值），
-// 确保 Header 等待既能快速熔断，又绝不超过该渠道的 TTFT 预期。
+//
+// HeaderTimeoutMs 显式配置时以它为上限，但绝不超过该渠道的 TTFT 预期；
+// 未配置时直接跟随 TTFT。响应头等待是首字等待的前半段——不少上游直到第一个
+// token 就绪才发响应头，用一个固定的小默认值会让显式配置的 TTFT 形同虚设
+// （线上 ttft_timeout_ms 配了 100s，实际闸门仍是 15s，长上下文请求成批被误判
+// 超时，还连带把健康渠道喂给熔断器）。
 func (cp ChannelPolicy) ResolveHeaderTimeout() time.Duration {
 	ttft := cp.TTFTTimeoutMs
 	if ttft <= 0 {
@@ -228,7 +237,7 @@ func (cp ChannelPolicy) ResolveHeaderTimeout() time.Duration {
 	}
 	header := cp.HeaderTimeoutMs
 	if header <= 0 {
-		header = int64(DefaultHeaderTimeoutMs)
+		header = ttft
 	}
 	if ttft < header {
 		header = ttft
@@ -374,7 +383,50 @@ func GetChannelMaxInflight(channelID int) int {
 	return 0
 }
 
+// ChannelTimeouts 渠道在数据库里配置的超时（毫秒）。0 表示未配置、跟随 YAML。
+type ChannelTimeouts struct {
+	// TTFTTimeoutMs 流式首字超时。
+	TTFTTimeoutMs int
+	// HeaderTimeoutMs 上游响应头等待超时。
+	HeaderTimeoutMs int
+}
+
+// ChannelTimeoutsProvider 动态提供渠道超时配置的函数签名。
+// 与 ChannelMaxInflightProvider 同样用函数值注册，避免 loadbalancer <-> model 循环依赖。
+type ChannelTimeoutsProvider func(channelID int) ChannelTimeouts
+
+var (
+	channelTimeoutsProviderMu sync.RWMutex
+	channelTimeoutsProvider   ChannelTimeoutsProvider
+)
+
+// SetChannelTimeoutsProvider 注册渠道动态超时提供器。传 nil 注销。
+func SetChannelTimeoutsProvider(fn ChannelTimeoutsProvider) {
+	channelTimeoutsProviderMu.Lock()
+	defer channelTimeoutsProviderMu.Unlock()
+	channelTimeoutsProvider = fn
+}
+
+// GetChannelTimeouts 返回渠道在数据库里配置的超时；未注册或未配置时返回零值。
+func GetChannelTimeouts(channelID int) ChannelTimeouts {
+	channelTimeoutsProviderMu.RLock()
+	fn := channelTimeoutsProvider
+	channelTimeoutsProviderMu.RUnlock()
+	if fn == nil || channelID <= 0 {
+		return ChannelTimeouts{}
+	}
+	return fn(channelID)
+}
+
 // Resolve 将渠道级策略与默认策略合并，返回生效的完整策略
+//
+// 优先级（高 -> 低）：
+//  1. 渠道在管理面板配置的 setting（ttft_timeout_ms / header_timeout_ms）
+//  2. loadbalancer.yaml 的 channels[id]
+//  3. loadbalancer.yaml 的 default
+//
+// 动态值必须是最高的那一层，否则「在后台改首字超时」对已经写进 YAML 的渠道
+// 完全不起作用——而那恰恰是最需要单独调的渠道。0 表示未配置，逐字段回退。
 func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	if p == nil || !p.Enabled {
 		return ChannelPolicy{}
@@ -382,11 +434,18 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	// 动态渠道设置优先于静态配置文件：渠道在 UI / 数据库中设置的 MaxInflight
 	// 享有最高优先级，0 或未配置时回退到 loadbalancer.yaml 中的 channels[id] 或 default。
 	dynamicMaxInflight := GetChannelMaxInflight(channelID)
+	dynamicTimeouts := GetChannelTimeouts(channelID)
 	cp, ok := p.Channels[channelID]
 	if !ok {
 		resolved := p.Default
 		if dynamicMaxInflight > 0 {
 			resolved.MaxInflight = dynamicMaxInflight
+		}
+		if dynamicTimeouts.TTFTTimeoutMs > 0 {
+			resolved.TTFTTimeoutMs = int64(dynamicTimeouts.TTFTTimeoutMs)
+		}
+		if dynamicTimeouts.HeaderTimeoutMs > 0 {
+			resolved.HeaderTimeoutMs = int64(dynamicTimeouts.HeaderTimeoutMs)
 		}
 		return resolved
 	}
@@ -403,6 +462,13 @@ func (p *Policy) Resolve(channelID int) ChannelPolicy {
 	}
 	if cp.HeaderTimeoutMs != 0 {
 		resolved.HeaderTimeoutMs = cp.HeaderTimeoutMs
+	}
+	// 动态值最后应用：它是 UI 上改出来的，要能盖过 YAML 里 channels[id] 的静态值。
+	if dynamicTimeouts.TTFTTimeoutMs > 0 {
+		resolved.TTFTTimeoutMs = int64(dynamicTimeouts.TTFTTimeoutMs)
+	}
+	if dynamicTimeouts.HeaderTimeoutMs > 0 {
+		resolved.HeaderTimeoutMs = int64(dynamicTimeouts.HeaderTimeoutMs)
 	}
 	if cp.Breaker.FailureThreshold != 0 {
 		resolved.Breaker.FailureThreshold = cp.Breaker.FailureThreshold

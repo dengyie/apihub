@@ -461,6 +461,8 @@ export const FIELD_PLACEHOLDERS = {
   GROUP: 'Please Select user groups that can access this channel.',
   MODEL_MAPPING: '{"request_model": "actual_model"}',
   MAX_INFLIGHT: '0',
+  TTFT_TIMEOUT_MS: 'Inherit (e.g. 30000)',
+  HEADER_TIMEOUT_MS: 'Inherit (e.g. 15000)',
   TEST_MODEL: 'Model to use for testing',
   TAG: 'Optional tag for grouping channels',
   REMARK: 'Optional notes about this channel',
@@ -483,6 +485,10 @@ export const FIELD_DESCRIPTIONS = {
   WEIGHT: 'Used for load balancing. Higher weight = more requests',
   MAX_INFLIGHT:
     'Maximum concurrent requests allowed for this channel. 0 or empty uses global default.',
+  TTFT_TIMEOUT_MS:
+    'Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. When set, it overrides the YAML value for this channel.',
+  HEADER_TIMEOUT_MS:
+    'Upstream response-header timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. The effective value is the smaller of this and the first-token timeout.',
   TEST_MODEL: 'Model to use when testing channel connectivity',
   AUTO_BAN: 'Automatically disable channel on repeated failures',
   STATUS_CODE_MAPPING: 'Map response status codes (JSON format)',

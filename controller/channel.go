@@ -299,6 +299,7 @@ func buildFetchModelsHeaders(channel *model.Channel, key string) (http.Header, e
 		headers.Set("User-Agent", "codex-cli/0.44.0")
 		headers.Set("originator", "codex_cli_rs")
 		headers.Set("OpenAI-Beta", "responses=experimental")
+		headers.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 	}
 
 	if err := applyFetchModelsHeaderOverrides(channel, key, headers); err != nil {

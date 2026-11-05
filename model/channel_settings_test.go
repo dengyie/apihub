@@ -207,3 +207,16 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelTimeoutsProviderMemoryCacheGuard(t *testing.T) {
+	prevCache := common.MemoryCacheEnabled
+	defer func() {
+		common.MemoryCacheEnabled = prevCache
+	}()
+
+	// 与 MaxInflight 同一条守卫：关闭内存缓存时提供器必须直接返回零值，
+	// 严禁在请求热路径上穿透查库。
+	common.MemoryCacheEnabled = false
+	assert.Equal(t, loadbalancer.ChannelTimeouts{}, loadbalancer.GetChannelTimeouts(99999),
+		"MemoryCacheEnabled 为 false 时必须立即返回零值，不能查库")
+}

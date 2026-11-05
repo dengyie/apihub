@@ -25,6 +25,21 @@ func init() {
 		}
 		return 0
 	})
+	// 首字 / 响应头超时同理：管理面板里配的值优先于 loadbalancer.yaml。
+	loadbalancer.SetChannelTimeoutsProvider(func(channelID int) loadbalancer.ChannelTimeouts {
+		if !common.MemoryCacheEnabled {
+			return loadbalancer.ChannelTimeouts{}
+		}
+		ch, err := CacheGetChannel(channelID)
+		if err != nil || ch == nil {
+			return loadbalancer.ChannelTimeouts{}
+		}
+		setting := ch.GetSetting()
+		return loadbalancer.ChannelTimeouts{
+			TTFTTimeoutMs:   setting.TTFTTimeoutMs,
+			HeaderTimeoutMs: setting.HeaderTimeoutMs,
+		}
+	})
 }
 
 var group2model2channels map[string]map[string][]int // enabled channel

@@ -68,6 +68,9 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 		if originator := c.Request.Header.Get("originator"); originator != "" {
 			req.Set("originator", originator)
 		}
+		if codexBeta := c.Request.Header.Get("X-Codex-Beta-Features"); codexBeta != "" {
+			req.Set("X-Codex-Beta-Features", codexBeta)
+		}
 	}
 }
 
@@ -373,6 +376,9 @@ func applyChannelTestHeaders(c *gin.Context, info *common.RelayInfo, req *http.R
 		}
 		if req.Header.Get("Accept") == "" {
 			req.Header.Set("Accept", "text/event-stream")
+		}
+		if req.Header.Get("X-Codex-Beta-Features") == "" {
+			req.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 		}
 	}
 }

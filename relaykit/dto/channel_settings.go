@@ -68,6 +68,47 @@ type ChannelSettings struct {
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
 	// MaxInflight 单渠道最大并发请求数。0 或未配置表示继承全局默认配置。
 	MaxInflight int `json:"max_inflight,omitempty"`
+	// TTFTTimeoutMs 流式首字超时（毫秒）。0 或未配置表示继承
+	// loadbalancer.yaml 的 channels[id].ttft_timeout_ms / default.ttft_timeout_ms。
+	// 非 0 时优先于 YAML —— 与 MaxInflight 同一套「数据库动态值优先」的优先级。
+	TTFTTimeoutMs int `json:"ttft_timeout_ms,omitempty"`
+	// HeaderTimeoutMs 上游响应头等待超时（毫秒）。0 或未配置表示继承 YAML。
+	// 生效值取 min(HeaderTimeoutMs, TTFTTimeoutMs)：只配 TTFT 会把响应头闸门
+	// 一起压到 TTFT 以下，这正是「首字更快失败」想要的效果。
+	HeaderTimeoutMs int `json:"header_timeout_ms,omitempty"`
+}
+
+// 渠道级超时的合法区间。0 单独表示「继承全局」，不参与区间校验。
+const (
+	// MinChannelTimeoutMs 低于 100ms 的值只可能是把秒写成了毫秒，
+	// 而它会让整条渠道在正常请求上持续超时。
+	MinChannelTimeoutMs = 100
+	// MaxChannelTimeoutMs 上限 30 分钟：再大就等于关闭首字闸门，
+	// 应该显式去改 YAML 的 enabled，而不是填一个天文数字。
+	MaxChannelTimeoutMs = 1_800_000
+)
+
+// ValidateTimeouts 校验渠道级超时设置。0 表示继承，合法。
+func (s *ChannelSettings) ValidateTimeouts() error {
+	if s == nil {
+		return nil
+	}
+	check := func(name string, value int) error {
+		if value == 0 {
+			return nil
+		}
+		if value < MinChannelTimeoutMs || value > MaxChannelTimeoutMs {
+			return fmt.Errorf(
+				"%s must be between %d and %d milliseconds (0 means inherit), got %d",
+				name, MinChannelTimeoutMs, MaxChannelTimeoutMs, value,
+			)
+		}
+		return nil
+	}
+	if err := check("ttft_timeout_ms", s.TTFTTimeoutMs); err != nil {
+		return err
+	}
+	return check("header_timeout_ms", s.HeaderTimeoutMs)
 }
 
 // BindsTaskPlugin reports whether the channel is bound to the task plugin,

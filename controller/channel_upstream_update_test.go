@@ -534,12 +534,13 @@ func TestBuildFetchModelsHeaders_CodexChannel(t *testing.T) {
 		Name:    "Codex-zzzcoding",
 	}
 
-	headers, err := buildFetchModelsHeaders(channel, channel.Key)
-	require.NoError(t, err)
-	require.Equal(t, "codex-cli/0.44.0", headers.Get("User-Agent"))
-	require.Equal(t, "codex_cli_rs", headers.Get("originator"))
-	require.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
-	require.Equal(t, "Bearer sk-codex-test", headers.Get("Authorization"))
+		headers, err := buildFetchModelsHeaders(channel, channel.Key)
+		require.NoError(t, err)
+		require.Equal(t, "codex-cli/0.44.0", headers.Get("User-Agent"))
+		require.Equal(t, "codex_cli_rs", headers.Get("originator"))
+		require.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+		require.Equal(t, "remote_compaction_v2", headers.Get("X-Codex-Beta-Features"))
+		require.Equal(t, "Bearer sk-codex-test", headers.Get("Authorization"))
 }
 
 func TestIntersectModelNames(t *testing.T) {

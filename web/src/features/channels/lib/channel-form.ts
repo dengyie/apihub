@@ -270,6 +270,8 @@ export const channelFormSchema = z
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
     max_inflight: z.number().int().min(0).optional(),
+    ttft_timeout_ms: z.number().int().min(0).max(1800000).optional(),
+    header_timeout_ms: z.number().int().min(0).max(1800000).optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
@@ -462,6 +464,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
   max_inflight: undefined,
+  ttft_timeout_ms: undefined,
+  header_timeout_ms: undefined,
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
   system_prompt: '',
@@ -507,6 +511,8 @@ export function transformChannelToFormDefaults(
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
     max_inflight: undefined as number | undefined,
+    ttft_timeout_ms: undefined as number | undefined,
+    header_timeout_ms: undefined as number | undefined,
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
     system_prompt: '',
@@ -524,6 +530,8 @@ export function transformChannelToFormDefaults(
         typeof parsed.max_inflight === 'number' && parsed.max_inflight > 0
           ? parsed.max_inflight
           : undefined
+      const positiveOrUndefined = (value: unknown) =>
+        typeof value === 'number' && value > 0 ? value : undefined
       extraSettings = {
         task_plugin_key: parsed.task_plugin_key || '',
         task_extend_plugin_keys: readTaskExtendPluginKeys(channel.type, parsed),
@@ -533,6 +541,8 @@ export function transformChannelToFormDefaults(
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         max_inflight: maxInflight,
+        ttft_timeout_ms: positiveOrUndefined(parsed.ttft_timeout_ms),
+        header_timeout_ms: positiveOrUndefined(parsed.header_timeout_ms),
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
@@ -693,6 +703,15 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     formData.max_inflight > 0
   ) {
     settingObj.max_inflight = formData.max_inflight
+  }
+
+  // 首字 / 响应头超时：0 或空表示继承全局（YAML / default），不写入 setting，
+  // 避免未配置的渠道每保存一次就凭空多出两个键。
+  for (const key of ['ttft_timeout_ms', 'header_timeout_ms'] as const) {
+    const value = formData[key]
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      settingObj[key] = value
+    }
   }
 
   return JSON.stringify(settingObj)

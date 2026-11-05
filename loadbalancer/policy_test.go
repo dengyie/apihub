@@ -33,17 +33,26 @@ func TestPolicyClientSafetyDeadlineAndEmptyStreamBudget(t *testing.T) {
 }
 
 func TestChannelPolicyResolveHeaderTimeout(t *testing.T) {
-	// 1. TTFT 较大 (60s)，HeaderTimeout 未配置：默认取 DefaultHeaderTimeoutMs (15s)
+	// 1. TTFT 较大 (60s)，HeaderTimeout 未配置：跟随 TTFT，不再固定 15s。
+	//    线上就是这条：ttft_timeout_ms=100s 被未配置的 15s header 门限压回 15s。
 	cp1 := ChannelPolicy{TTFTTimeoutMs: 60000}
-	assert.Equal(t, 15*time.Second, cp1.ResolveHeaderTimeout())
+	assert.Equal(t, 60*time.Second, cp1.ResolveHeaderTimeout())
 
-	// 2. TTFT 较小 (8s)，HeaderTimeout 未配置：取 min(15s, 8s) = 8s
+	// 1b. 连 TTFT 都没配：回落到内置默认 TTFT，而不是另有一个更小的默认值。
+	assert.Equal(t, time.Duration(DefaultTTFTTimeoutMs)*time.Millisecond,
+		ChannelPolicy{}.ResolveHeaderTimeout())
+
+	// 2. TTFT 较小 (8s)，HeaderTimeout 未配置：跟随 8s
 	cp2 := ChannelPolicy{TTFTTimeoutMs: 8000}
 	assert.Equal(t, 8*time.Second, cp2.ResolveHeaderTimeout())
 
 	// 3. 显式配置 HeaderTimeoutMs (3s) 优先
 	cp3 := ChannelPolicy{TTFTTimeoutMs: 60000, HeaderTimeoutMs: 3000}
 	assert.Equal(t, 3*time.Second, cp3.ResolveHeaderTimeout())
+
+	// 3b. 显式 HeaderTimeoutMs 大于 TTFT 时仍以 TTFT 为上限
+	cp4 := ChannelPolicy{TTFTTimeoutMs: 20000, HeaderTimeoutMs: 90000}
+	assert.Equal(t, 20*time.Second, cp4.ResolveHeaderTimeout())
 
 	// 4. Policy Resolve 合并覆盖
 	policy := Policy{

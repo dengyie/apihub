@@ -92,6 +92,10 @@ export interface ChannelSettings {
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
   max_inflight?: number
+  /** 流式首字超时（毫秒）。0/未配置 = 继承 loadbalancer.yaml。 */
+  ttft_timeout_ms?: number
+  /** 上游响应头等待超时（毫秒）。0/未配置 = 继承 YAML。 */
+  header_timeout_ms?: number
 }
 
 export interface ChannelOtherSettings {

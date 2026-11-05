@@ -486,51 +486,55 @@ func TestApplyChannelTestHeaders(t *testing.T) {
 
 		applyChannelTestHeaders(c, info, req)
 
-		assert.Equal(t, "codex-cli/0.44.0", req.Header.Get("User-Agent"))
-		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
-		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
-		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
-	})
+			assert.Equal(t, "codex-cli/0.44.0", req.Header.Get("User-Agent"))
+			assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+			assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+			assert.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+			assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+		})
 
-	t.Run("Non-codex test does not set originator", func(t *testing.T) {
-		recorder := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(recorder)
-		c.Set(channelTestUserAgentKey, "claude-code/2.0.0")
+		t.Run("Non-codex test does not set originator", func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Set(channelTestUserAgentKey, "claude-code/2.0.0")
 
-		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
-		require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+			require.NoError(t, err)
 
-		info := &relaycommon.RelayInfo{
-			IsChannelTest: true,
-			RelayMode:     relayconstant.RelayModeChatCompletions,
-		}
+			info := &relaycommon.RelayInfo{
+				IsChannelTest: true,
+				RelayMode:     relayconstant.RelayModeChatCompletions,
+			}
 
-		applyChannelTestHeaders(c, info, req)
+			applyChannelTestHeaders(c, info, req)
 
-		assert.Equal(t, "claude-code/2.0.0", req.Header.Get("User-Agent"))
-		assert.Empty(t, req.Header.Get("originator"))
-		assert.Empty(t, req.Header.Get("OpenAI-Beta"))
-	})
-}
-
-func TestSetupApiRequestHeader_ForwardsCodexHeaders(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	c.Request.Header.Set("Content-Type", "application/json")
-	c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
-	c.Request.Header.Set("originator", "codex_cli_rs")
-
-	info := &relaycommon.RelayInfo{
-		IsStream:  true,
-		RelayMode: relayconstant.RelayModeResponses,
+			assert.Equal(t, "claude-code/2.0.0", req.Header.Get("User-Agent"))
+			assert.Empty(t, req.Header.Get("originator"))
+			assert.Empty(t, req.Header.Get("OpenAI-Beta"))
+			assert.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
+		})
 	}
 
-	headers := http.Header{}
-	SetupApiRequestHeader(info, c, &headers)
+	func TestSetupApiRequestHeader_ForwardsCodexHeaders(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
+		c.Request.Header.Set("originator", "codex_cli_rs")
+		c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 
-	assert.Equal(t, "application/json", headers.Get("Content-Type"))
-	assert.Equal(t, "text/event-stream", headers.Get("Accept"))
-	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
-	assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
+		info := &relaycommon.RelayInfo{
+			IsStream:  true,
+			RelayMode: relayconstant.RelayModeResponses,
+		}
+
+		headers := http.Header{}
+		SetupApiRequestHeader(info, c, &headers)
+
+		assert.Equal(t, "application/json", headers.Get("Content-Type"))
+		assert.Equal(t, "text/event-stream", headers.Get("Accept"))
+		assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+		assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
+		assert.Equal(t, "remote_compaction_v2", headers.Get("X-Codex-Beta-Features"))
 }

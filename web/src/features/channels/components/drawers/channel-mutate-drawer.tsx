@@ -2243,6 +2243,62 @@ export function ChannelMutateDrawer({
             </FormItem>
           )}
         />
+
+        <FormField
+          control={form.control}
+          name='ttft_timeout_ms'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('TTFT Timeout (ms)')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min='0'
+                  step='1000'
+                  placeholder={t(FIELD_PLACEHOLDERS.TTFT_TIMEOUT_MS)}
+                  value={field.value ?? ''}
+                  onChange={(e) =>
+                    field.onChange(
+                      e.target.value === '' ? undefined : Number(e.target.value)
+                    )
+                  }
+                />
+              </FormControl>
+              <FormDescription>
+                {t(FIELD_DESCRIPTIONS.TTFT_TIMEOUT_MS)}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='header_timeout_ms'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Header Timeout (ms)')}</FormLabel>
+              <FormControl>
+                <Input
+                  type='number'
+                  min='0'
+                  step='1000'
+                  placeholder={t(FIELD_PLACEHOLDERS.HEADER_TIMEOUT_MS)}
+                  value={field.value ?? ''}
+                  onChange={(e) =>
+                    field.onChange(
+                      e.target.value === '' ? undefined : Number(e.target.value)
+                    )
+                  }
+                />
+              </FormControl>
+              <FormDescription>
+                {t(FIELD_DESCRIPTIONS.HEADER_TIMEOUT_MS)}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
 
       <FormField

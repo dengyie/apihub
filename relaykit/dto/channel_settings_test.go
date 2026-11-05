@@ -732,3 +732,43 @@ func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool_loss_policy")
 }
+
+func TestChannelSettingsTimeoutsJSONRoundTripAndValidation(t *testing.T) {
+	// 未配置时不写键：未配置的渠道保存后不应凭空多出两个键。
+	encoded, err := json.Marshal(ChannelSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "ttft_timeout_ms")
+	assert.NotContains(t, string(encoded), "header_timeout_ms")
+
+	configured := ChannelSettings{TTFTTimeoutMs: 30000, HeaderTimeoutMs: 15000}
+	encoded, err = json.Marshal(configured)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"ttft_timeout_ms":30000`)
+	assert.Contains(t, string(encoded), `"header_timeout_ms":15000`)
+
+	var decoded ChannelSettings
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, 30000, decoded.TTFTTimeoutMs)
+	assert.Equal(t, 15000, decoded.HeaderTimeoutMs)
+
+	// 0 表示继承，合法；nil 接收者也合法。
+	require.NoError(t, (*ChannelSettings)(nil).ValidateTimeouts())
+	require.NoError(t, (&ChannelSettings{}).ValidateTimeouts())
+	require.NoError(t, configured.ValidateTimeouts())
+	require.NoError(t, (&ChannelSettings{TTFTTimeoutMs: MinChannelTimeoutMs}).ValidateTimeouts())
+	require.NoError(t, (&ChannelSettings{HeaderTimeoutMs: MaxChannelTimeoutMs}).ValidateTimeouts())
+
+	invalid := map[string]ChannelSettings{
+		"ttft below minimum":   {TTFTTimeoutMs: MinChannelTimeoutMs - 1},
+		"ttft above maximum":   {TTFTTimeoutMs: MaxChannelTimeoutMs + 1},
+		"ttft negative":        {TTFTTimeoutMs: -1},
+		"header below minimum": {HeaderTimeoutMs: MinChannelTimeoutMs - 1},
+		"header above maximum": {HeaderTimeoutMs: MaxChannelTimeoutMs + 1},
+	}
+	for name, setting := range invalid {
+		t.Run(name, func(t *testing.T) {
+			err := setting.ValidateTimeouts()
+			require.Error(t, err)
+		})
+	}
+}
