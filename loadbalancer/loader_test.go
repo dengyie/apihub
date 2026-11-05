@@ -124,7 +124,7 @@ func TestReloadOmittedFieldsRetainDefaultPolicyValues(t *testing.T) {
 		// 验证未显式配置的字段保留 DefaultPolicy 的默认值，杜绝 0 值使熔断器静默瘫痪
 		assert.Equal(t, 2, policy.MaxRetries)
 		assert.Equal(t, 50, policy.Default.MaxInflight)
-		assert.Equal(t, int64(15000), policy.Default.TTFTTimeoutMs)
+		assert.Equal(t, int64(DefaultTTFTTimeoutMs), policy.Default.TTFTTimeoutMs)
 		assert.Equal(t, 5, policy.Default.Breaker.FailureThreshold)
 		assert.Equal(t, int64(60), policy.Default.Breaker.CooldownSeconds)
 	})

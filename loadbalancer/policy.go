@@ -14,7 +14,11 @@ import (
 const DefaultRequestTimeoutMs = 180000
 
 // DefaultTTFTTimeoutMs 默认首字超时（毫秒）。
-const DefaultTTFTTimeoutMs = 15000
+//
+// 30s 而非更短：实测流式请求里首字超过 15s 的占 12.5%、超过 30s 的占 3.7%
+// （长思考模型居多），15s 会把这些本来能出字的请求判成慢请求并换渠道。
+// 同时 30s 仍远小于 105s 客户端安全死线，超时后仍留得下换渠道重试的窗口。
+const DefaultTTFTTimeoutMs = 30000
 
 // DefaultHeaderTimeoutMs 默认上游 HTTP 响应头等待超时（毫秒）。
 // 上游建立连接后，必须在此时间内返回 HTTP 状态行与响应头。
@@ -444,7 +448,7 @@ func DefaultPolicy() *Policy {
 		MaxRetries: 2,     // 默认失败后换渠道重试 2 次
 		Default: ChannelPolicy{
 			MaxInflight:   50,
-			TTFTTimeoutMs: 15000,
+			TTFTTimeoutMs: DefaultTTFTTimeoutMs,
 			Breaker: BreakerPolicy{
 				FailureThreshold:         5,
 				CooldownSeconds:          60,

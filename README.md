@@ -52,7 +52,7 @@ enabled: true
 
 default:
   max_inflight: 50        # per-channel concurrent request ceiling
-  ttft_timeout_ms: 15000  # stream with no first token after this = slow
+  ttft_timeout_ms: 30000  # stream with no first token after this = slow
   breaker:
     failure_threshold: 5
     cooldown_seconds: 60
