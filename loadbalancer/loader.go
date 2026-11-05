@@ -141,6 +141,13 @@ func reload() error {
 	if p.Channels == nil {
 		p.Channels = make(map[int]ChannelPolicy)
 	}
+	for id, cp := range p.Channels {
+		b := cp.Breaker
+		if b.ModelExhaustionThreshold != 0 || b.ModelExhaustionWindowSeconds != 0 || b.ModelExhaustionAlertCooldownSeconds != 0 ||
+			b.AutoDisableCorroborationThreshold != 0 || b.AutoDisableCorroborationWindowSeconds != 0 {
+			log.Printf("loadbalancer: channels.%d.breaker model_exhaustion_*/auto_disable_corroboration_* ignored, set them under default.breaker", id)
+		}
+	}
 	currentPolicy.Store(&p)
 	if policyLoadFailed.Swap(false) {
 		// 这一行是运维能拿到的唯一信号：自动禁用从「永久静默失效」回到了

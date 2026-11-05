@@ -307,6 +307,10 @@ type BreakerPolicy struct {
 	// 确认无误后改一行 YAML 打开，5 秒内热加载生效无需重启；发现不对改回
 	// false 同样即时。这既是灰度手段也是回滚手段。
 	PerModel *bool `yaml:"per_model"`
+	// 以下五个字段（model_exhaustion_* 与 auto_disable_corroboration_*）是全局
+	// 阈值，只读 default.breaker；写在 channels.<id>.breaker 下不生效，热加载时
+	// 会打一行 ignored 日志提醒。
+
 	// ModelExhaustionThreshold 「该模型选不出任何渠道」在窗口内累计到此次数
 	// 即输出一条 MODEL_EXHAUSTION 告警行。0 = 关闭该检测。
 	//
