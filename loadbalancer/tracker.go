@@ -447,6 +447,11 @@ func (h *RequestHandle) Done() bool {
 	return h != nil && h.done.Load()
 }
 
+// Start 返回本次尝试开始的时间。
+func (h *RequestHandle) Start() time.Time {
+	return h.start
+}
+
 // MarkFirstByte 记录首字到达时间
 func (h *RequestHandle) MarkFirstByte() {
 	if h.firstByte.IsZero() {

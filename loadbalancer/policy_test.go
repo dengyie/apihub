@@ -76,3 +76,36 @@ func TestChannelPolicyResolveHeaderTimeout(t *testing.T) {
 	resolvedDefault := policy.Resolve(999)
 	assert.Equal(t, 10*time.Second, resolvedDefault.ResolveHeaderTimeout())
 }
+
+func TestPolicyAttemptFirstTokenDeadline(t *testing.T) {
+	// 线上配置：ttft 100s、客户端安全死线 105s。
+	safety := 105000
+	policy := Policy{
+		Enabled:                true,
+		Default:                ChannelPolicy{TTFTTimeoutMs: 100000},
+		Channels:               map[int]ChannelPolicy{7: {TTFTTimeoutMs: 30000}},
+		ClientSafetyDeadlineMs: &safety,
+	}
+	reqStart := time.Unix(1_000_000, 0)
+	at := func(d time.Duration) time.Time { return reqStart.Add(d) }
+
+	// 还能重试时，单次尝试最多占剩余安全窗口的一半：一个慢渠道不能吃光整次请求。
+	assert.Equal(t, at(52500*time.Millisecond), policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, true))
+	// 第二次尝试继续对半分剩余窗口，而不是拿到从请求开始算起只剩几百毫秒的首字窗口。
+	assert.Equal(t, at(78750*time.Millisecond), policy.AttemptFirstTokenDeadline(1, reqStart, at(52500*time.Millisecond), true))
+	// 对半后留给下一次的不足 MinRetryWindow：这一次就是最后机会，用满剩余窗口。
+	assert.Equal(t, at(105*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(90*time.Second), true))
+	// 不能再重试：首字窗口只受渠道 TTFT 与安全死线约束。
+	assert.Equal(t, at(100*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, false))
+	assert.Equal(t, at(105*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(40*time.Second), false))
+	// TTFT 从本次尝试开始计时：前面的失败尝试不占用本次的首字预算。
+	assert.Equal(t, at(70*time.Second), policy.AttemptFirstTokenDeadline(7, reqStart, at(40*time.Second), true))
+
+	// 关闭安全死线：只剩渠道 TTFT。
+	disabled := 0
+	policy.ClientSafetyDeadlineMs = &disabled
+	assert.Equal(t, at(140*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(40*time.Second), true))
+
+	// 未启用智能负载（无 TTFT）：不设首字截止。
+	assert.True(t, (&Policy{}).AttemptFirstTokenDeadline(1, reqStart, reqStart, true).IsZero())
+}

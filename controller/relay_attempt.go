@@ -264,10 +264,9 @@ func executeRelayAttempt(
 		if channelTTFT <= 0 {
 			channelTTFT = loadbalancer.DefaultTTFTTimeoutMs
 		}
-		// 预算可行性感知：如果延展后的时间将超出客户端安全死线（或剩余时间不足最小重试窗口 10s），
+		// 预算可行性感知：如果延展后的时间将超出客户端安全死线（或剩余时间不足 MinRetryWindow），
 		// 必须停止盲目重试，抢在客户端掐线前主动返回标准的 504 错误。
-		minRetryWindow := 10 * time.Second
-		isBudgetFeasible := safetyCeiling.IsZero() || time.Now().Add(minRetryWindow).Before(safetyCeiling)
+		isBudgetFeasible := safetyCeiling.IsZero() || time.Now().Add(loadbalancer.MinRetryWindow).Before(safetyCeiling)
 
 		if loadbalancer.IsTTFTTimeout(newAPIError) &&
 			c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
@@ -330,9 +329,9 @@ func executeRelayAttempt(
 		return relayAttemptOutcome{Success: false, WillRetry: false, Err: newAPIError}
 	}
 
-	// 动态预算可行性兜底检查：即便 decision 决定 retry，若当前时间已逼近 safetyCeiling（剩余小于 10s），
+	// 动态预算可行性兜底检查：即便 decision 决定 retry，若当前时间已逼近 safetyCeiling（剩余小于 MinRetryWindow），
 	// 则下一次尝试注定无法在客户端断开前完成，应在此时主动刹车并返回 504，避免客户端掐线报 EPIPE。
-	if !safetyCeiling.IsZero() && time.Now().Add(10*time.Second).After(safetyCeiling) {
+	if !safetyCeiling.IsZero() && time.Now().Add(loadbalancer.MinRetryWindow).After(safetyCeiling) {
 		newAPIError = types.NewErrorWithStatusCode(
 			&loadbalancer.EmptyStreamBudgetError{ChannelID: channel.Id},
 			types.ErrorCodeEmptyStreamBudgetExhausted,

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
@@ -1076,4 +1077,35 @@ func TestStreamScannerHandler_ClientAbortDoesNotResetBreakerCounters(t *testing.
 	availAfter, reason := loadbalancer.GlobalTracker().IsAvailable(testChannelID, testModel)
 	assert.False(t, availAfter, "历史失败未被洗白，第 3 次硬故障必须如期触发熔断")
 	assert.Equal(t, loadbalancer.ReasonCircuitOpen, reason)
+}
+
+func TestFirstTokenDeadline_PerAttemptWithinSafetyWindow(t *testing.T) {
+	prevPolicy := loadbalancer.GetPolicy()
+	prevRetry := common.RetryTimes
+	t.Cleanup(func() {
+		loadbalancer.SetPolicy(prevPolicy)
+		common.RetryTimes = prevRetry
+	})
+	safety := 105000
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled:                true,
+		Default:                loadbalancer.ChannelPolicy{TTFTTimeoutMs: 100000},
+		ClientSafetyDeadlineMs: &safety,
+	})
+	common.RetryTimes = 3
+
+	c, _, info := setupStreamTest(t, strings.NewReader(""))
+	info.ChannelMeta.ChannelId = 9
+	// 前面的尝试已用掉 60s：新一轮尝试的首字窗口按本次尝试计时，并只占剩余窗口的一半。
+	info.StartTime = time.Now().Add(-60 * time.Second)
+	attempt := loadbalancer.GlobalTracker().Begin(9, "m")
+	defer attempt.EndCancelled()
+	c.Set(loadbalancer.ContextKeyAttempt, attempt)
+
+	deadline := FirstTokenDeadline(c, info)
+	assert.WithinDuration(t, attempt.Start().Add(22500*time.Millisecond), deadline, time.Second)
+
+	// 最后一次尝试用满到安全死线。
+	info.RetryIndex = common.RetryTimes
+	assert.WithinDuration(t, info.StartTime.Add(105*time.Second), FirstTokenDeadline(c, info), time.Second)
 }

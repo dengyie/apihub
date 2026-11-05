@@ -683,13 +683,20 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	var cancelHeaderTimeout context.CancelFunc
 	var headerTimer *time.Timer
 	var headerTimedOut atomic.Bool
+	channelID := 0
+	if info != nil {
+		channelID = info.GetChannelID()
+	}
+	var headerTimeout time.Duration
 	if loadbalancer.Enabled() {
-		channelID := 0
-		if info != nil {
-			channelID = info.GetChannelID()
+		headerTimeout = loadbalancer.GetPolicy().Resolve(channelID).ResolveHeaderTimeout()
+		// 流式的响应头等待是首字等待的前半段，必须收在同一个截止时刻内，
+		// 否则响应头闸门会按完整 TTFT 再等一轮，吃掉留给换渠道重试的窗口。
+		if info != nil && info.IsStream {
+			if deadline := helper.FirstTokenDeadline(c, info); !deadline.IsZero() {
+				headerTimeout = min(headerTimeout, max(time.Until(deadline), helper.MinFirstTokenWait))
+			}
 		}
-		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
-		headerTimeout := lbPolicy.ResolveHeaderTimeout()
 		if headerTimeout > 0 {
 			var headerCtx context.Context
 			headerCtx, cancelHeaderTimeout = context.WithCancel(req.Context())
@@ -712,12 +719,6 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		// 若 Header 等待超时且下游客户端仍在线，判定为确凿的 TTFT/Header 超时错误，触发透明换渠道重试。
 		// 严禁使用松散字符串匹配，严格以 headerTimedOut 定时器触发为准。
 		if headerTimedOut.Load() && c != nil && c.Request != nil && c.Request.Context().Err() == nil {
-			channelID := 0
-			if info != nil {
-				channelID = info.GetChannelID()
-			}
-			lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
-			headerTimeout := lbPolicy.ResolveHeaderTimeout()
 			logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%v），触发换渠道重试", channelID, headerTimeout))
 			return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: headerTimeout.Milliseconds()}
 		}
@@ -746,12 +747,6 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		if cancelHeaderTimeout != nil {
 			cancelHeaderTimeout()
 		}
-		channelID := 0
-		if info != nil {
-			channelID = info.GetChannelID()
-		}
-		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
-		headerTimeout := lbPolicy.ResolveHeaderTimeout()
 		logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%v，并发到达），触发换渠道重试", channelID, headerTimeout))
 		return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: headerTimeout.Milliseconds()}
 	}

@@ -84,6 +84,30 @@ func ExtendWriteDeadline(c *gin.Context) {
 	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
 
+// MinFirstTokenWait 截止时刻已过时仍给上游的最短首字等待，避免定时器立即触发
+// 把刚建立、首包已在路上的连接掐掉。
+const MinFirstTokenWait = 500 * time.Millisecond
+
+// FirstTokenDeadline 返回本次尝试按流式读取时等待首字（含响应头）的截止时刻；
+// 零值表示不设截止。响应头闸门与首字定时器共用它，二者不会各算各的。
+func FirstTokenDeadline(c *gin.Context, info *relaycommon.RelayInfo) time.Time {
+	if info == nil || !loadbalancer.Enabled() {
+		return time.Time{}
+	}
+	// 尝试句柄由 controller 在每轮尝试开始时创建；缺失时（如 Responses
+	// WebSocket 中继）退回请求开始时间，即单次尝试的语义。
+	attemptStart := info.StartTime
+	if c != nil {
+		if attempt, ok := c.Get(loadbalancer.ContextKeyAttempt); ok {
+			if h, ok := attempt.(*loadbalancer.RequestHandle); ok && h != nil {
+				attemptStart = h.Start()
+			}
+		}
+	}
+	return loadbalancer.GetPolicy().AttemptFirstTokenDeadline(
+		info.GetChannelID(), info.StartTime, attemptStart, info.RetryIndex < common.RetryTimes)
+}
+
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) error {
 
 	if resp == nil || dataHandler == nil {
@@ -118,29 +142,21 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		// GetOriginModelName 返回空串 → 自动落到渠道级，等价 v29.10。
 		lbHandle = loadbalancer.GlobalTracker().Begin(channelID, info.GetOriginModelName())
 	}
-	lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
 	var lbTTFTSlow atomic.Bool
 	var lbFirstByteOnce sync.Once
 
-	// 首字超时检测：超时未收到首字则中断上游连接。
-	// 动态扣减响应头建立及等待已消耗的时间，使整段首字等待严格收敛在 TTFTTimeoutMs 之内。
+	// 首字超时检测：截止前未收到首字则中断上游连接。截止时刻与响应头闸门同源
+	// （见 FirstTokenDeadline），已花在等响应头上的时间自然计入。
 	var ttftTimer *time.Timer
-	if loadbalancer.Enabled() && lbPolicy.TTFTTimeoutMs > 0 {
-		remainingTTFT := time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
-		if info != nil && !info.StartTime.IsZero() {
-			elapsed := time.Since(info.StartTime)
-			if elapsed < remainingTTFT {
-				remainingTTFT -= elapsed
-			} else {
-				remainingTTFT = 500 * time.Millisecond
-			}
-		}
-		ttftTimer = time.AfterFunc(remainingTTFT, func() {
+	var ttftWindowMs int64
+	if deadline := FirstTokenDeadline(c, info); !deadline.IsZero() {
+		ttftWindowMs = deadline.Sub(lbHandle.Start()).Milliseconds()
+		ttftTimer = time.AfterFunc(max(time.Until(deadline), MinFirstTokenWait), func() {
 			lbFirstByteOnce.Do(func() {
 				// 仍未收到首字：标记为慢，中断连接触发流结束
 				lbTTFTSlow.Store(true)
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout,
-					&loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs})
+					&loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: ttftWindowMs})
 				if resp.Body != nil {
 					_ = resp.Body.Close()
 				}
@@ -481,7 +497,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 首字节前 TTFT 超时：返回可透明重试的错误（此时客户端尚未收到任何数据）
 	if lbTTFTSlow.Load() {
-		return &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs}
+		return &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: ttftWindowMs}
 	}
 	// 空流：上游正常结束但一个有效内容块都没发，视同渠道失败。
 	// 此时客户端尚未收到任何数据，返回可透明重试的错误，触发换渠道重试，

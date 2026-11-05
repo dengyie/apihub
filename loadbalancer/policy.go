@@ -120,6 +120,40 @@ func (p *Policy) ClientSafetyDeadline() time.Duration {
 	return time.Duration(*p.ClientSafetyDeadlineMs) * time.Millisecond
 }
 
+// MinRetryWindow 下一次换渠道尝试至少要留出的时间；剩余不足时不再重试。
+const MinRetryWindow = 10 * time.Second
+
+// AttemptFirstTokenDeadline 返回一次流式尝试等待首字（含响应头）的截止时刻；
+// 零值表示不设截止。
+//
+// 首字窗口从本次尝试开始计时，前面失败的尝试不占用它。客户端安全死线是整次
+// 请求共享的上限：还能重试时，本次最多占剩余窗口的一半，保证慢渠道超时后
+// 仍有一次完整的换渠道机会（线上 ttft 100s 对 105s 死线，一次慢渠道就让
+// max_retries 形同虚设）。对半后留给下一次的不足 MinRetryWindow 时，本次
+// 就是最后机会，用满剩余窗口。
+func (p *Policy) AttemptFirstTokenDeadline(channelID int, requestStart, attemptStart time.Time, canRetry bool) time.Time {
+	ttft := p.Resolve(channelID).TTFTTimeoutMs
+	if ttft <= 0 {
+		return time.Time{}
+	}
+	deadline := attemptStart.Add(time.Duration(ttft) * time.Millisecond)
+	safety := p.ClientSafetyDeadline()
+	if safety <= 0 || requestStart.IsZero() {
+		return deadline
+	}
+	ceiling := requestStart.Add(safety)
+	if canRetry {
+		share := attemptStart.Add(ceiling.Sub(attemptStart) / 2)
+		if ceiling.Sub(share) >= MinRetryWindow {
+			ceiling = share
+		}
+	}
+	if deadline.After(ceiling) {
+		return ceiling
+	}
+	return deadline
+}
+
 // GetClientSafetyDeadline 返回当前生效策略的客户端安全死线。
 func GetClientSafetyDeadline() time.Duration {
 	return GetPolicy().ClientSafetyDeadline()
