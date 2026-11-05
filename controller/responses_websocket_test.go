@@ -1040,9 +1040,8 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(*websocket.Conn, *http.Request) {})
-			oldRetries := common.RetryTimes()
 			common.SetRetryTimesOverride(1)
-			t.Cleanup(func() { common.SetRetryTimesOverride(oldRetries) })
+			t.Cleanup(func() { common.SetRetryTimesOverride(-1) })
 			var attempts atomic.Int64
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")

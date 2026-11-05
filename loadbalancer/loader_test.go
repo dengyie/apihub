@@ -57,7 +57,7 @@ func TestPolicyReliableRecoversAfterSuccessfulReload(t *testing.T) {
 func TestReloadRetryTimesPrecedence(t *testing.T) {
 	restore := MarkPolicyLoadFailedForTest(false)
 	defer restore()
-	prev := common.RetryTimes()
+	prev := common.RetryTimesOption()
 	t.Cleanup(func() {
 		common.SetRetryTimesOverride(-1)
 		common.SetRetryTimesOption(prev)

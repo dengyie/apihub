@@ -180,8 +180,12 @@ func RetryTimes() int {
 	if n := retryTimesOverride.Load(); n != noRetryTimesOverride {
 		return int(n)
 	}
-	return int(retryTimesOption.Load())
+	return RetryTimesOption()
 }
+
+// RetryTimesOption 返回 options 表来源的重试次数，不含 yaml 覆盖。
+// 回写 OptionMap / 默认值时必须读它：读合成值会把 max_retries 当成 options 表的值持久化。
+func RetryTimesOption() int { return int(retryTimesOption.Load()) }
 
 // SetRetryTimesOption 写入 options 表来源的重试次数。
 func SetRetryTimesOption(n int) { retryTimesOption.Store(int64(n)) }

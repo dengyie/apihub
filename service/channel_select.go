@@ -542,12 +542,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	var channel *model.Channel
 	var selectGroup string
 
-	// 智能负载：过载/熔断/本请求已用过的渠道自动跳过。
-	// 候选集合整轮只解析一次；每跳过一个渠道就多排除一个，候选耗尽时
-	// pick 返回 nil，循环因此在至多「渠道总数」轮内自然终止，无需人为
-	// 设定尝试上限（过小的上限会让大渠道池因个别过载渠道过早中断）。
-	// 降级渠道（连续慢 3 次）与过载渠道（达到并发上限）都先记为备选：
-	// 过载只是瞬时并发占满，降级是已证实的持续慢，所以过载兜底优先。
+	// 本请求已用过的渠道先并入排除集；过载/熔断/降级的跳过与兜底由 pickAvailable 负责。
 	used := retry.Ctx.GetStringSlice("use_channel")
 
 	// 使用本地工作副本，绝不调用 retry.IncreaseRetry() 污染外层请求的重试计数与重试预算

@@ -123,14 +123,22 @@ func (p *Policy) ClientSafetyDeadline() time.Duration {
 // MinRetryWindow 下一次换渠道尝试至少要留出的时间；剩余不足时不再重试。
 const MinRetryWindow = 10 * time.Second
 
+// retryReserve 还能重试时，从客户端安全死线里为下一次尝试预留的时间。
+//
+// 必须严格大于 MinRetryWindow：controller 的预算闸门要求「此刻 + MinRetryWindow」
+// 早于死线，首字定时器触发后再走到闸门已过去若干毫秒，只预留 MinRetryWindow
+// 的话闸门恒不通过，预留形同虚设。取两倍：线上单次成功流式的首字 95% 在 20s
+// 内，换上的渠道扣掉选路与建连开销后仍大概率来得及出首字。
+const retryReserve = 2 * MinRetryWindow
+
 // AttemptFirstTokenDeadline 返回一次流式尝试等待首字（含响应头）的截止时刻；
 // 零值表示不设截止。
 //
 // 首字窗口从本次尝试开始计时，前面失败的尝试不占用它。客户端安全死线是整次
-// 请求共享的上限：还能重试时，本次最多占剩余窗口的一半，保证慢渠道超时后
-// 仍有一次完整的换渠道机会（线上 ttft 100s 对 105s 死线，一次慢渠道就让
-// max_retries 形同虚设）。对半后留给下一次的不足 MinRetryWindow 时，本次
-// 就是最后机会，用满剩余窗口。
+// 请求共享的上限：还能重试时，本次截止在死线前 retryReserve，保证慢渠道超时
+// 后仍有一次换渠道机会，同时把等待尽量留给慢而正常的上游（线上 ttft 100s 对
+// 105s 死线：首轮可等 85s，单次成功里首字晚于 85s 的约 0.2%）。预留之后本次
+// 剩不到 MinRetryWindow 时，本次就是最后机会，用满到死线。
 func (p *Policy) AttemptFirstTokenDeadline(channelID int, requestStart, attemptStart time.Time, canRetry bool) time.Time {
 	ttft := p.Resolve(channelID).TTFTTimeoutMs
 	if ttft <= 0 {
@@ -142,11 +150,8 @@ func (p *Policy) AttemptFirstTokenDeadline(channelID int, requestStart, attemptS
 		return deadline
 	}
 	ceiling := requestStart.Add(safety)
-	if canRetry {
-		share := attemptStart.Add(ceiling.Sub(attemptStart) / 2)
-		if ceiling.Sub(share) >= MinRetryWindow {
-			ceiling = share
-		}
+	if reserved := ceiling.Add(-retryReserve); canRetry && reserved.Sub(attemptStart) >= MinRetryWindow {
+		ceiling = reserved
 	}
 	if deadline.After(ceiling) {
 		return ceiling

@@ -204,7 +204,6 @@ func setupChannelSelectTest(t *testing.T) *gorm.DB {
 
 	originalDB := model.DB
 	originalMemoryCacheEnabled := common.MemoryCacheEnabled
-	originalRetryTimes := common.RetryTimes()
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
 	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
@@ -226,7 +225,7 @@ func setupChannelSelectTest(t *testing.T) *gorm.DB {
 	t.Cleanup(func() {
 		model.DB = originalDB
 		common.MemoryCacheEnabled = originalMemoryCacheEnabled
-		common.SetRetryTimesOverride(originalRetryTimes)
+		common.SetRetryTimesOverride(-1)
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
 		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
 		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
@@ -343,7 +342,7 @@ func TestSelectChannelForRequestPrefersOverloadedOverDegradedFallback(t *testing
 	t.Cleanup(func() { inflight.End(false, false) })
 	// Three consecutive slow attempts mark the channel as degraded: usable, but
 	// only as a last resort.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		tr.Begin(degradedID, testModel).End(true, false)
 	}
 	require.True(t, tr.IsDegraded(degradedID, testModel))
@@ -606,7 +605,7 @@ func TestSelectRetryChannelFallsBackWhenPoolIsBusy(t *testing.T) {
 			h.End(false, false)
 		}
 	})
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		tr.Begin(slowID, testModel).End(true, false)
 	}
 	require.True(t, tr.IsDegraded(slowID, testModel))

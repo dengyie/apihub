@@ -89,12 +89,19 @@ func TestPolicyAttemptFirstTokenDeadline(t *testing.T) {
 	reqStart := time.Unix(1_000_000, 0)
 	at := func(d time.Duration) time.Time { return reqStart.Add(d) }
 
-	// 还能重试时，单次尝试最多占剩余安全窗口的一半：一个慢渠道不能吃光整次请求。
-	assert.Equal(t, at(52500*time.Millisecond), policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, true))
-	// 第二次尝试继续对半分剩余窗口，而不是拿到从请求开始算起只剩几百毫秒的首字窗口。
-	assert.Equal(t, at(78750*time.Millisecond), policy.AttemptFirstTokenDeadline(1, reqStart, at(52500*time.Millisecond), true))
-	// 对半后留给下一次的不足 MinRetryWindow：这一次就是最后机会，用满剩余窗口。
-	assert.Equal(t, at(105*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(90*time.Second), true))
+	// 还能重试时，本次截止在安全死线前 retryReserve：慢而正常的渠道（线上首字 60s 级）
+	// 首轮就能等到，不被提前掐断换渠道。
+	assert.Equal(t, at(85*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, true))
+	assert.True(t, policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, true).After(at(60*time.Second)))
+	// 后续尝试同样截止在预留点，而不是拿到从请求开始算起只剩几百毫秒的首字窗口。
+	assert.Equal(t, at(85*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(52500*time.Millisecond), true))
+	// 预留后本次恰好还剩 MinRetryWindow：仍按预留截止。
+	assert.Equal(t, at(85*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(75*time.Second), true))
+	// 预留后本次不足 MinRetryWindow：这一次就是最后机会，用满剩余窗口。
+	assert.Equal(t, at(105*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(80*time.Second), true))
+	// 首轮在预留点超时后，controller 的预算闸门必须放行换渠道（预留严格大于 MinRetryWindow）。
+	timedOut := policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, true)
+	assert.True(t, timedOut.Add(MinRetryWindow).Before(at(105*time.Second)))
 	// 不能再重试：首字窗口只受渠道 TTFT 与安全死线约束。
 	assert.Equal(t, at(100*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, reqStart, false))
 	assert.Equal(t, at(105*time.Second), policy.AttemptFirstTokenDeadline(1, reqStart, at(40*time.Second), false))
