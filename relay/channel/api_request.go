@@ -24,7 +24,6 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -414,15 +413,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
-	// 部分上游（如 ioll.pp.ua）要求 x-opencode-session 头做会话路由，缺失时报 400。
-	// 客户端没带时按 user_id 生成确定性 UUID，保证同一用户的请求有会话粘性。
-	// 客户端已带的保留原值。
-	if req.Header.Get("x-opencode-session") == "" {
-		userID := c.GetInt("id")
-		// UUID v5（SHA-1）：相同 user_id 总是生成相同 UUID，不同用户不同
-		sessionUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("opencode-session-%d", userID)))
-		req.Header.Set("x-opencode-session", sessionUUID.String())
-	}
+	applyUpstreamClientFingerprint(c, info, req)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		if types.IsClientAbortedError(err) || loadbalancer.IsTTFTTimeout(err) {

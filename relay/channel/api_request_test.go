@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/loadbalancer"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	relayconstant "github.com/dengyie/apihub/relay/constant"
@@ -537,4 +538,104 @@ func TestApplyChannelTestHeaders(t *testing.T) {
 		assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
 		assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
 		assert.Equal(t, "remote_compaction_v2", headers.Get("X-Codex-Beta-Features"))
+}
+
+func TestApplyUpstreamClientFingerprint(t *testing.T) {
+	codexClient := map[string]string{
+		"User-Agent":        "codex_cli_rs/0.80.0 (Linux 6.8; x86_64) xterm",
+		"originator":        "codex_cli_rs",
+		"session_id":        "client-session",
+		"X-Codex-Window-Id": "w1",
+	}
+	tests := []struct {
+		name           string
+		channelType    int
+		model          string
+		clientHeaders  map[string]string
+		upstreamPreset map[string]string
+		want           map[string]string
+		wantAbsent     []string
+	}{
+		{
+			name:          "codex client headers pass through even without affinity",
+			channelType:   constant.ChannelTypeOpenAI,
+			model:         "gpt-5.5",
+			clientHeaders: codexClient,
+			want: map[string]string{
+				"User-Agent":        codexClient["User-Agent"],
+				"originator":        "codex_cli_rs",
+				"session_id":        "client-session",
+				"X-Codex-Window-Id": "w1",
+				"OpenAI-Beta":       codexFingerprintOpenAIBeta,
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:          "non codex client gets default codex fingerprint",
+			channelType:   constant.ChannelTypeOpenAI,
+			model:         "GPT-5.6-luna",
+			clientHeaders: map[string]string{"User-Agent": "OpenAI/Python 1.99.0"},
+			want: map[string]string{
+				"User-Agent":  codexFingerprintUserAgent,
+				"originator":  codexFingerprintOriginator,
+				"OpenAI-Beta": codexFingerprintOpenAIBeta,
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:           "header override keeps priority",
+			channelType:    constant.ChannelTypeOpenAI,
+			model:          "gpt-5.5",
+			clientHeaders:  codexClient,
+			upstreamPreset: map[string]string{"User-Agent": "override-ua"},
+			want:           map[string]string{"User-Agent": "override-ua", "originator": "codex_cli_rs"},
+		},
+		{
+			name:          "non gpt model keeps opencode session only",
+			channelType:   constant.ChannelTypeOpenAI,
+			model:         "claude-sonnet-4",
+			clientHeaders: codexClient,
+			wantAbsent:    []string{"originator", "session_id", "User-Agent"},
+		},
+		{
+			name:          "gpt model on non openai channel keeps opencode session only",
+			channelType:   constant.ChannelTypeAnthropic,
+			model:         "gpt-5.5",
+			clientHeaders: codexClient,
+			wantAbsent:    []string{"originator", "session_id"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Set("id", 7)
+			for k, v := range tt.clientHeaders {
+				c.Request.Header.Set(k, v)
+			}
+			req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/responses", nil)
+			require.NoError(t, err)
+			for k, v := range tt.upstreamPreset {
+				req.Header.Set(k, v)
+			}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: tt.model,
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: tt.channelType},
+			}
+
+			applyUpstreamClientFingerprint(c, info, req)
+
+			for k, v := range tt.want {
+				assert.Equal(t, v, req.Header.Get(k), k)
+			}
+			for _, k := range tt.wantAbsent {
+				assert.Empty(t, req.Header.Get(k), k)
+			}
+			if usesCodexFingerprint(info) {
+				assert.NotEmpty(t, req.Header.Get("session_id"))
+			} else {
+				assert.NotEmpty(t, req.Header.Get("x-opencode-session"))
+			}
+		})
+	}
 }

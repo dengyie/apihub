@@ -70,6 +70,12 @@ var codexCliPassThroughHeaders = []string{
 	"X-OpenAI-Internal-Codex-Responses-Lite",
 }
 
+// CodexCliPassThroughHeaders returns a copy of the request headers that make up
+// a Codex CLI client fingerprint.
+func CodexCliPassThroughHeaders() []string {
+	return append([]string(nil), codexCliPassThroughHeaders...)
+}
+
 var claudeCliPassThroughHeaders = []string{
 	"X-Stainless-Arch",
 	"X-Stainless-Lang",
