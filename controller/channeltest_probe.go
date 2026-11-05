@@ -106,9 +106,6 @@ var probeResponsesUserPrompts = []string{
 	`Write an efficient SQL query for PostgreSQL to find the top 5 customers with the highest total order amount in the last 30 days from a schema with "customers" and "orders" tables.`,
 }
 
-// probeResponsesInput 构造 Responses 端点的拟真 Input：仅 user 轮次，
-// 系统指令走顶层 instructions（见上）。
-
 // probeResponsesPromptCacheKey Responses 探针请求体的 prompt_cache_key。
 // 部分 Codex 系上游（如渠道 #154）强制要求该字段，缺失直接 400
 // invalid_responses_request（"prompt_cache_key is required"）。探针没有多轮
@@ -116,6 +113,9 @@ var probeResponsesUserPrompts = []string{
 // 值 = uuid.NewSHA1(uuid.NameSpaceOID, []byte("apihub-channel-test-probe"))，
 // 按 Responses API 字段类型以 JSON 字符串字面量编码。
 var probeResponsesPromptCacheKey = json.RawMessage(`"0ad70646-1fe3-5da7-80c0-2b5efa27ced9"`)
+
+// probeResponsesInput 构造 Responses 端点的拟真 Input：仅 user 轮次，
+// 系统指令走顶层 instructions（见上）。
 func probeResponsesInput() json.RawMessage {
 	payload := []map[string]any{
 		{"role": "user", "content": probePick(probeResponsesUserPrompts)},

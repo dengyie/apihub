@@ -75,7 +75,7 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 
 const clientHeaderPlaceholderPrefix = "{client_header:"
 
-// opencodeSessionPlaceholder 展开为按用户生成的确定性会话 UUID（同 userSessionUUID）。
+// opencodeSessionPlaceholder 展开为按用户生成的确定性会话 UUID（同 UserSessionUUID）。
 // 用途：OpenCode 系上游（如 ioll.pp.ua）要求 x-opencode-session 做会话路由，而
 // gpt-* 指纹请求默认不带该头；需要它的渠道在 header_override 里配一条
 // {"x-opencode-session": "{opencode_session}"} 即可恢复按用户粘性的会话路由。
