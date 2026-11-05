@@ -97,11 +97,20 @@ func probeResponsesInstructions() json.RawMessage {
 	return raw
 }
 
+// probeResponsesUserPrompts 针对 Responses 端点（Codex / GPT-6 等思考型模型）的拟真 prompt。
+// 保持真实编程提问语境（>=120字），任务单一明确，避免长篇故障排查引发长达数十秒的深度发散推理。
+var probeResponsesUserPrompts = []string{
+	`Please implement a thread-safe in-memory cache in Go with Set(key, value, ttl) and Get(key) methods. Include mutex synchronization and simple background expiration cleanup. Return concise, working code.`,
+	`Write a Python function that parses a list of semver strings (e.g. "1.2.3", "v2.0.1-rc1") and returns them properly sorted in ascending semantic order. Provide a clean implementation without external libraries.`,
+	`Write a clean TypeScript utility function to deep clone an arbitrary JSON-compatible object without using structuredClone or JSON.parse. Handle primitives, arrays, and nested objects properly.`,
+	`Write an efficient SQL query for PostgreSQL to find the top 5 customers with the highest total order amount in the last 30 days from a schema with "customers" and "orders" tables.`,
+}
+
 // probeResponsesInput 构造 Responses 端点的拟真 Input：仅 user 轮次，
 // 系统指令走顶层 instructions（见上）。
 func probeResponsesInput() json.RawMessage {
 	payload := []map[string]any{
-		{"role": "user", "content": probePick(probeUserPrompts)},
+		{"role": "user", "content": probePick(probeResponsesUserPrompts)},
 	}
 	raw, _ := json.Marshal(payload)
 	return raw

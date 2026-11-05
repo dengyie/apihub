@@ -18,9 +18,10 @@ const probeMinUserRunes = 120 // 生产 prompt p10 = 163 token，取一个保守
 
 func TestProbePromptsAreRealistic(t *testing.T) {
 	require.NotEmpty(t, probeUserPrompts)
+	require.NotEmpty(t, probeResponsesUserPrompts)
 	require.NotEmpty(t, probeSystemPrompts)
-	seen := make(map[string]bool, len(probeUserPrompts))
-	for _, p := range probeUserPrompts {
+	seen := make(map[string]bool, len(probeUserPrompts)+len(probeResponsesUserPrompts))
+	for _, p := range append(probeUserPrompts, probeResponsesUserPrompts...) {
 		trimmed := strings.TrimSpace(p)
 		require.Greater(t, len([]rune(trimmed)), probeMinUserRunes,
 			"探针 user prompt 过短，会被上游反测活识别: %q", p)
@@ -44,6 +45,12 @@ func TestProbePromptsRotate(t *testing.T) {
 		uniq[probePick(probeUserPrompts)] = true
 	}
 	assert.Greater(t, len(uniq), 1, "40 次抽取只命中一条 prompt，随机化失效")
+
+	uniqResponses := make(map[string]bool)
+	for range 40 {
+		uniqResponses[probePick(probeResponsesUserPrompts)] = true
+	}
+	assert.Greater(t, len(uniqResponses), 1, "40 次 Responses prompt 抽取只命中一条 prompt，随机化失效")
 }
 
 func TestProbeMaxTokensForModel(t *testing.T) {
