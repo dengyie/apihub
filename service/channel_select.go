@@ -534,7 +534,17 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				// 保持亲和度与优先级兼顾：若候选池中存在更高优先级的健康可用渠道（例如 AnyRouter/Hiyo 优先级 10，
 				// 而历史请求因故障重试被记录到了兜底优先级 8 或 5 的渠道），绝不能被低优先级渠道永久劫持，
 				// 优先放行高优先级渠道探测/服务！
-				if topPriority, hasTop := candidates.topAvailablePriority(usingGroup); hasTop {
+				//
+				// 但「会话在上游已经沉淀过状态」时不能抢：亲和度绑定的不是一个更快的路由，
+				// 而是上一轮留在那个上游里的东西 —— 加密推理密文、responses 的存储状态、
+				// 工具调用状态（call_id -> 参数）。换渠道不是换个更快的通道，是把那半轮会话丢掉：
+				// 工具调用状态只存在于 origin 上游，新渠道只会回「找不到可消费的工具调用状态」，
+				// 而这条错误没有任何可剥离的等价物（密文还能预检剥离，状态不能）。
+				// 线上成批的该错误就是这么来的：origin #348(priority 9) 每轮都被
+				// #338/#347(priority 10) 抢走，会话在两个渠道间来回漂。
+				// 没有沉淀的会话（首轮、或已过期）照旧走高优先级。
+				_, hasUpstreamState := GetReasoningOriginChannel(c)
+				if topPriority, hasTop := candidates.topAvailablePriority(usingGroup); hasTop && !hasUpstreamState {
 					if preferred.GetPriority() < topPriority {
 						logger.LogDebug(retry.Ctx, fmt.Sprintf("channel affinity: preferred #%d (priority=%d) is lower than available top priority %d, routing to top tier", preferred.Id, preferred.GetPriority(), topPriority))
 						affinitySatisfied = false

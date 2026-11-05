@@ -237,6 +237,100 @@ func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *tes
 	assert.Equal(t, chMid.Id, selected2.Id, "当高优先级渠道熔断不可用时，优雅回退到亲和度渠道 99")
 }
 
+// TestSelectChannelForRequest_UpstreamStateBlocksPriorityPreemption 覆盖工具调用状态
+// 丢失的根因：会话在 origin 渠道上已经沉淀了上游状态（reasoning 密文、responses
+// 存储、call_id -> 参数），此时更高优先级的健康渠道不能把会话抢走。
+//
+// 换渠道在这里不是「换条更快的路」，而是把半轮会话丢掉：工具调用状态只存在
+// origin 上游，新渠道只会回「找不到可消费的工具调用状态」，而这条错误没有
+// 可剥离的等价物。优先级只该决定新会话落在哪，不该改写已有会话的落点。
+func TestSelectChannelForRequest_UpstreamStateBlocksPriorityPreemption(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	origMemCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
+	const modelName = "gpt-6-astra-stateful-test"
+
+	p10 := int64(10)
+	p8 := int64(8)
+	weight := uint(100)
+
+	chHigh := &model.Channel{
+		Id:       154,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-154",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "cpa-anyrouter",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p10,
+	}
+	chOrigin := &model.Channel{
+		Id:       99,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-99",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "stateful-origin",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p8,
+	}
+
+	require.NoError(t, db.Create(chHigh).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: modelName, ChannelId: 154, Enabled: true, Priority: &p10, Weight: weight}).Error)
+	require.NoError(t, db.Create(chOrigin).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: modelName, ChannelId: 99, Enabled: true, Priority: &p8, Weight: weight}).Error)
+
+	rule := operation_setting.ChannelAffinityRule{
+		Name:              "rule-stateful-test",
+		ModelRegex:        []string{fmt.Sprintf("^%s$", modelName)},
+		PathRegex:         []string{"/v1/.*"},
+		KeySources:        []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session-Key"}},
+		IncludeRuleName:   true,
+		IncludeUsingGroup: true,
+		IncludeModelName:  true,
+	}
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	origSetting := *setting
+	setting.Enabled = true
+	setting.SessionMode = "prefer"
+	setting.Rules = append([]operation_setting.ChannelAffinityRule{rule}, origSetting.Rules...)
+	t.Cleanup(func() {
+		*setting = origSetting
+	})
+
+	affinityVal := fmt.Sprintf("sess-stateful-%d", time.Now().UnixNano())
+	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, "default", affinityVal)
+	cache := getChannelAffinityCache()
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, chOrigin.Id, 300*time.Second))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+	// 上一轮就是在这个渠道上完成的：上游已经持有该会话的状态。
+	originCache := getChannelAffinityReasoningOriginCache()
+	require.NoError(t, originCache.SetWithTTL(cacheKeySuffix, chOrigin.Id, time.Minute))
+	t.Cleanup(func() {
+		_, _ = originCache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Request.Header.Set("X-Session-Key", affinityVal)
+
+	selected, selectGroup, err := SelectChannelForRequest(c, modelName, retry)
+	require.Nil(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, "default", selectGroup)
+	assert.Equal(t, chOrigin.Id, selected.Id,
+		"会话在上游已有状态时，更高优先级渠道不得抢占：抢占会丢掉工具调用状态")
+	assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning),
+		"没有漂移就不该剥离密文")
+}
+
 func TestSelectChannelForRequest_PreferredAffinityDoesNotLeakHalfOpenProbesWhenPreempted(t *testing.T) {
 	db := setupChannelSelectTest(t)
 	origMemCache := common.MemoryCacheEnabled
