@@ -36,6 +36,7 @@ func init() {
 // StartSystemMonitor 启动系统监控
 func StartSystemMonitor() {
 	go func() {
+		var prevCPU cpu.TimesStat
 		for {
 			config := GetPerformanceMonitorConfig()
 			if !config.Enabled {
@@ -43,21 +44,21 @@ func StartSystemMonitor() {
 				continue
 			}
 
-			updateSystemStatus()
+			prevCPU = updateSystemStatus(prevCPU)
 			time.Sleep(5 * time.Second)
 		}
 	}()
 }
 
-func updateSystemStatus() {
+// updateSystemStatus 采样一次系统负载，返回本次 CPU 时间供下一轮求差。
+// 首轮 prevCPU 为零值，CPU 读数按开机以来的平均算，下一轮起就是 5 秒窗口。
+func updateSystemStatus(prevCPU cpu.TimesStat) cpu.TimesStat {
 	var status SystemStatus
 
-	// CPU
-	// 注意：cpu.Percent(0, false) 返回自上次调用以来的 CPU 使用率
-	// 如果是第一次调用，可能会返回错误或不准确的值，但在循环中会逐渐正常
-	percents, err := cpu.Percent(0, false)
-	if err == nil && len(percents) > 0 {
-		status.CPUUsage = percents[0]
+	curCPU := prevCPU
+	if times, err := cpu.Times(false); err == nil && len(times) > 0 {
+		curCPU = times[0]
+		status.CPUUsage = cpuBusyPercent(prevCPU, curCPU)
 	}
 
 	// Memory
@@ -73,6 +74,23 @@ func updateSystemStatus() {
 	}
 
 	latestSystemStatus.Store(status)
+	return curCPU
+}
+
+// cpuBusyPercent 返回两次采样之间 CPU 真正在执行指令的时间占比。
+//
+// 只有 user/nice/system/irq/softirq 计为忙碌。iowait 是 CPU 空闲着等 I/O，steal
+// 是宿主机把时间片给了别的虚机，两者都不是本机在干活。gopsutil 的 cpu.Percent
+// 把它们也计为忙碌，于是 NFS 卡死或宿主机超卖时读数顶到 100%，性能保护把所有
+// 中继请求 503 掉——而负载根本不在 CPU 上，拒绝请求卸不掉它。
+func cpuBusyPercent(prev, cur cpu.TimesStat) float64 {
+	busy := (cur.User + cur.Nice + cur.System + cur.Irq + cur.Softirq) -
+		(prev.User + prev.Nice + prev.System + prev.Irq + prev.Softirq)
+	idle := (cur.Idle + cur.Iowait + cur.Steal) - (prev.Idle + prev.Iowait + prev.Steal)
+	if busy+idle <= 0 {
+		return 0
+	}
+	return min(100, max(0, busy/(busy+idle)*100))
 }
 
 // GetSystemStatus 获取当前系统状态
