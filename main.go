@@ -243,6 +243,7 @@ func main() {
 		go common.Monitor()
 		common.SysLog("pprof enabled")
 	}
+	common.StartGoroutineDumpOnSignal()
 
 	err = common.StartPyroScope()
 	if err != nil {

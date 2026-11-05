@@ -1242,6 +1242,17 @@ main() {
 
   need_cmd curl
   need_cmd supervisorctl
+  need_cmd timeout
+
+  # supervisord writes several programs' logs onto the /personal NFS hard mount.
+  # On 2026-11-05 a NAS stall left it in uninterruptible sleep for 12 minutes,
+  # and this script hung on its first supervisorctl call with no message. A
+  # handover cannot work without supervisord, so refuse up front -- nothing has
+  # been touched yet and the serving slot keeps serving. Only exit 124 means "no
+  # answer": status exits 3 whenever a program is stopped, which is normal.
+  local sup_rc=0
+  timeout 20 supervisorctl status >/dev/null 2>&1 || sup_rc=$?
+  (( sup_rc == 124 )) && die "supervisord did not answer within 20s (NFS stall?); nothing was changed, the serving slot is untouched"
 
   # Before the lock, the backup, or the first byte written: ask the uploaded
   # artifact what it is. Nothing on the host has been touched at this point, so a

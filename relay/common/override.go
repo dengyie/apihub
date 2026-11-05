@@ -27,6 +27,10 @@ const (
 	paramOverrideContextAuditRecorder  = "__param_override_audit_recorder"
 )
 
+// hostDirectiveParamOverrideKeys 是由网关自身读取的 param_override 控制键（如 relay/channel/openai
+// 的 AgentRouter reasoning 占位开关），只影响网关行为，绝不能合并进上游请求体。
+var hostDirectiveParamOverrideKeys = []string{"agentrouter_thinking_placeholder"}
+
 var errSourceHeaderNotFound = errors.New("source header does not exist")
 
 var paramOverrideSensitivePathPrefixes = []string{
@@ -803,6 +807,9 @@ func applyOperationsLegacy(jsonData []byte, paramOverride map[string]any, auditR
 
 	result := jsonData
 	for key, value := range paramOverride {
+		if slices.Contains(hostDirectiveParamOverrideKeys, key) {
+			continue
+		}
 		escaped := escapeSjsonLiteralKey(key)
 		next, err := sjson.SetBytes(result, escaped, value)
 		if err != nil {

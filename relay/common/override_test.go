@@ -2523,3 +2523,38 @@ func TestReasoningEffortOverrideIsAuditedWithoutDebugMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"set reasoning.effort = max"}, info.ParamOverrideAudit)
 }
+
+func TestApplyParamOverrideKeepsHostDirectiveKeysOutOfUpstreamBody(t *testing.T) {
+	input := []byte(`{"model":"deepseek-v4-flash","temperature":0.7}`)
+	tests := []struct {
+		name     string
+		override map[string]any
+		expected string
+	}{
+		{
+			name: "legacy mode",
+			override: map[string]any{
+				"agentrouter_thinking_placeholder": true,
+				"temperature":                      0.2,
+			},
+			expected: `{"model":"deepseek-v4-flash","temperature":0.2}`,
+		},
+		{
+			name: "operations mode",
+			override: map[string]any{
+				"agentrouter_thinking_placeholder": "true",
+				"operations": []any{
+					map[string]any{"path": "top_p", "mode": "set", "value": 0.9},
+				},
+			},
+			expected: `{"model":"deepseek-v4-flash","temperature":0.7,"top_p":0.9}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ApplyParamOverride(input, tt.override, nil)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.expected, string(out))
+		})
+	}
+}
