@@ -20,6 +20,8 @@ const (
 	codexFingerprintOriginator = "codex_cli_rs"
 	codexFingerprintUserAgent  = "codex_cli_rs/0.77.0 (Mac OS 26.1.0; arm64) iTerm.app/3.6.5"
 	codexFingerprintOpenAIBeta = "responses=experimental"
+	// 部分上游（如 zzzcoding）缺这个头就以 403 "only allows Codex official clients" 拒绝。
+	codexFingerprintBetaFeatures = "remote_compaction_v2"
 )
 
 // usesCodexFingerprint reports whether the upstream request must look like a Codex CLI request.
@@ -71,6 +73,9 @@ func applyUpstreamClientFingerprint(c *gin.Context, info *common.RelayInfo, req 
 	}
 	if req.Header.Get("OpenAI-Beta") == "" {
 		req.Header.Set("OpenAI-Beta", codexFingerprintOpenAIBeta)
+	}
+	if req.Header.Get("X-Codex-Beta-Features") == "" {
+		req.Header.Set("X-Codex-Beta-Features", codexFingerprintBetaFeatures)
 	}
 	if req.Header.Get("session_id") == "" {
 		req.Header.Set("session_id", userSession)
