@@ -110,7 +110,11 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			}
 			require.True(t, foundResponses, "openai_responses claim must be present")
 			assert.Equal(t, []string{"stream", "sync", "background"}, responsesClaim.Supports)
-			for _, model := range plugin.Meta.Models {
+			models := responsesClaim.Models
+			if len(models) == 0 {
+				models = plugin.Meta.Models
+			}
+			for _, model := range models {
 				binding, claimed := registry.Generation().LookupEndpoint("POST", "/v1/responses", model)
 				require.True(t, claimed, model)
 				assert.Same(t, plugin, binding.Plugin)

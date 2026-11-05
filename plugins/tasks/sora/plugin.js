@@ -4,13 +4,15 @@ export const meta = {
   name: "Sora",
   icon: "Sora.Color",
   description: {
-    en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
-    zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
+    en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix) and compatible Grok video",
+    zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）及兼容的 Grok 视频",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
-  models: ["sora-2", "sora-2-pro"],
+  // Declare compatible video models so host protocol decoding preserves native
+  // reference objects instead of falling back to the generic string-image DTO.
+  models: ["sora-2", "sora-2-pro", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"],
   fetchMode: "per_task",
   // A New API gateway serves /v1/videos as a host protocol, so no URL changes.
   upstreams: ["vendor", "new_api"],
@@ -33,7 +35,7 @@ export const meta = {
       description: { en: "Output video dimensions", zh: "输出视频尺寸" },
     },
   },
-  protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
+  protocols: [{ name: "openai_responses", models: ["sora-2", "sora-2-pro"], supports: ["stream", "sync", "background"] }, "openai_video"],
 };
 
 function trimmed(value) {
