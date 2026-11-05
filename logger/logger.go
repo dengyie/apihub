@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,10 @@ const (
 )
 
 const maxLogCount = 1000000
+
+// defaultLogFileKeep 是 log-dir 下默认保留的 oneapi-*.log 个数（LOG_FILE_KEEP 可改，<=0 不清理）。
+// 每次启动和每满 maxLogCount 行都会新开一个文件，内容与 stdout 相同，不清理会无限堆在本地盘上。
+const defaultLogFileKeep = 20
 
 var logCount atomic.Int64
 var setupLogLock sync.Mutex
@@ -71,7 +76,36 @@ func SetupLogger() {
 			_ = oldFile.Close()
 		}
 		common.LogWriterMu.Unlock()
+
+		if err := pruneLogFiles(*common.LogDir, common.GetEnvOrDefault("LOG_FILE_KEEP", defaultLogFileKeep), logPath); err != nil {
+			common.SysError("failed to prune old log files: " + err.Error())
+		}
 	}
+}
+
+// pruneLogFiles 删除 dir 下最旧的 oneapi-*.log，只留最新的 keep 个；current 永远保留。
+// 文件名里的时间戳是 20060102150405 定长格式，按名字排序即按时间排序。
+func pruneLogFiles(dir string, keep int, current string) error {
+	if keep <= 0 {
+		return nil
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "oneapi-*.log"))
+	if err != nil {
+		return err
+	}
+	files = slices.DeleteFunc(files, func(f string) bool { return f == current })
+	keep-- // current 占一个名额
+	if len(files) <= keep {
+		return nil
+	}
+	slices.Sort(files)
+	var firstErr error
+	for _, f := range files[:len(files)-keep] {
+		if err := os.Remove(f); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func LogInfo(ctx context.Context, msg string) {
