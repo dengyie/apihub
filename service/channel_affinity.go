@@ -881,6 +881,13 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	}
 	key := normalizeChannelAffinityKey(cacheKey)
 
+	// 读取本轮覆盖前的密文来源渠道：存在即说明该会话此前已在上游沉淀过状态（加密
+	// 推理密文、responses store、工具调用 call_id）。与选择侧 GetReasoningOriginChannel
+	// 判定「会话有上游状态」用同一信号源，必须赶在下面 RecordReasoningOriginChannel
+	// 把它覆盖成本轮渠道之前读取，否则「会话早已有状态」这一事实就被本轮抹掉了。
+	prevOriginID, prevOriginFound, _ := getChannelAffinityReasoningOriginCache().Get(key)
+	hadUpstreamState := prevOriginFound && prevOriginID > 0
+
 	// 记录实际产生密文的渠道 ID（用于后续多轮会话检测跨渠道密文不兼容，进行自适应预检脱敏）
 	RecordReasoningOriginChannel(c, channelID)
 
@@ -889,13 +896,23 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	// 防降级保护：如果缓存中已存在更高优先级的可用渠道，且新渠道优先级严格较低，
 	// 说明当前请求是高优先级渠道临时故障/重试而由低优先级渠道兜底成功的。
 	// 此时绝不能将亲和度降级覆盖为低优先级渠道，防止后续会话被永久劫持。
-	if existingChannelID, found, _ := cache.Get(key); found && existingChannelID > 0 && existingChannelID != channelID {
-		existingChannel, _ := model.CacheGetChannel(existingChannelID)
-		newChannel, _ := model.CacheGetChannel(channelID)
-		if existingChannel != nil && newChannel != nil && existingChannel.Status == common.ChannelStatusEnabled {
-			if newChannel.GetPriority() < existingChannel.GetPriority() {
-				// 保留高优先级渠道亲和度，禁止降级覆盖
-				return
+	//
+	// 但会话已沉淀上游状态时例外：亲和性绑定的不是一个更快的路由，而是上一轮留在
+	// 那个上游里的东西 —— 加密推理密文、responses store、工具调用 call_id。本轮兜底
+	// 渠道就是新状态的所在地，把亲和性留在高优先级渠道上，下一轮就会带着兜底渠道的
+	// call_id 打过去，上游只会回「找不到可消费的工具调用状态」（该错误没有可剥离的
+	// 等价物：密文还能按 origin 预检剥离自愈，工具调用状态不能），重试再落回兜底
+	// 渠道，会话剩余每一轮都要先在守卫保下的高优先级渠道上失败一次。与选择侧
+	// 「有沉淀状态不做优先级抢占」同一原则：状态连续性优先于优先级。
+	if !hadUpstreamState {
+		if existingChannelID, found, _ := cache.Get(key); found && existingChannelID > 0 && existingChannelID != channelID {
+			existingChannel, _ := model.CacheGetChannel(existingChannelID)
+			newChannel, _ := model.CacheGetChannel(channelID)
+			if existingChannel != nil && newChannel != nil && existingChannel.Status == common.ChannelStatusEnabled {
+				if newChannel.GetPriority() < existingChannel.GetPriority() {
+					// 保留高优先级渠道亲和度，禁止降级覆盖
+					return
+				}
 			}
 		}
 	}

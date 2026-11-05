@@ -27,7 +27,6 @@ func TestRecordChannelAffinity_AntiDowngradeProtection(t *testing.T) {
 	})
 	p10 := int64(10)
 	p8 := int64(8)
-	p5 := int64(5)
 
 	chHigh := &model.Channel{
 		Id:       154,
@@ -41,16 +40,9 @@ func TestRecordChannelAffinity_AntiDowngradeProtection(t *testing.T) {
 		Status:   common.ChannelStatusEnabled,
 		Priority: &p8,
 	}
-	chLow := &model.Channel{
-		Id:       216,
-		Name:     "fallback-low",
-		Status:   common.ChannelStatusEnabled,
-		Priority: &p5,
-	}
 
 	model.CacheUpdateChannel(chHigh)
 	model.CacheUpdateChannel(chMid)
-	model.CacheUpdateChannel(chLow)
 
 	setting := operation_setting.GetChannelAffinitySetting()
 	require.NotNil(t, setting)
@@ -63,53 +55,94 @@ func TestRecordChannelAffinity_AntiDowngradeProtection(t *testing.T) {
 		setting.SwitchOnSuccess = origSwitchOnSuccess
 	})
 
-	cacheKeySuffix := fmt.Sprintf("test-affinity-downgrade-%d", time.Now().UnixNano())
 	cache := getChannelAffinityCache()
-	t.Cleanup(func() {
-		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
-	})
+	originCache := getChannelAffinityReasoningOriginCache()
 
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	setChannelAffinityContext(c, channelAffinityMeta{
-		CacheKey:   cacheKeySuffix,
-		TTLSeconds: 300,
-		RuleName:   "prompt_cache_key",
-	})
+	newAffinityContext := func(t *testing.T, cacheKey string) *gin.Context {
+		t.Helper()
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		setChannelAffinityContext(c, channelAffinityMeta{
+			CacheKey:   cacheKey,
+			TTLSeconds: 300,
+			RuleName:   "prompt_cache_key",
+		})
+		return c
+	}
 
-	// 1. 首次成功落在高优先级渠道 154 (Priority 10)
-	RecordChannelAffinity(c, chHigh.Id)
-	val, found, err := cache.Get(cacheKeySuffix)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, chHigh.Id, val, "初始亲和度应记录为高优先级渠道 154")
+	// 场景一：缓存里只有亲和度、没有密文来源（v29.46 之前的存量绑定等过渡状态）。
+	// 防降级保护照常生效：低优先级兜底成功不得覆盖高优先级亲和度。
+	{
+		cacheKey := fmt.Sprintf("test-affinity-downgrade-legacy-%d", time.Now().UnixNano())
+		t.Cleanup(func() {
+			_, _ = cache.DeleteMany([]string{cacheKey})
+			_, _ = originCache.DeleteMany([]string{cacheKey})
+		})
+		require.NoError(t, cache.SetWithTTL(cacheKey, chHigh.Id, 300*time.Second))
 
-	// 2. 模拟高优先级渠道临时抖动，重试由中优先级 99 (Priority 8) 兜底成功
-	// 防降级保护必须阻止将缓存覆盖为 99！
-	c.Set("channel_id", chMid.Id)
-	RecordChannelAffinity(c, chMid.Id)
-	val, found, err = cache.Get(cacheKeySuffix)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, chHigh.Id, val, "低优先级渠道 99 兜底成功不得降级覆盖高优先级亲和度 154")
+		c := newAffinityContext(t, cacheKey)
+		c.Set("channel_id", chMid.Id)
 
-	// 3. 模拟更低优先级 216 (Priority 5) 兜底成功
-	c.Set("channel_id", chLow.Id)
-	RecordChannelAffinity(c, chLow.Id)
-	val, found, err = cache.Get(cacheKeySuffix)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, chHigh.Id, val, "低优先级渠道 216 兜底成功不得降级覆盖高优先级亲和度 154")
+		RecordChannelAffinity(c, chMid.Id)
+		val, found, err := cache.Get(cacheKey)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, chHigh.Id, val, "无上游状态的会话兜底成功不得降级覆盖高优先级亲和度")
+	}
 
-	// 4. 若原高优先级渠道被禁用 (ChannelStatusManuallyDisabled)，则允许由可用渠道接管
-	chHigh.Status = common.ChannelStatusManuallyDisabled
-	model.CacheUpdateChannel(chHigh)
-	c.Set("channel_id", chMid.Id)
-	RecordChannelAffinity(c, chMid.Id)
-	val, found, err = cache.Get(cacheKeySuffix)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, chMid.Id, val, "当原高优先级渠道禁用时，允许更新亲和度")
+	// 场景二：会话已在上游沉淀状态（origin 指向此前的服务渠道）。
+	// 兜底渠道交付了本轮的新状态（工具调用 call_id / 加密密文），亲和性必须跟着状态走：
+	// 把亲和性留在高优先级渠道上，下一轮就会带着兜底渠道的 call_id 打过去，
+	// 上游回「找不到可消费的工具调用状态」，重试又落回来，会话剩余每轮都先失败一次。
+	{
+		cacheKey := fmt.Sprintf("test-affinity-downgrade-stateful-%d", time.Now().UnixNano())
+		t.Cleanup(func() {
+			_, _ = cache.DeleteMany([]string{cacheKey})
+			_, _ = originCache.DeleteMany([]string{cacheKey})
+		})
+		require.NoError(t, cache.SetWithTTL(cacheKey, chHigh.Id, 300*time.Second))
+		require.NoError(t, originCache.SetWithTTL(cacheKey, chHigh.Id, time.Minute))
+
+		c := newAffinityContext(t, cacheKey)
+		c.Set("channel_id", chMid.Id)
+
+		RecordChannelAffinity(c, chMid.Id)
+		val, found, err := cache.Get(cacheKey)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, chMid.Id, val, "有上游状态的会话兜底成功后，亲和性应跟随状态落到兜底渠道")
+		originVal, found, err := originCache.Get(cacheKey)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, chMid.Id, originVal, "密文来源应记录为本轮实际交付渠道")
+	}
+
+	// 场景三：无上游状态且原高优先级渠道已被禁用 (ChannelStatusManuallyDisabled)，
+	// 守卫的状态检查不成立，允许由可用渠道接管。
+	{
+		cacheKey := fmt.Sprintf("test-affinity-downgrade-disabled-%d", time.Now().UnixNano())
+		t.Cleanup(func() {
+			_, _ = cache.DeleteMany([]string{cacheKey})
+			_, _ = originCache.DeleteMany([]string{cacheKey})
+		})
+		require.NoError(t, cache.SetWithTTL(cacheKey, chHigh.Id, 300*time.Second))
+
+		chHigh.Status = common.ChannelStatusManuallyDisabled
+		model.CacheUpdateChannel(chHigh)
+		t.Cleanup(func() {
+			chHigh.Status = common.ChannelStatusEnabled
+			model.CacheUpdateChannel(chHigh)
+		})
+
+		c := newAffinityContext(t, cacheKey)
+		c.Set("channel_id", chMid.Id)
+
+		RecordChannelAffinity(c, chMid.Id)
+		val, found, err := cache.Get(cacheKey)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, chMid.Id, val, "当原高优先级渠道禁用且无上游状态时，允许更新亲和度")
+	}
 }
 
 func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *testing.T) {
@@ -510,7 +543,10 @@ func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T
 	require.True(t, foundRoute)
 	assert.Equal(t, chHigh.Id, routeID, "路由亲和度应记录为 154")
 
-	// 2. 第二轮：渠道 154 瞬时故障，重试到低优先级渠道 99 兜底成功
+	// 2. 第二轮：渠道 154 瞬时故障，重试到低优先级渠道 99 兜底成功。
+	// 会话已有上游状态（第一轮的 origin=154），兜底渠道交付了本轮新状态，
+	// 亲和性必须跟随状态落到 99：留在 154 的话下一轮会带着 99 的 call_id
+	// 打过去，上游只会回「找不到可消费的工具调用状态」。
 	c.Set("channel_id", chMid.Id)
 	RecordChannelAffinity(c, chMid.Id)
 	originID2, found2 := GetReasoningOriginChannel(c)
@@ -518,7 +554,7 @@ func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T
 	assert.Equal(t, chMid.Id, originID2, "密文来源渠道必须更新为实际兜底成功的渠道 99")
 	routeID2, foundRoute2, _ := cache.Get(cacheKeySuffix)
 	require.True(t, foundRoute2)
-	assert.Equal(t, chHigh.Id, routeID2, "路由亲和度防降级必须保留最高优先级渠道 154")
+	assert.Equal(t, chMid.Id, routeID2, "有上游状态的会话兜底成功后，路由亲和度应跟随状态落到兜底渠道 99")
 
 	// 3. 清理缓存验证
 	ClearCurrentChannelAffinityCache(c)
