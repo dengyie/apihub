@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -146,22 +146,28 @@ func FetchCodexModels(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := common.ReadUpstreamBody(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		if common.IsHtmlOrXmlResponse(resp.Header.Get("Content-Type"), body) {
-			return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			return resp.StatusCode, nil, redactCodexSecrets(common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body), accessToken, accountID)
+		}
+		// 401 是鉴权信号而不是失败：调用方 fetchCodexChannelModels 要靠它去刷新
+		// OAuth 凭证后重试。Codex 的 401 通常带 {"error":{"message":...}}，若在这里
+		// 返回 error，调用方的刷新分支永远走不到，过期凭证就再也自愈不了。
+		if resp.StatusCode == http.StatusUnauthorized {
+			return resp.StatusCode, nil, nil
 		}
 		if jsonErr := common.ExtractJsonErrorMessage(body); jsonErr != "" {
-			return resp.StatusCode, nil, fmt.Errorf("上游返回错误 (status code: %d): %s", resp.StatusCode, jsonErr)
+			return resp.StatusCode, nil, redactCodexSecrets(fmt.Errorf("上游返回错误 (status code: %d): %s", resp.StatusCode, jsonErr), accessToken, accountID)
 		}
 		return resp.StatusCode, nil, nil
 	}
 
 	if common.IsHtmlOrXmlResponse(resp.Header.Get("Content-Type"), body) {
-		return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		return resp.StatusCode, nil, redactCodexSecrets(common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body), accessToken, accountID)
 	}
 
 	var result struct {
@@ -170,7 +176,7 @@ func FetchCodexModels(
 		} `json:"models"`
 	}
 	if err := common.Unmarshal(body, &result); err != nil {
-		return resp.StatusCode, nil, common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		return resp.StatusCode, nil, redactCodexSecrets(common.FormatUpstreamResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body), accessToken, accountID)
 	}
 
 	seen := make(map[string]struct{}, len(result.Models))
@@ -187,4 +193,32 @@ func FetchCodexModels(
 		models = append(models, slug)
 	}
 	return resp.StatusCode, models, nil
+}
+
+// redactCodexSecrets 把凭证从要返回给管理端的错误文案里抹掉。
+//
+// 这里用的是完整的 OAuth access token（不是被掩码的 API key），而上游的错误页
+// 或错误体有时会把请求头原样回显；这些错误文案现在会带上游响应片段，所以每条
+// 拼过上游内容的错误都要过一遍。
+func redactCodexSecrets(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	redacted := false
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		// 太短的值做全局替换会把正常文本一起改烂（account id 若恰好是 "1"，
+		// "status code: 401" 就会变成 "[REDACTED]0[REDACTED]"）。真正的 token
+		// 与 account id 都远长于这个阈值。
+		if len(secret) < 8 || !strings.Contains(message, secret) {
+			continue
+		}
+		message = strings.ReplaceAll(message, secret, "[REDACTED]")
+		redacted = true
+	}
+	if !redacted {
+		return err
+	}
+	return errors.New(message)
 }
