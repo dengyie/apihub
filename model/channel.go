@@ -1219,10 +1219,11 @@ func EnableChannelByTag(tag string) error {
 		return err
 	}
 	// 与 UpdateChannelStatus 同一条不变量：按标签批量启用也是「恢复」，
-	// 这批渠道各自的旧佐证信号一律作废。放在这里而不是 controller 的
-	// EnableTagChannels，否则每加一条批量入口就要记得再来一次。
+	// 这批渠道各自的旧佐证信号与熔断状态一律作废。放在这里而不是 controller
+	// 的 EnableTagChannels，否则每加一条批量入口就要记得再来一次。
 	for _, id := range ids {
 		loadbalancer.ResetCorroborationForChannel(id)
+		loadbalancer.GlobalTracker().ResetChannelBreakers(id)
 	}
 	unlock := lockChannelsInIdOrder(ids)
 	defer unlock()
