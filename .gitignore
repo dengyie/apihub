@@ -53,3 +53,6 @@ go.work.sum
 # macOS 同步产物（AppleDouble 资源叉文件），见同步命令 COPYFILE_DISABLE=1
 ._*
 .DS_Store
+
+# 顶层一次性打包产物（scripts/deploy.sh 产生的上传包，不进版本库）
+/dist.tar.gz
