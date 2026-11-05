@@ -295,9 +295,18 @@ func TestRoutingExhaustedIsNeverAutoDisabled(t *testing.T) {
 		errString("分组 codex 下模型 x 无可用渠道（distributor）"),
 		types.ErrorCodeNoAvailableChannel, 503)
 
+	// 上游 new-api 家族的中文模板（zh-CN / zh-TW / 旧版「当前分组」措辞），
+	// error_code 由上游决定，只能靠文本识别。
+	zhWording := func(msg string) *types.NewAPIError {
+		return types.NewErrorWithStatusCode(errString(msg), types.ErrorCodeBadResponse, 503)
+	}
+
 	for name, err := range map[string]*types.NewAPIError{
 		"上游透传的同款措辞":        upstreamWording,
 		"本网关自带 error code": ownCode,
+		"上游简体模板":           zhWording("status_code=503, 分组 codex 下模型 glm-5.3-flash 无可用渠道（distributor）"),
+		"上游繁体模板":           zhWording("status_code=503, 分組 codex 下模型 glm-5.3-flash 無可用管道（distributor）"),
+		"上游旧版措辞":           zhWording("当前分组 default 下对于模型 deepseek-v4-flash 无可用渠道"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.True(t, loadbalancer.IsRoutingExhaustedError(err), "必须被识别为路由池耗尽")

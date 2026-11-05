@@ -654,9 +654,12 @@ func IsRoutingExhaustedError(err *types.NewAPIError) bool {
 		return true
 	}
 	// 上游透传的同款措辞（上游也是 new-api 家族），此时 error_code 由上游决定、
-	// 未必是本码，只能回退到文本。
+	// 未必是本码，只能回退到文本。中文上游走 zh-CN / zh-TW 模板或旧版
+	// 「当前分组 X 下对于模型 Y 无可用渠道」，只认英文会把它们当成渠道故障禁用。
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "no available channel for model")
+	return strings.Contains(msg, "no available channel for model") ||
+		strings.Contains(msg, "无可用渠道") ||
+		strings.Contains(msg, "無可用管道")
 }
 
 // BreakerScope 一次上游失效的熔断范围。
