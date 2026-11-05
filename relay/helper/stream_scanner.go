@@ -105,7 +105,7 @@ func FirstTokenDeadline(c *gin.Context, info *relaycommon.RelayInfo) time.Time {
 		}
 	}
 	return loadbalancer.GetPolicy().AttemptFirstTokenDeadline(
-		info.GetChannelID(), info.StartTime, attemptStart, info.RetryIndex < common.RetryTimes)
+		info.GetChannelID(), info.StartTime, attemptStart, info.RetryIndex < common.RetryTimes())
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) error {

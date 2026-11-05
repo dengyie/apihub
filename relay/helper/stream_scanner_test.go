@@ -1081,10 +1081,10 @@ func TestStreamScannerHandler_ClientAbortDoesNotResetBreakerCounters(t *testing.
 
 func TestFirstTokenDeadline_PerAttemptWithinSafetyWindow(t *testing.T) {
 	prevPolicy := loadbalancer.GetPolicy()
-	prevRetry := common.RetryTimes
+	prevRetry := common.RetryTimes()
 	t.Cleanup(func() {
 		loadbalancer.SetPolicy(prevPolicy)
-		common.RetryTimes = prevRetry
+		common.SetRetryTimesOverride(prevRetry)
 	})
 	safety := 105000
 	loadbalancer.SetPolicy(&loadbalancer.Policy{
@@ -1092,7 +1092,7 @@ func TestFirstTokenDeadline_PerAttemptWithinSafetyWindow(t *testing.T) {
 		Default:                loadbalancer.ChannelPolicy{TTFTTimeoutMs: 100000},
 		ClientSafetyDeadlineMs: &safety,
 	})
-	common.RetryTimes = 3
+	common.SetRetryTimesOverride(3)
 
 	c, _, info := setupStreamTest(t, strings.NewReader(""))
 	info.ChannelMeta.ChannelId = 9
@@ -1106,6 +1106,6 @@ func TestFirstTokenDeadline_PerAttemptWithinSafetyWindow(t *testing.T) {
 	assert.WithinDuration(t, attempt.Start().Add(22500*time.Millisecond), deadline, time.Second)
 
 	// 最后一次尝试用满到安全死线。
-	info.RetryIndex = common.RetryTimes
+	info.RetryIndex = common.RetryTimes()
 	assert.WithinDuration(t, info.StartTime.Add(105*time.Second), FirstTokenDeadline(c, info), time.Second)
 }

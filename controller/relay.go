@@ -200,7 +200,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= common.RetryTimes(); retryParam.IncreaseRetry() {
 		outcome := executeRelayAttempt(c, relayFormat, relayInfo, retryParam, requestBudgetCtx, &zeroByteDeadline)
 		newAPIError = outcome.Err
 		if outcome.Success || !outcome.WillRetry {

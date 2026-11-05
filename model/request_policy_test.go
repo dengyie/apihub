@@ -75,7 +75,7 @@ func TestRequestPolicyDatabaseMatrix(t *testing.T) {
 			rules := `[{"name":"session","model_regex":[".*"],"key_sources":[{"type":"request_header","key":"X-Session"}],"ttl_seconds":0,"skip_retry_on_failure":false,"include_using_group":false,"param_override_template":{"temperature":0},"future_field":{"enabled":false}}]`
 			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{"RetryTimes": "2", "channel_affinity_setting.rules": rules}))
 			assert.Equal(t, 2, CurrentRequestPolicy().RetryTimes)
-			assert.Equal(t, 2, common.RetryTimes, "the runtime global follows the same write")
+			assert.Equal(t, 2, common.RetryTimes(), "the runtime global follows the same write")
 			require.NoError(t, UpdateOption("AutomaticRetryStatusCodes", "429,500-503"))
 			assert.Equal(t, "429,500-503", CurrentRequestPolicy().Options["AutomaticRetryStatusCodes"])
 			assert.Equal(t, "429,500-503", operation_setting.AutomaticRetryStatusCodesToString())

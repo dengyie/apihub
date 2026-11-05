@@ -270,7 +270,7 @@ func executeRelayAttempt(
 
 		if loadbalancer.IsTTFTTimeout(newAPIError) &&
 			c != nil && c.Request != nil && c.Request.Context().Err() == nil &&
-			retryParam.GetRetry() < common.RetryTimes && isBudgetFeasible {
+			retryParam.GetRetry() < common.RetryTimes() && isBudgetFeasible {
 			newDeadline := time.Now().Add(time.Duration(channelTTFT) * time.Millisecond)
 			if !safetyCeiling.IsZero() && newDeadline.After(safetyCeiling) {
 				newDeadline = safetyCeiling
@@ -290,7 +290,7 @@ func executeRelayAttempt(
 		}
 	}
 
-	failureEval := service.EvaluateRelayFailure(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+	failureEval := service.EvaluateRelayFailure(c, newAPIError, common.RetryTimes()-retryParam.GetRetry())
 	decision := failureEval.PolicyDecision
 	service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 

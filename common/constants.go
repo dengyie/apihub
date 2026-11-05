@@ -5,6 +5,7 @@ import (
 	//"os"
 	//"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,7 +157,37 @@ var QuotaRemindThreshold = 1000
 // use quota_setting.pre_consume_multiplier and the estimated input cost.
 var PreConsumedQuota = 500
 
-var RetryTimes = 0
+// 换渠道重试次数有两个来源：options 表的 RetryTimes（管理后台，SyncOptions
+// 周期性重放）与 loadbalancer.yaml 的 enabled/max_retries（热加载）。两者各写
+// 各的槽位，读取时按固定优先级合成，于是谁最后写入不再决定结果：
+//
+//   - 策略关闭 → 0（关闭策略总开关即关闭换渠道重试）
+//   - 策略打开且 max_retries > 0 → max_retries
+//   - 否则 → options 表的值
+//
+// 原子读写：请求 goroutine 与两个后台写入方并发访问。
+var retryTimesOption atomic.Int64
+
+// retryTimesOverride 存放 yaml 覆盖值；noRetryTimesOverride 表示不覆盖。
+var retryTimesOverride atomic.Int64
+
+const noRetryTimesOverride = -1
+
+func init() { retryTimesOverride.Store(noRetryTimesOverride) }
+
+// RetryTimes 返回当前生效的换渠道重试次数。
+func RetryTimes() int {
+	if n := retryTimesOverride.Load(); n != noRetryTimesOverride {
+		return int(n)
+	}
+	return int(retryTimesOption.Load())
+}
+
+// SetRetryTimesOption 写入 options 表来源的重试次数。
+func SetRetryTimesOption(n int) { retryTimesOption.Store(int64(n)) }
+
+// SetRetryTimesOverride 写入 loadbalancer.yaml 来源的覆盖值；n < 0 取消覆盖。
+func SetRetryTimesOverride(n int) { retryTimesOverride.Store(int64(max(n, noRetryTimesOverride))) }
 
 //var RootUserEmail = ""
 

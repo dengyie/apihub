@@ -51,7 +51,7 @@ func requestPolicyDefaultOptions() map[string]string {
 			defaults[prefix+field] = value
 		}
 	}
-	defaults["RetryTimes"] = strconv.Itoa(common.RetryTimes)
+	defaults["RetryTimes"] = strconv.Itoa(common.RetryTimes())
 	defaults["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	defaults["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	defaults["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()

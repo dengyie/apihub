@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengyie/apihub/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,6 +48,34 @@ func TestPolicyReliableRecoversAfterSuccessfulReload(t *testing.T) {
 		assert.True(t, PolicyReliable(),
 			"热加载成功后 PolicyReliable 必须恢复，否则自动禁用永久静默失效")
 		assert.True(t, GetPolicy().Enabled)
+	})
+}
+
+// 回归：options 表的 RetryTimes 由 SyncOptions 每分钟重放一次，此前与 yaml
+// 共写同一个全局变量，后台保存过一次 RetryTimes 后 max_retries 就被周期性覆盖。
+// 现在两者各占一个槽位，生效值只由优先级决定，与写入先后无关。
+func TestReloadRetryTimesPrecedence(t *testing.T) {
+	restore := MarkPolicyLoadFailedForTest(false)
+	defer restore()
+	prev := common.RetryTimes()
+	t.Cleanup(func() {
+		common.SetRetryTimesOverride(-1)
+		common.SetRetryTimesOption(prev)
+	})
+
+	common.SetRetryTimesOption(2)
+	withPolicyFile(t, "enabled: true\nmax_retries: 5\n", func(string) {
+		require.NoError(t, reload())
+		common.SetRetryTimesOption(2) // SyncOptions 在 reload 之后重放
+		assert.Equal(t, 5, common.RetryTimes(), "max_retries 优先于 options 表")
+	})
+	withPolicyFile(t, "enabled: true\nmax_retries: 0\n", func(string) {
+		require.NoError(t, reload())
+		assert.Equal(t, 2, common.RetryTimes(), "max_retries 为 0 时回落到 options 表")
+	})
+	withPolicyFile(t, "enabled: false\nmax_retries: 5\n", func(string) {
+		require.NoError(t, reload())
+		assert.Equal(t, 0, common.RetryTimes(), "关闭策略总开关即关闭换渠道重试")
 	})
 }
 
