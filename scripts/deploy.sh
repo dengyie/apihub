@@ -1205,18 +1205,43 @@ show_status() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# One deploy or rollback at a time: two overlapping runs would race over which
+# slot is live and could stop the wrong process. A rollback stops BOTH slots, so
+# letting it overlap a handover is the worst version of that race.
+take_deploy_lock() {
+  need_cmd flock
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || die "another deploy or rollback is already running ($LOCK_FILE)"
+}
+
+# EXIT trap armed from the moment the new binary is installed until the handover
+# commits. Both slots run $BIN_DIR/new-api, so an abort before the commit leaves
+# the still-serving slot on the old inode while the file on disk is the release
+# that just failed -- the next autorestart, guard start or reboot would then
+# bring the failed build up with nobody watching. Put the previous binary back.
+BINARY_COMMITTED=1
+restore_binary_unless_committed() {
+  local rc=$?
+  (( rc != 0 && BINARY_COMMITTED == 0 )) || return 0
+  [[ -n ${BACKUP_PATH:-} && -f $BACKUP_PATH/new-api.prev ]] || return 0
+  if cp -a "$BACKUP_PATH/new-api.prev" "$BIN_DIR/new-api.restore" && mv -f "$BIN_DIR/new-api.restore" "$BIN_DIR/new-api"; then
+    warn "aborted before the handover committed; restored the previous binary from $BACKUP_PATH"
+  else
+    warn "aborted before the handover committed and could NOT restore $BIN_DIR/new-api; copy $BACKUP_PATH/new-api.prev back by hand"
+  fi
+}
+
 main() {
   need_root
   guard_conf_dir
 
   case "$MODE" in
     status)   show_status; return 0 ;;
-    rollback) do_rollback; return 0 ;;
+    rollback) take_deploy_lock; do_rollback; return 0 ;;
   esac
 
   need_cmd curl
   need_cmd supervisorctl
-  need_cmd flock
 
   # Before the lock, the backup, or the first byte written: ask the uploaded
   # artifact what it is. Nothing on the host has been touched at this point, so a
@@ -1229,10 +1254,7 @@ main() {
   # needs its data link before anything tries to read a policy file through it.
   ensure_data_link
 
-  # One deploy at a time: two overlapping runs would race over which slot is
-  # live and could stop the wrong process.
-  exec 9>"$LOCK_FILE"
-  flock -n 9 || die "another deploy is already running ($LOCK_FILE)"
+  take_deploy_lock
 
   # Under the lock, so two deploys cannot race each other into registering the
   # same program, and before the backup, so a backup that fails leaves the guard
@@ -1245,6 +1267,8 @@ main() {
   # its open inode, so replacing the file does not disturb the serving slot.
   local staged="$BIN_DIR/new-api.new"
   install -m 0755 "$NEW_BINARY" "$staged"
+  BINARY_COMMITTED=0
+  trap restore_binary_unless_committed EXIT
   mv -f "$staged" "$BIN_DIR/new-api"
   log "installed binary ($(file_size "$BIN_DIR/new-api") bytes, sha256 $(sha256_short "$BIN_DIR/new-api"))"
 
@@ -1303,6 +1327,7 @@ main() {
       printf '%s' "apihub-blue" >"$BACKUP_PATH/deploy-state.slot"
       printf '%s' "$EXPECTED_VERSION" >"$BACKUP_PATH/deploy-state.version"
       printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
+      BINARY_COMMITTED=1
       log "bootstrap complete; apihub-blue is live on version $EXPECTED_VERSION"
       log "subsequent deploys are zero-downtime"
       return 0
@@ -1351,7 +1376,10 @@ main() {
   if ! wait_ready "$NEW_SLOT" "$new_pid"; then
     warn "$NEW_SLOT failed readiness; aborting the handover and leaving $ACTIVE_SLOT serving"
     sup stop "$NEW_SLOT" || true
-    printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
+    # $STATE_FILE is left alone: the live release is still the one it points
+    # past, and this backup holds a copy of that live release with no slot
+    # record -- pointing --rollback at it would stop both slots to "restore"
+    # what is already serving.
     die "deploy aborted; $ACTIVE_SLOT is still serving"
   fi
   check_reuseport_logged "$NEW_SLOT" || warn "continuing, but verify $NEW_SLOT really shares the port"
@@ -1360,6 +1388,12 @@ main() {
   # return to.
   printf '%s' "$ACTIVE_SLOT" >"$BACKUP_PATH/deploy-state.slot"
   printf '%s' "$EXPECTED_VERSION" >"$BACKUP_PATH/deploy-state.version"
+  # Commit point: from here on the new release is what serves, so every later
+  # failure (drain, post-handover health check) must roll back to THIS backup.
+  # Writing the pointer only at the very end left those paths pointing at the
+  # deploy before, i.e. a --rollback two releases back.
+  printf '%s' "$BACKUP_PATH" >"$STATE_FILE"
+  BINARY_COMMITTED=1
 
   # The new slot is in the group and answering. Drain the old one: SIGTERM
   # triggers the application's own graceful shutdown, which waits for in-flight

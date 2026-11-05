@@ -1114,6 +1114,67 @@ else
       "deploy.yml does not download a build artifact; it builds its own binary"
 fi
 
+echo "binary restore on abort"
+
+# Both slots run $BIN_DIR/new-api. An abort before the handover commits must put
+# the previous binary back, or the next autorestart brings up the release that
+# just failed. After the commit, or on success, the new binary stays.
+RS="$WORK/restore"
+rs_case() { # $1 committed flag, $2 exit code
+  rm -rf "$RS"; mkdir -p "$RS/bin" "$RS/backup"
+  printf 'previous\n' >"$RS/backup/new-api.prev"
+  printf 'failed-release\n' >"$RS/bin/new-api"
+  run_with_real_helpers "BIN_DIR='$RS/bin'; BACKUP_PATH='$RS/backup'
+    trap restore_binary_unless_committed EXIT; BINARY_COMMITTED=$1; exit $2" >/dev/null
+  cat "$RS/bin/new-api"
+}
+check "an uncommitted abort restores the previous binary" "$(rs_case 0 1)" "previous"
+check "a committed failure keeps the new binary" "$(rs_case 1 1)" "failed-release"
+check "a clean exit keeps the new binary" "$(rs_case 0 0)" "failed-release"
+
+echo "deploy lock"
+
+# --rollback stops both slots, so it must not overlap a handover.
+if command -v flock >/dev/null 2>&1; then
+  LK="$WORK/deploy.lock"
+  ( exec 8>"$LK"; flock 8; sleep 3 ) &
+  holder=$!
+  sleep 0.5
+  out="$(run_with_real_helpers "LOCK_FILE='$LK'; take_deploy_lock; echo got-lock")"; rc=$?
+  check "a second deploy or rollback is refused while the lock is held" "$rc" "1"
+  wait "$holder"
+  out="$(run_with_real_helpers "LOCK_FILE='$LK'; take_deploy_lock; echo got-lock")"
+  check "and proceeds once it is released" "$out" "got-lock"
+else
+  ok "deploy lock (skipped: no flock on this machine)"
+fi
+
+echo "slot guard"
+
+# A draining slot (STOPPING) or one inside startsecs (STARTING) is not an
+# outage. Treating STOPPING as dead made the guard start a slot in the middle of
+# a rollback, whose drain outlasts the 60s trigger.
+SG="$WORK/guard"
+sg_run() { # $1 state both slots report; prints how many starts were issued
+  rm -rf "$SG"; mkdir -p "$SG/bin"
+  cat >"$SG/bin/supervisorctl" <<FAKE
+#!/usr/bin/env bash
+if [[ \$1 == status ]]; then echo "\$2 $1 pid 1"; exit 0; fi
+[[ \$1 == start ]] && echo start >>"$SG/starts"
+exit 0
+FAKE
+  chmod +x "$SG/bin/supervisorctl"
+  PATH="$SG/bin:$PATH" bash "$SCRIPT_DIR/slot-watchdog.sh" 1 1 >/dev/null 2>&1 &
+  local guard=$!
+  sleep 3.5
+  kill "$guard" 2>/dev/null; wait "$guard" 2>/dev/null
+  if [[ -f $SG/starts ]]; then wc -l <"$SG/starts" | tr -d ' '; else echo 0; fi
+}
+check "the guard leaves a STOPPING slot alone" "$(sg_run STOPPING)" "0"
+check "the guard leaves a STARTING slot alone" "$(sg_run STARTING)" "0"
+starts="$(sg_run EXITED)"
+if [[ ${starts:-0} -ge 1 ]]; then ok "the guard still rescues when both slots are EXITED"; else bad "the guard still rescues when both slots are EXITED" "starts=$starts"; fi
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

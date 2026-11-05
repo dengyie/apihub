@@ -256,18 +256,24 @@ jobs:
           # process reports. If they ever diverged, the deploy would fail its
           # assertion -- or worse, succeed against a version the artifact does
           # not carry.
+          #
+          # deploy.sh runs in its own session with its output going to a file,
+          # not to this ssh channel. A runner-side ssh drop (network blip, job
+          # cancel) otherwise kills it at its next log line via SIGPIPE --
+          # possibly between retiring the old slot and verifying the new one.
+          # tail streams the log here and exits with the deploy; wait hands its
+          # exit status back to this step.
           version="$VERSION"
+          bootstrap_flag=""
           if [ "$BOOTSTRAP" = "true" ]; then
-            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
-              /tmp/apihub-release/deploy.sh --bootstrap \
-                --binary /tmp/apihub-release/apihub --version '$version' \
-                --web /tmp/apihub-release/apihub-web.tar.gz"
-          else
-            ssh tebi "chmod +x /tmp/apihub-release/deploy.sh && \
-              /tmp/apihub-release/deploy.sh \
-                --binary /tmp/apihub-release/apihub --version '$version' \
-                --web /tmp/apihub-release/apihub-web.tar.gz"
+            bootstrap_flag="--bootstrap"
           fi
+          ssh tebi "cd /tmp/apihub-release && chmod +x deploy.sh && : >deploy.log || exit 1; \
+            setsid -w ./deploy.sh $bootstrap_flag \
+              --binary /tmp/apihub-release/apihub --version '$version' \
+              --web /tmp/apihub-release/apihub-web.tar.gz \
+              </dev/null >>deploy.log 2>&1 & pid=\$!; \
+            tail -n +1 -f --pid=\$pid deploy.log; wait \$pid"
 
       - name: Report the result
         if: always()

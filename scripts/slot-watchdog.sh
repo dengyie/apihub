@@ -52,10 +52,18 @@ TRIGGER="${2:-60}"
 # reading an exit code as status, since tebi exits 3 for any stopped program.
 slot_state() { supervisorctl status "$1" 2>/dev/null | awk '{print $2}'; }
 
+# STARTING and STOPPING count as alive. A stop drains in-flight requests for up
+# to SHUTDOWN_TIMEOUT_SECONDS (default 120), longer than the default trigger, so
+# counting STOPPING as dead made the guard start a slot in the middle of
+# `deploy.sh --rollback` -- racing the binary swap it was waiting on. STARTING
+# is supervisord still inside startsecs; starting the other slot then leaves
+# both running. BACKOFF, EXITED and FATAL stay dead: those are the outages.
 any_running() {
   local s
   for s in apihub-blue apihub-green; do
-    [[ $(slot_state "$s") == RUNNING ]] && return 0
+    case "$(slot_state "$s")" in
+      RUNNING|STARTING|STOPPING) return 0 ;;
+    esac
   done
   return 1
 }
