@@ -552,6 +552,8 @@ func TestCodexChannelAdaptation(t *testing.T) {
 	baseURLZzz := "https://api666.zzzcoding.org"
 	baseURLCodex := "https://newcodex.cn"
 	baseURLNormal := "https://api.openai.com"
+	baseURLCpa := "https://anyrouter.top"
+	baseURLNailao := "https://nailao.biz"
 
 	tests := []struct {
 		name       string
@@ -615,6 +617,26 @@ func TestCodexChannelAdaptation(t *testing.T) {
 			},
 			wantCodex:  true,
 			wantStream: true,
+		},
+		{
+			name: "cpa.top codex-only relay by baseURL",
+			channel: &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Name:    "cpa",
+				BaseURL: &baseURLCpa,
+			},
+			wantCodex:  true,
+			wantStream: true,
+		},
+		{
+			name: "cpa name prefix on a normal upstream stays non-codex",
+			channel: &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Name:    "cpa-nailao",
+				BaseURL: &baseURLNailao,
+			},
+			wantCodex:  false,
+			wantStream: false,
 		},
 		{
 			name: "codex proxy by tag",

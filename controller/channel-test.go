@@ -71,6 +71,12 @@ func isCodexChannel(channel *model.Channel) bool {
 	if strings.Contains(baseURL, "zzzcoding") || strings.Contains(baseURL, "codex") {
 		return true
 	}
+	// 渠道 #154：与 zzzcoding 同类、只放行 Codex 官方客户端的反代，按域名识别。
+	// 域名以生产渠道 #154 的 base_url 为准（https://anyrouter.top）。
+	// 不能按 "cpa" 名字前缀识别——cpa-* 渠道家族（cpa-nailao 等）大多是普通 OpenAI 上游。
+	if strings.Contains(baseURL, "anyrouter.top") {
+		return true
+	}
 	if channel.Tag != nil {
 		tag := strings.ToLower(*channel.Tag)
 		if strings.Contains(tag, "zzzcoding") || strings.Contains(tag, "codex") {
@@ -850,11 +856,14 @@ func buildTestRequest(model string, endpointType string, isStream bool) dto.Requ
 
 	// Responses-only models (e.g. codex series)
 	if strings.Contains(strings.ToLower(model), "codex") {
-		return &dto.OpenAIResponsesRequest{
-			Model:  model,
-			Input:  probeResponsesInput(),
-			Stream: lo.ToPtr(isStream),
+		req := &dto.OpenAIResponsesRequest{
+			Model:          model,
+			Input:          probeResponsesInput(),
+			Stream:         lo.ToPtr(isStream),
+			PromptCacheKey: probeResponsesPromptCacheKey,
 		}
+		req.EnsureCodexFields()
+		return req
 	}
 
 	// Chat/Completion 请求（自动检测兜底路径，同样拟真）

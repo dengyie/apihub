@@ -156,3 +156,20 @@ func TestNonChatProbePayloads(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []any{probeEmbeddingInput}, er.Input)
 }
+
+// 渠道 #154 一类 Codex 系上游对 /v1/responses 强制要求 prompt_cache_key
+// （缺失 400 invalid_responses_request，实测确认）。Responses 探针必须携带。
+func TestResponsesProbeCarriesPromptCacheKey(t *testing.T) {
+	req := buildRealisticChatProbe("gpt-6.1-sol", constant.EndpointTypeOpenAIResponse, true)
+	responsesReq, ok := req.(*dto.OpenAIResponsesRequest)
+	require.True(t, ok)
+	assert.Equal(t, probeResponsesPromptCacheKey, responsesReq.PromptCacheKey,
+		"Responses 探针必须携带 prompt_cache_key，否则强制校验它的上游直接 400")
+
+	// codex 系模型走 buildTestRequest 的自动分支，同样必须携带。
+	codexReq := buildTestRequest("gpt-5-codex", "", true)
+	codexResponsesReq, ok := codexReq.(*dto.OpenAIResponsesRequest)
+	require.True(t, ok)
+	assert.Equal(t, probeResponsesPromptCacheKey, codexResponsesReq.PromptCacheKey)
+	assert.NotEmpty(t, codexResponsesReq.Include, "codex 探针应与主分支一致携带 reasoning.encrypted_content")
+}

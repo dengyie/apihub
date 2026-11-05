@@ -108,6 +108,14 @@ var probeResponsesUserPrompts = []string{
 
 // probeResponsesInput 构造 Responses 端点的拟真 Input：仅 user 轮次，
 // 系统指令走顶层 instructions（见上）。
+
+// probeResponsesPromptCacheKey Responses 探针请求体的 prompt_cache_key。
+// 部分 Codex 系上游（如渠道 #154）强制要求该字段，缺失直接 400
+// invalid_responses_request（"prompt_cache_key is required"）。探针没有多轮
+// 会话语义，固定值即可；确定性值还能让上游侧的 prompt cache 稳定命中。
+// 值 = uuid.NewSHA1(uuid.NameSpaceOID, []byte("apihub-channel-test-probe"))，
+// 按 Responses API 字段类型以 JSON 字符串字面量编码。
+var probeResponsesPromptCacheKey = json.RawMessage(`"0ad70646-1fe3-5da7-80c0-2b5efa27ced9"`)
 func probeResponsesInput() json.RawMessage {
 	payload := []map[string]any{
 		{"role": "user", "content": probePick(probeResponsesUserPrompts)},
@@ -148,11 +156,12 @@ func buildRealisticChatProbe(model string, endpointType constant.EndpointType, i
 	case constant.EndpointTypeOpenAIResponse:
 		// Compact 端点由 buildTestRequest 自行构造 CompactionRequest，不经过这里。
 		req := &dto.OpenAIResponsesRequest{
-			Model:        model,
-			Instructions: probeResponsesInstructions(),
-			Input:        probeResponsesInput(),
-			Stream:       lo.ToPtr(isStream),
-			Store:        json.RawMessage("false"),
+			Model:          model,
+			Instructions:   probeResponsesInstructions(),
+			Input:          probeResponsesInput(),
+			Stream:         lo.ToPtr(isStream),
+			Store:          json.RawMessage("false"),
+			PromptCacheKey: probeResponsesPromptCacheKey,
 		}
 		req.EnsureCodexFields()
 		return req
