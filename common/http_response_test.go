@@ -152,6 +152,35 @@ func TestExtractJsonErrorMessage(t *testing.T) {
 			json: `{"data":[{"id":"gpt-4"}]}`,
 			want: "",
 		},
+		{
+			// detail 是数组而不是字符串时，旧实现整条报文都解析失败，
+			// 连带丢掉同一报文里完好的 error.message。
+			name: "Array detail still yields the error object",
+			json: `{"error":{"message":"upstream rejected the request"},"detail":[{"loc":["body","model"]}]}`,
+			want: "upstream rejected the request",
+		},
+		{
+			name: "FastAPI validation detail array",
+			json: `{"detail":[{"loc":["body","model"],"msg":"field required"}]}`,
+			want: "field required",
+		},
+		{
+			name: "String array detail",
+			json: `{"detail":["too many requests"]}`,
+			want: "too many requests",
+		},
+		{
+			name: "Reason field",
+			json: `{"reason":"quota exhausted"}`,
+			want: "quota exhausted",
+		},
+		{
+			// 深度上限是防止上游用超深嵌套把解析拖死；超限时返回空串，
+			// 由调用方回落到原始响应片段。
+			name: "Deep nesting is bounded",
+			json: `{"error":{"error":{"error":{"error":{"error":{"message":"too deep"}}}}}}`,
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {

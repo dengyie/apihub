@@ -83,32 +83,66 @@ func cleanHtmlText(s string) string {
 	return strings.Join(fields, " ")
 }
 
+// jsonErrorMessageDepth 限制错误报文里嵌套查找的深度。
+//
+// 上游错误体没有统一规范：同名字段这一家是字符串、下一家是数组（FastAPI 的
+// detail 就是数组）、再下一家又嵌一层 error。逐层往下找可以覆盖这些形态，
+// 但必须设上限——报文来自上游，嵌套多深由对方决定。
+const jsonErrorMessageDepth = 4
+
 // ExtractJsonErrorMessage extracts error descriptions from typical upstream JSON error responses.
+//
+// 用 RawMessage 而不是固定类型的结构体：只要有一个被声明的字段类型与实际上游
+// 不符（例如 detail 是数组而非字符串），整条报文的反序列化就会失败，连同一份
+// 报文里完好的 error.message 也会一起丢掉，最终只剩截断的原始片段。逐字段按
+// 实际类型解释，一个字段形态不对不影响其他字段。
 func ExtractJsonErrorMessage(body []byte) string {
-	var errPayload struct {
-		Error   any    `json:"error"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-		Detail  string `json:"detail"`
-	}
-	if err := json.Unmarshal(body, &errPayload); err != nil {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
-	if errPayload.Message != "" {
-		return errPayload.Message
+	// 顺序即优先级：更具体的顶层描述优先于嵌套的 error 对象。
+	for _, key := range []string{"message", "msg", "detail", "error", "reason", "description"} {
+		if msg := jsonRawMessageText(payload[key], jsonErrorMessageDepth); msg != "" {
+			return msg
+		}
 	}
-	if errPayload.Msg != "" {
-		return errPayload.Msg
+	return ""
+}
+
+// jsonRawMessageText 从任意 JSON 值里取出人类可读的错误文本，取不到返回空串。
+func jsonRawMessageText(raw json.RawMessage, depth int) string {
+	if len(raw) == 0 || depth <= 0 {
+		return ""
 	}
-	if errPayload.Detail != "" {
-		return errPayload.Detail
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return ""
 	}
-	if errPayload.Error != nil {
-		switch v := errPayload.Error.(type) {
-		case string:
-			return v
-		case map[string]any:
-			if msg, ok := v["message"].(string); ok && msg != "" {
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err == nil {
+			return strings.TrimSpace(s)
+		}
+	case '{':
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &obj); err != nil {
+			return ""
+		}
+		for _, key := range []string{"message", "msg", "detail", "error", "reason", "description"} {
+			if msg := jsonRawMessageText(obj[key], depth-1); msg != "" {
+				return msg
+			}
+		}
+	case '[':
+		// 数组形态（如 FastAPI 的校验错误）逐项尝试，取第一条能读出来的。
+		var items []json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return ""
+		}
+		for _, item := range items {
+			if msg := jsonRawMessageText(item, depth-1); msg != "" {
 				return msg
 			}
 		}
