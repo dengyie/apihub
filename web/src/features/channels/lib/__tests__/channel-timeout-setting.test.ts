@@ -21,9 +21,11 @@ import { assert, describe, expect, test } from 'vitest'
 import {
   buildSettingJSON,
   CHANNEL_FORM_DEFAULT_VALUES,
+  channelFormSchema,
   transformChannelToFormDefaults,
   transformFormDataToUpdatePayload,
 } from '../channel-form'
+import { getChannelConfigurationSection } from '../channel-configuration'
 import { channelSchema } from '../../types'
 
 function makeChannel(setting: string) {
@@ -93,5 +95,42 @@ describe('channel first-token / header timeout settings', () => {
     )
     expect(values.ttft_timeout_ms).toBeUndefined()
     expect(values.header_timeout_ms).toBeUndefined()
+  })
+})
+
+const validFormValues = (overrides: Record<string, unknown> = {}) => ({
+  ...CHANNEL_FORM_DEFAULT_VALUES,
+  name: 'timeout channel',
+  type: 1,
+  models: 'gpt-4o',
+  status: 1,
+  ...overrides,
+})
+
+describe('channel timeout form validation', () => {
+  // 与后端 dto.MinChannelTimeoutMs / MaxChannelTimeoutMs 对齐：表单能过的值
+  // 服务端必须也能过，否则用户拿到的是一个英文的服务端错误。
+  test('accepts 0 and [100, 1800000] only', () => {
+    const accepts = (value: number | undefined) =>
+      channelFormSchema.safeParse(
+        validFormValues({ ttft_timeout_ms: value })
+      ).success
+
+    expect(accepts(undefined)).toBe(true)
+    expect(accepts(0)).toBe(true)
+    expect(accepts(100)).toBe(true)
+    expect(accepts(30000)).toBe(true)
+    expect(accepts(1_800_000)).toBe(true)
+
+    expect(accepts(99)).toBe(false)
+    expect(accepts(1_800_001)).toBe(false)
+    expect(accepts(-1)).toBe(false)
+    expect(accepts(1500.5)).toBe(false)
+  })
+
+  // 校验失败时抽屉要跳到正确的配置区块：未登记会落到兜底的 connection。
+  test('both fields belong to the routing section', () => {
+    expect(getChannelConfigurationSection('ttft_timeout_ms')).toBe('routing')
+    expect(getChannelConfigurationSection('header_timeout_ms')).toBe('routing')
   })
 })

@@ -20,10 +20,10 @@ func init() {
 			return 0
 		}
 		ch, err := CacheGetChannel(channelID)
-		if err == nil && ch != nil {
-			return ch.GetSetting().MaxInflight
+		if err != nil || ch == nil {
+			return 0
 		}
-		return 0
+		return cachedChannelSetting(ch).MaxInflight
 	})
 	// 首字 / 响应头超时同理：管理面板里配的值优先于 loadbalancer.yaml。
 	loadbalancer.SetChannelTimeoutsProvider(func(channelID int) loadbalancer.ChannelTimeouts {
@@ -34,7 +34,7 @@ func init() {
 		if err != nil || ch == nil {
 			return loadbalancer.ChannelTimeouts{}
 		}
-		setting := ch.GetSetting()
+		setting := cachedChannelSetting(ch)
 		return loadbalancer.ChannelTimeouts{
 			TTFTTimeoutMs:   setting.TTFTTimeoutMs,
 			HeaderTimeoutMs: setting.HeaderTimeoutMs,
@@ -48,6 +48,40 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
+
+// parsedChannelSetting 是某个渠道 setting 原文对应的解析结果。
+type parsedChannelSetting struct {
+	raw     string
+	setting kitdto.ChannelSettings
+}
+
+// parsedChannelSettingCache 缓存 setting 的解析结果：MaxInflight 与首字/响应头
+// 超时两个 provider 都在请求热路径上，Resolve 一次请求要调用多次。setting 里
+// 可能带很长的 system_prompt，每次重新 JSON 反序列化是实打实的 CPU 和 GC 开销。
+// 按 setting 原文比对失效：渠道一保存，下一次读取就是新值。
+var parsedChannelSettingCache sync.Map // channelID -> parsedChannelSetting
+
+// cachedChannelSetting 只读解析渠道 setting，绝不落库、绝不写回渠道对象——
+// 它会在并发请求路径上被调用。原文损坏时返回零值，交给 GetSetting() 在非热
+// 路径（例如面板读渠道）去清理，避免在请求里写共享缓存对象和数据库。
+func cachedChannelSetting(ch *Channel) kitdto.ChannelSettings {
+	if ch == nil || ch.Setting == nil || *ch.Setting == "" {
+		return kitdto.ChannelSettings{}
+	}
+	raw := *ch.Setting
+	if cached, ok := parsedChannelSettingCache.Load(ch.Id); ok {
+		entry := cached.(parsedChannelSetting)
+		if entry.raw == raw {
+			return entry.setting
+		}
+	}
+	var setting kitdto.ChannelSettings
+	if err := common.Unmarshal([]byte(raw), &setting); err != nil {
+		return kitdto.ChannelSettings{}
+	}
+	parsedChannelSettingCache.Store(ch.Id, parsedChannelSetting{raw: raw, setting: setting})
+	return setting
+}
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {

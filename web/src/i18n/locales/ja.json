@@ -6,7 +6,7 @@
     "Expand navigation": "ナビゲーションを展開",
     "Header Timeout (ms)": "レスポンスヘッダータイムアウト（ms）",
     "Primary navigation": "メインナビゲーション",
-    "Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. When set, it overrides the YAML value for this channel.": "ストリーミングの初回トークン待ち時間（ミリ秒）。空または 0 は loadbalancer.yaml を継承し、設定した場合はこのチャネルの YAML 値より優先されます。",
+    "Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml — including a channel-level value already set there, so 0 does not mean \"no timeout\". A value here overrides the YAML for this channel.": "ストリーミングの初回トークン待ち時間（ミリ秒）。空または 0 は loadbalancer.yaml を継承します（YAML にチャネル個別の設定がある場合も同様）。0 は「タイムアウトなし」ではありません。設定した場合はこのチャネルの YAML 値より優先されます。",
     "TTFT Timeout (ms)": "初回トークンタイムアウト（ms）",
     "Upstream response-header timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. The effective value is the smaller of this and the first-token timeout.": "上流のレスポンスヘッダー待ち時間（ミリ秒）。空または 0 は loadbalancer.yaml を継承し、実際の値は初回トークンタイムアウトとの小さい方になります。",
     "_copy": "_copy",

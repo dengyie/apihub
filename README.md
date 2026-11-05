@@ -64,6 +64,18 @@ channels:
     max_inflight: 30
 ```
 
+### Per-channel overrides from the panel
+
+`ttft_timeout_ms` and `header_timeout_ms` can also be set per channel in the
+admin panel (channel drawer → Routing Strategy), alongside `max_inflight`.
+Precedence is: **panel/database value → `channels[id]` in the YAML → `default`**.
+
+Leaving the panel field empty or `0` means *inherit the YAML* — including a
+channel-level value already defined there. It does **not** mean "no timeout":
+to relax a channel whose YAML entry sets `180000`, set a larger number in the
+panel or edit the YAML. A panel value takes effect on the next request (the
+channel cache is rebuilt on save); no restart is needed.
+
 ### Why `per_model` matters
 
 The default upstream behaviour is to break a whole channel when a model fails.

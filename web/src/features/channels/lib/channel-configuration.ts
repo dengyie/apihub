@@ -48,7 +48,15 @@ const CONFIGURATION_BLOCKS = {
   modelMapping: { section: 'routing', fields: ['model_mapping'] },
   routingStrategy: {
     section: 'routing',
-    fields: ['priority', 'weight', 'max_inflight', 'test_model', 'auto_ban'],
+    fields: [
+      'priority',
+      'weight',
+      'max_inflight',
+      'ttft_timeout_ms',
+      'header_timeout_ms',
+      'test_model',
+      'auto_ban',
+    ],
   },
   overrideRules: {
     section: 'request',

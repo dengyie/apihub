@@ -461,8 +461,11 @@ export const FIELD_PLACEHOLDERS = {
   GROUP: 'Please Select user groups that can access this channel.',
   MODEL_MAPPING: '{"request_model": "actual_model"}',
   MAX_INFLIGHT: '0',
-  TTFT_TIMEOUT_MS: 'Inherit (e.g. 30000)',
-  HEADER_TIMEOUT_MS: 'Inherit (e.g. 15000)',
+  // 占位符只给一个数值样例，和 MAX_INFLIGHT 的 '0' 一样是语言中立的；
+  // “0/空 = 继承 YAML”由下方 FormDescription 说明，避免占位符走 t() 却
+  // 在非英文界面原样显示英文句子。
+  TTFT_TIMEOUT_MS: '30000',
+  HEADER_TIMEOUT_MS: '15000',
   TEST_MODEL: 'Model to use for testing',
   TAG: 'Optional tag for grouping channels',
   REMARK: 'Optional notes about this channel',
@@ -486,7 +489,7 @@ export const FIELD_DESCRIPTIONS = {
   MAX_INFLIGHT:
     'Maximum concurrent requests allowed for this channel. 0 or empty uses global default.',
   TTFT_TIMEOUT_MS:
-    'Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. When set, it overrides the YAML value for this channel.',
+    'Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml — including a channel-level value already set there, so 0 does not mean "no timeout". A value here overrides the YAML for this channel.',
   HEADER_TIMEOUT_MS:
     'Upstream response-header timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. The effective value is the smaller of this and the first-token timeout.',
   TEST_MODEL: 'Model to use when testing channel connectivity',

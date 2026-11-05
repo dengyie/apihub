@@ -2254,7 +2254,7 @@ export function ChannelMutateDrawer({
                 <Input
                   type='number'
                   min='0'
-                  step='1000'
+                  step='1'
                   placeholder={t(FIELD_PLACEHOLDERS.TTFT_TIMEOUT_MS)}
                   value={field.value ?? ''}
                   onChange={(e) =>
@@ -2282,7 +2282,7 @@ export function ChannelMutateDrawer({
                 <Input
                   type='number'
                   min='0'
-                  step='1000'
+                  step='1'
                   placeholder={t(FIELD_PLACEHOLDERS.HEADER_TIMEOUT_MS)}
                   value={field.value ?? ''}
                   onChange={(e) =>

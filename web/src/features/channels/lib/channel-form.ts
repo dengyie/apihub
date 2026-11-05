@@ -202,6 +202,21 @@ function addRequiredIssue(
   })
 }
 
+// 与后端 dto.MinChannelTimeoutMs / MaxChannelTimeoutMs 对齐：0 = 继承
+// loadbalancer.yaml，非 0 必须落在 [100ms, 30min]。区间不一致会让用户
+// 在表单里通过校验、再拿到一个服务端错误。
+const MIN_CHANNEL_TIMEOUT_MS = 100
+const MAX_CHANNEL_TIMEOUT_MS = 1_800_000
+
+const channelTimeoutSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(MAX_CHANNEL_TIMEOUT_MS)
+  .refine((value) => value === 0 || value >= MIN_CHANNEL_TIMEOUT_MS, {
+    message: `Timeout must be 0 (inherit) or between ${MIN_CHANNEL_TIMEOUT_MS} and ${MAX_CHANNEL_TIMEOUT_MS} milliseconds`,
+  })
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -270,8 +285,8 @@ export const channelFormSchema = z
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
     max_inflight: z.number().int().min(0).optional(),
-    ttft_timeout_ms: z.number().int().min(0).max(1800000).optional(),
-    header_timeout_ms: z.number().int().min(0).max(1800000).optional(),
+    ttft_timeout_ms: channelTimeoutSchema.optional(),
+    header_timeout_ms: channelTimeoutSchema.optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),

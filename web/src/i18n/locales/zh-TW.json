@@ -6,7 +6,7 @@
     "Expand navigation": "展開導覽",
     "Header Timeout (ms)": "回應標頭逾時（毫秒）",
     "Primary navigation": "主導覽",
-    "Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. When set, it overrides the YAML value for this channel.": "串流請求首字逾時（毫秒）。留空或填 0 表示繼承 loadbalancer.yaml；填寫後優先於該渠道在 YAML 中的設定。",
+    "Streaming first-token timeout in milliseconds. 0 or empty inherits loadbalancer.yaml — including a channel-level value already set there, so 0 does not mean \"no timeout\". A value here overrides the YAML for this channel.": "串流請求首字逾時（毫秒）。留空或填 0 表示繼承 loadbalancer.yaml（若 YAML 中該渠道有單獨設定，也照此繼承），因此填 0 不代表「不逾時」；填寫後優先於該渠道在 YAML 中的設定。",
     "TTFT Timeout (ms)": "首字逾時（毫秒）",
     "Upstream response-header timeout in milliseconds. 0 or empty inherits loadbalancer.yaml. The effective value is the smaller of this and the first-token timeout.": "上游回應標頭等待逾時（毫秒）。留空或填 0 表示繼承 loadbalancer.yaml；實際生效值取它與首字逾時中的較小者。",
     "_copy": "_複製",

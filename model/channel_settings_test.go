@@ -220,3 +220,45 @@ func TestChannelTimeoutsProviderMemoryCacheGuard(t *testing.T) {
 	assert.Equal(t, loadbalancer.ChannelTimeouts{}, loadbalancer.GetChannelTimeouts(99999),
 		"MemoryCacheEnabled 为 false 时必须立即返回零值，不能查库")
 }
+
+// 正向覆盖：provider 真的从渠道 setting 读出了值。只验证「关闭缓存返回零值」
+// 的测试是空的——就算把守卫整段删掉，CacheGetChannel 查库失败也返回零值。
+func TestChannelTimeoutsProviderReadsChannelSetting(t *testing.T) {
+	prevCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	defer func() {
+		common.MemoryCacheEnabled = prevCache
+	}()
+
+	ch := &Channel{
+		Id:      987654,
+		Setting: common.GetPointer(`{"ttft_timeout_ms":45000,"header_timeout_ms":20000,"max_inflight":12}`),
+	}
+	channelSyncLock.Lock()
+	prevChannels := channelsIDM
+	channelsIDM = map[int]*Channel{ch.Id: ch}
+	channelSyncLock.Unlock()
+	defer func() {
+		channelSyncLock.Lock()
+		channelsIDM = prevChannels
+		channelSyncLock.Unlock()
+	}()
+
+	timeouts := loadbalancer.GetChannelTimeouts(ch.Id)
+	assert.Equal(t, 45000, timeouts.TTFTTimeoutMs)
+	assert.Equal(t, 20000, timeouts.HeaderTimeoutMs)
+	assert.Equal(t, 12, loadbalancer.GetChannelMaxInflight(ch.Id), "两个 provider 共用同一份解析结果")
+
+	// 保存渠道后立即生效：缓存按 setting 原文比对失效，不需要等缓存重建。
+	ch.Setting = common.GetPointer(`{"ttft_timeout_ms":8000}`)
+	timeouts = loadbalancer.GetChannelTimeouts(ch.Id)
+	assert.Equal(t, 8000, timeouts.TTFTTimeoutMs)
+	assert.Equal(t, 0, timeouts.HeaderTimeoutMs, "键被删掉后应回到零值（继承 YAML）")
+
+	// 原文损坏：热路径只返回零值，不落库、也不写回共享渠道对象。
+	broken := `{not json`
+	ch.Setting = common.GetPointer(broken)
+	assert.Equal(t, loadbalancer.ChannelTimeouts{}, loadbalancer.GetChannelTimeouts(ch.Id))
+	require.NotNil(t, ch.Setting, "请求热路径不得清空共享渠道对象上的 setting")
+	assert.Equal(t, broken, *ch.Setting)
+}

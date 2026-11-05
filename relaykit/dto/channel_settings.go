@@ -71,6 +71,7 @@ type ChannelSettings struct {
 	// TTFTTimeoutMs 流式首字超时（毫秒）。0 或未配置表示继承
 	// loadbalancer.yaml 的 channels[id].ttft_timeout_ms / default.ttft_timeout_ms。
 	// 非 0 时优先于 YAML —— 与 MaxInflight 同一套「数据库动态值优先」的优先级。
+	// 注意 0 是「继承」而不是「关闭」：YAML 里该渠道若已配值，0 仍然生效那个值。
 	TTFTTimeoutMs int `json:"ttft_timeout_ms,omitempty"`
 	// HeaderTimeoutMs 上游响应头等待超时（毫秒）。0 或未配置表示继承 YAML。
 	// 生效值取 min(HeaderTimeoutMs, TTFTTimeoutMs)：只配 TTFT 会把响应头闸门
@@ -83,8 +84,9 @@ const (
 	// MinChannelTimeoutMs 低于 100ms 的值只可能是把秒写成了毫秒，
 	// 而它会让整条渠道在正常请求上持续超时。
 	MinChannelTimeoutMs = 100
-	// MaxChannelTimeoutMs 上限 30 分钟：再大就等于关闭首字闸门，
-	// 应该显式去改 YAML 的 enabled，而不是填一个天文数字。
+	// MaxChannelTimeoutMs 上限 30 分钟：超过它首字闸门已等同不存在，
+	// 再大的数字只会让人把配置当成手滑。真要关掉首字检测，YAML 那条
+	// `enabled: false` 是全局开关，不是单渠道语义——单渠道请用上限值。
 	MaxChannelTimeoutMs = 1_800_000
 )
 
