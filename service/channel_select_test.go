@@ -577,6 +577,59 @@ func TestSelectRetryChannelSkipsUnhealthyChannels(t *testing.T) {
 	assert.Nil(t, selected, "an all-unhealthy pool must report exhaustion, not a channel")
 }
 
+// A retry round must keep the first round's fallbacks: when every remaining
+// candidate is merely overloaded (or proven slow) the request still gets a
+// channel, instead of a 503 that hides the previous attempt's real error.
+func TestSelectRetryChannelFallsBackWhenPoolIsBusy(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "test-retry-busy-fallback-model"
+
+	const failedID, busyID, busierID, slowID = 7321, 7322, 7323, 7324
+	for _, id := range []int{failedID, busyID, busierID, slowID} {
+		createTestChannelForSelect(t, db, id, "default", modelName)
+	}
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			MaxInflight: 1,
+			Breaker:     loadbalancer.BreakerPolicy{FailureThreshold: 99, CooldownSeconds: 60, HalfOpenProbes: 1},
+		},
+	})
+	t.Cleanup(func() { loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false}) })
+
+	tr := loadbalancer.GlobalTracker()
+	handles := []*loadbalancer.RequestHandle{tr.Begin(busyID, testModel), tr.Begin(busierID, testModel), tr.Begin(busierID, testModel)}
+	t.Cleanup(func() {
+		for _, h := range handles {
+			h.End(false, false)
+		}
+	})
+	for i := 0; i < 3; i++ {
+		tr.Begin(slowID, testModel).End(true, false)
+	}
+	require.True(t, tr.IsDegraded(slowID, testModel))
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Set("use_channel", []string{fmt.Sprintf("%d", failedID)})
+	retry.SetRetry(1)
+	selected, _, err := SelectRetryChannel(retry)
+	require.NoError(t, err)
+	require.NotNil(t, selected, "a busy pool must not turn a retry into a 503")
+	assert.Equal(t, busyID, selected.Id, "least-loaded overloaded channel beats a busier one and a proven-slow one")
+
+	// Once the overloaded channels have been tried too, the degraded channel is
+	// the last resort.
+	c2, retry2 := newSelectRetryParam(modelName, nil)
+	c2.Set("use_channel", []string{fmt.Sprintf("%d", failedID), fmt.Sprintf("%d", busyID), fmt.Sprintf("%d", busierID)})
+	retry2.SetRetry(3)
+	selected, _, err = SelectRetryChannel(retry2)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, slowID, selected.Id)
+}
+
 // Mutex groups pin a request to one channel of the pair: once either side is
 // excluded (failed attempt, breaker trip, sticky collision), the other side
 // must never be picked for the same request. This is what prevents Responses

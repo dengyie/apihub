@@ -274,23 +274,6 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	return newChannelCandidates(param).resolve()
 }
 
-// SelectRetryChannel 为「换渠道重试」挑选下一个渠道。
-//
-// 重试路径此前直接调用 CacheGetRandomSatisfiedChannel，而它只按分组/优先级/
-// 权重选路，比首轮选路少了两道过滤，于是「换渠道重试」在很多部署里名不副实：
-//
-//  1. 不知道本请求已经用过哪些渠道。RetryParam.ExcludedIDs 在重试路径上从未被
-//     填充，唯一的真实记录 use_channel（每次 SetupContextForSelectedChannel 追加）
-//     只有首轮选路的 SelectChannelForRequest 会读。所以刚失败的那个渠道在下一轮
-//     仍然在候选池里，而配合 sticky 路由（同一 StickyKey → 同一索引）就是
-//     确定性地再打一次同一个坏渠道。
-//  2. 不看负载均衡状态。熔断已打开、并发已打满的渠道照样会被选中，于是首轮刚
-//     确认失败的渠道下一轮又回来了，熔断形同虚设。
-//
-// 排除集写回 param 并跨轮次累积：一个渠道只要在本请求内被证明不可用（试过了或
-// 被 tracker 判死），后续轮次就不再参与。终止性由 Pick 保证——候选被排除干净时
-// 它返回 nil，resolve 随之返回「无可用渠道」错误，循环最迟在候选耗尽的那一轮
-// 结束，无需人为设定尝试上限。
 // 互斥渠道组：同一组内任一渠道被排除时，同组其他渠道一并排除。
 // 用于 Responses API 等带状态接口（previous_response_id 绑定上游资源），
 // 防止跨渠道 failover 时把请求打到不认识该 id 的另一资源上。
@@ -322,6 +305,96 @@ func applyMutexGroupExclusions(excluded map[int]struct{}) {
 	}
 }
 
+// pickAvailable 按 resolve 的分组/优先级/权重顺序选出一个可服务本模型的渠道。
+//
+// 健康渠道优先；没有时兜底放行 inflight 最小的过载渠道，再不行放行降级渠道
+// （连续慢），总比 503 好。过载只是瞬时并发占满，降级是已证实的持续慢，所以
+// 过载兜底排在前面。被跳过的渠道写入 param.ExcludedIDs（mutexOnSkip 时连同互斥
+// 兄弟），候选排除干净时 resolve 返回 nil，循环至多「渠道总数」轮自然终止。
+// 只读的 PeekAvailable 先筛，选定后才用 IsAvailable 消费半开探测名额。
+func (r *channelCandidates) pickAvailable(mutexOnSkip bool) (*model.Channel, string, error) {
+	param := r.param
+	tracker := loadbalancer.GlobalTracker()
+	exclude := func(id int) {
+		param.ExcludedIDs[id] = struct{}{}
+		if mutexOnSkip {
+			applyMutexGroupExclusions(param.ExcludedIDs)
+		}
+	}
+
+	var overloaded, degraded *model.Channel
+	var overloadedGroup, degradedGroup, lastGroup string
+	minInflight := math.MaxInt
+	for {
+		channel, group, err := r.resolve()
+		if err != nil {
+			return nil, group, err
+		}
+		lastGroup = group
+		if channel == nil {
+			break
+		}
+		if ok, reason := tracker.PeekAvailable(channel.Id, param.ModelName); !ok {
+			logger.LogDebug(param.Ctx, "loadbalancer: skip channel #%d [model=%s] (%s)", channel.Id, param.ModelName, reason)
+			if reason == loadbalancer.ReasonOverloaded {
+				if inflight := tracker.Inflight(channel.Id); inflight < minInflight {
+					minInflight = inflight
+					overloaded, overloadedGroup = channel, group
+				}
+			}
+			exclude(channel.Id)
+			continue
+		}
+		if tracker.IsDegraded(channel.Id, param.ModelName) {
+			if degraded == nil {
+				degraded, degradedGroup = channel, group
+			}
+			logger.LogDebug(param.Ctx, "loadbalancer: channel #%d is degraded, deprioritized", channel.Id)
+			exclude(channel.Id)
+			continue
+		}
+		if ok, _ := tracker.IsAvailable(channel.Id, param.ModelName); !ok {
+			exclude(channel.Id)
+			continue
+		}
+		return channel, group, nil
+	}
+
+	if overloaded != nil {
+		logger.LogWarn(param.Ctx, fmt.Sprintf(
+			"loadbalancer: every candidate channel is overloaded, using least-loaded channel #%d (inflight=%d, max_inflight=%d) as fallback",
+			overloaded.Id, minInflight, loadbalancer.GetPolicy().Resolve(overloaded.Id).MaxInflight))
+		return overloaded, overloadedGroup, nil
+	}
+	if degraded != nil {
+		_, _ = tracker.IsAvailable(degraded.Id, param.ModelName)
+		logger.LogDebug(param.Ctx, "loadbalancer: using degraded channel #%d as fallback", degraded.Id)
+		return degraded, degradedGroup, nil
+	}
+	return nil, lastGroup, nil
+}
+
+// SelectRetryChannel 为「换渠道重试」挑选下一个渠道。
+//
+// 重试路径此前直接调用 CacheGetRandomSatisfiedChannel，而它只按分组/优先级/
+// 权重选路，比首轮选路少了两道过滤，于是「换渠道重试」在很多部署里名不副实：
+//
+//  1. 不知道本请求已经用过哪些渠道。RetryParam.ExcludedIDs 在重试路径上从未被
+//     填充，唯一的真实记录 use_channel（每次 SetupContextForSelectedChannel 追加）
+//     只有首轮选路的 SelectChannelForRequest 会读。所以刚失败的那个渠道在下一轮
+//     仍然在候选池里，而配合 sticky 路由（同一 StickyKey → 同一索引）就是
+//     确定性地再打一次同一个坏渠道。
+//  2. 不看负载均衡状态。熔断已打开、并发已打满的渠道照样会被选中，于是首轮刚
+//     确认失败的渠道下一轮又回来了，熔断形同虚设。
+//
+// 排除集写回 param 并跨轮次累积：一个渠道只要在本请求内被证明不可用（试过了或
+// 被 tracker 判死），后续轮次就不再参与。终止性由 Pick 保证——候选被排除干净时
+// 它返回 nil，resolve 随之返回「无可用渠道」错误，循环最迟在候选耗尽的那一轮
+// 结束，无需人为设定尝试上限。
+//
+// 与首轮共用 pickAvailable 的兜底顺序：候选全部过载或降级时仍放行负载最低
+// 的过载渠道或降级渠道，而不是在重试轮直接报「无可用渠道」把上一轮的真实
+// 错误盖掉。
 func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 	if param == nil || param.Ctx == nil {
 		return nil, "", errors.New("retry param is nil")
@@ -346,24 +419,7 @@ func SelectRetryChannel(param *RetryParam) (*model.Channel, string, error) {
 
 	applyMutexGroupExclusions(param.ExcludedIDs)
 
-	candidates := newChannelCandidates(param)
-	tracker := loadbalancer.GlobalTracker()
-	for {
-		channel, selectGroup, err := candidates.resolve()
-		if err != nil {
-			return nil, selectGroup, err
-		}
-		if channel == nil {
-			return nil, selectGroup, nil
-		}
-		if ok, reason := tracker.IsAvailable(channel.Id, param.ModelName); !ok {
-			logger.LogDebug(param.Ctx, "loadbalancer: retry 跳过渠道 #%d [model=%s] (%s)", channel.Id, param.ModelName, reason)
-			param.ExcludedIDs[channel.Id] = struct{}{}
-			applyMutexGroupExclusions(param.ExcludedIDs)
-			continue
-		}
-		return channel, selectGroup, nil
-	}
+	return newChannelCandidates(param).pickAvailable(true)
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
@@ -493,10 +549,6 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	// 降级渠道（连续慢 3 次）与过载渠道（达到并发上限）都先记为备选：
 	// 过载只是瞬时并发占满，降级是已证实的持续慢，所以过载兜底优先。
 	used := retry.Ctx.GetStringSlice("use_channel")
-	usedSet := make(map[string]struct{}, len(used))
-	for _, id := range used {
-		usedSet[id] = struct{}{}
-	}
 
 	// 使用本地工作副本，绝不调用 retry.IncreaseRetry() 污染外层请求的重试计数与重试预算
 	retryLocal := *retry
@@ -588,73 +640,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 	if channel == nil {
 		var err error
-		var degradedFallback *model.Channel
-		var degradedSelectGroup string
-		var overloadedFallback *model.Channel
-		var overloadedSelectGroup string
-		minOverloadedInflight := math.MaxInt
-		for {
-			channel, selectGroup, err = candidates.resolve()
-			if err != nil || channel == nil {
-				break
-			}
-			if _, tried := usedSet[fmt.Sprintf("%d", channel.Id)]; tried {
-				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d (already tried in this request)", channel.Id)
-				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
-				channel = nil
-				continue
-			}
-			if ok, reason := loadbalancer.GlobalTracker().PeekAvailable(channel.Id, modelName); !ok {
-				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d [model=%s] (%s)", channel.Id, modelName, reason)
-				if reason == loadbalancer.ReasonOverloaded {
-					inflight := loadbalancer.GlobalTracker().Inflight(channel.Id)
-					if inflight < minOverloadedInflight {
-						minOverloadedInflight = inflight
-						overloadedFallback = channel
-						overloadedSelectGroup = selectGroup
-					}
-				}
-				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
-				channel = nil
-				continue
-			}
-			// 降级渠道：先记为备选，优先用非降级渠道
-			if loadbalancer.GlobalTracker().IsDegraded(channel.Id, modelName) {
-				if degradedFallback == nil {
-					degradedFallback = channel
-					degradedSelectGroup = selectGroup
-				}
-				logger.LogDebug(retry.Ctx, "loadbalancer: channel #%d is degraded, deprioritized", channel.Id)
-				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
-				channel = nil
-				continue
-			}
-			// 确定选用该非降级健康渠道，正式调用 IsAvailable 校验并消费探测配额
-			if ok, _ := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); !ok {
-				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
-				channel = nil
-				continue
-			}
-			break
-		}
-		// 过载兜底：当所有可用渠道均达到并发上限且无其他健康渠道时，选取负载
-		// 最低（inflight 最小）的渠道兜底放行，避免因并发保护而假死报 503。
-		// 过载是瞬时状态，降级是已证实的慢，故排在降级兜底之前。
-		if channel == nil && overloadedFallback != nil {
-			channel = overloadedFallback
-			selectGroup = overloadedSelectGroup
-			logger.LogWarn(retry.Ctx, fmt.Sprintf(
-				"loadbalancer: every candidate channel is overloaded, using least-loaded channel #%d (inflight=%d, max_inflight=%d) as fallback",
-				channel.Id, minOverloadedInflight, loadbalancer.GetPolicy().Resolve(channel.Id).MaxInflight))
-		}
-		// 降级渠道兜底：没找到非降级渠道时，用降级渠道（总比无渠道好）
-		if channel == nil && degradedFallback != nil {
-			channel = degradedFallback
-			selectGroup = degradedSelectGroup
-			// 确定选用降级兜底渠道，正式调用 IsAvailable 消费探测配额
-			_, _ = loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName)
-			logger.LogDebug(retry.Ctx, "loadbalancer: using degraded channel #%d as fallback", channel.Id)
-		}
+		channel, selectGroup, err = candidates.pickAvailable(false)
 		if err != nil {
 			showGroup := usingGroup
 			if usingGroup == "auto" {
