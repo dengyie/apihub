@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,6 +112,21 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 	return relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
 }
 
+// ensureResponsesPromptCacheKey fills prompt_cache_key for converted chat traffic.
+// Codex 系上游（如渠道 #154）对 /v1/responses 强制要求该字段，缺失直接 400
+// invalid_responses_request（实测确认）。真实 Codex 客户端总是自带；chat-completions
+// 转换出的请求没有，用与指纹 session_id 同源的按用户确定性 UUID 补齐，让同一用户
+// 的请求在上游共享 prompt cache 路由。
+func ensureResponsesPromptCacheKey(c *gin.Context, responsesReq *dto.OpenAIResponsesRequest) {
+	if responsesReq == nil {
+		return
+	}
+	if len(responsesReq.PromptCacheKey) > 0 && string(responsesReq.PromptCacheKey) != "null" {
+		return
+	}
+	responsesReq.PromptCacheKey = json.RawMessage(`"` + channel.UserSessionUUID(c.GetInt("id")) + `"`)
+}
+
 func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, paramOverrideApplied bool) (*dto.Usage, *types.NewAPIError) {
 	savedRelayMode := info.RelayMode
 	savedRequestURLPath := info.RequestURLPath
@@ -133,6 +149,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 		responsesReq.StripReasoningInput()
 	}
 	responsesReq.EnsureCodexFields()
+	ensureResponsesPromptCacheKey(c, responsesReq)
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {

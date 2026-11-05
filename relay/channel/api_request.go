@@ -195,7 +195,7 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 		if c == nil {
 			return "", false, fmt.Errorf("missing request context for %s placeholder", opencodeSessionPlaceholder)
 		}
-		return userSessionUUID(c.GetInt("id")), true, nil
+		return UserSessionUUID(c.GetInt("id")), true, nil
 	}
 
 	if strings.Contains(template, "{api_key}") {

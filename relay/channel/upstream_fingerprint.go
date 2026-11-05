@@ -36,10 +36,12 @@ func usesCodexFingerprint(info *common.RelayInfo) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gpt-")
 }
 
-// userSessionUUID returns the deterministic per-user session UUID (UUID v5/SHA-1):
+// UserSessionUUID returns the deterministic per-user session UUID (UUID v5/SHA-1):
 // the same user id always maps to the same UUID, keeping one user's requests
-// session-sticky on upstreams that route by session headers.
-func userSessionUUID(userID int) string {
+// session-sticky on upstreams that route or cache by per-user keys. Shared by
+// the codex fingerprint (session_id / x-opencode-session) and the chat→responses
+// conversion (prompt_cache_key).
+func UserSessionUUID(userID int) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("opencode-session-%d", userID))).String()
 }
 
@@ -47,7 +49,7 @@ func userSessionUUID(userID int) string {
 // It runs after header_override and only fills headers that are still missing, so an
 // explicit channel header_override always wins.
 func applyUpstreamClientFingerprint(c *gin.Context, info *common.RelayInfo, req *http.Request) {
-	userSession := userSessionUUID(c.GetInt("id"))
+	userSession := UserSessionUUID(c.GetInt("id"))
 	if !usesCodexFingerprint(info) {
 		// 部分上游（如 ioll.pp.ua）要求 x-opencode-session 头做会话路由，缺失时报 400。
 		// Codex 指纹请求不带它：真实 Codex CLI 不会发送该头。

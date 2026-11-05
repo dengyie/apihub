@@ -10,6 +10,7 @@ import (
 
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
+	"github.com/dengyie/apihub/relay/channel"
 	openaichannel "github.com/dengyie/apihub/relay/channel/openai"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	relayconstant "github.com/dengyie/apihub/relay/constant"
@@ -279,4 +280,45 @@ func TestApplySystemPromptIfNeededSkipsToolLoadingMessages(t *testing.T) {
 			assert.Equal(t, tt.wantOverride, overrideSet)
 		})
 	}
+}
+
+// 渠道 #154 一类 Codex 系上游对 /v1/responses 强制要求 prompt_cache_key
+// （缺失 400 invalid_responses_request，实测确认）。chat→responses 转换出的
+// 请求必须补齐：按用户确定性 UUID，与指纹 session_id 同源；已有值不覆盖。
+func TestEnsureResponsesPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newCtx := func(userID int) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		c.Set("id", userID)
+		return c
+	}
+
+	c7 := newCtx(7)
+	req := &dto.OpenAIResponsesRequest{Model: "gpt-6.1-sol"}
+	ensureResponsesPromptCacheKey(c7, req)
+	require.Equal(t, `"`+channel.UserSessionUUID(7)+`"`, string(req.PromptCacheKey),
+		"缺失时应按用户 UUID 补齐")
+
+	// 同一用户确定性
+	reqAgain := &dto.OpenAIResponsesRequest{}
+	ensureResponsesPromptCacheKey(c7, reqAgain)
+	require.Equal(t, string(req.PromptCacheKey), string(reqAgain.PromptCacheKey))
+
+	// 已有值不覆盖
+	existing := json.RawMessage(`"client-key"`)
+	reqKept := &dto.OpenAIResponsesRequest{PromptCacheKey: existing}
+	ensureResponsesPromptCacheKey(c7, reqKept)
+	require.Equal(t, existing, reqKept.PromptCacheKey)
+
+	// null 视为缺失
+	reqNull := &dto.OpenAIResponsesRequest{PromptCacheKey: json.RawMessage("null")}
+	ensureResponsesPromptCacheKey(c7, reqNull)
+	require.Equal(t, `"`+channel.UserSessionUUID(7)+`"`, string(reqNull.PromptCacheKey))
+
+	// 不同用户不同值
+	reqOther := &dto.OpenAIResponsesRequest{}
+	ensureResponsesPromptCacheKey(newCtx(8), reqOther)
+	require.NotEqual(t, string(req.PromptCacheKey), string(reqOther.PromptCacheKey))
 }
