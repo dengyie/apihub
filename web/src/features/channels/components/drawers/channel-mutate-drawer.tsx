@@ -2924,7 +2924,11 @@ export function ChannelMutateDrawer({
                 <code className='bg-muted rounded px-1 py-0.5'>
                   {'{client_header:NAME}'}
                 </code>{' '}
-                — {t('Client header value')}
+                — {t('Client header value')},{' '}
+                <code className='bg-muted rounded px-1 py-0.5'>
+                  {'{opencode_session}'}
+                </code>{' '}
+                — {t('Per-user deterministic session UUID for OpenCode session routing')}
               </FormDescription>
               <FormMessage />
             </FormItem>

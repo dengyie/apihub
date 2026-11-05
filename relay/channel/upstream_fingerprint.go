@@ -36,12 +36,18 @@ func usesCodexFingerprint(info *common.RelayInfo) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gpt-")
 }
 
+// userSessionUUID returns the deterministic per-user session UUID (UUID v5/SHA-1):
+// the same user id always maps to the same UUID, keeping one user's requests
+// session-sticky on upstreams that route by session headers.
+func userSessionUUID(userID int) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("opencode-session-%d", userID))).String()
+}
+
 // applyUpstreamClientFingerprint sets the client identity headers the upstream sees.
 // It runs after header_override and only fills headers that are still missing, so an
 // explicit channel header_override always wins.
 func applyUpstreamClientFingerprint(c *gin.Context, info *common.RelayInfo, req *http.Request) {
-	// UUID v5（SHA-1）：相同 user_id 总是生成相同 UUID，保证同一用户的会话粘性。
-	userSession := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("opencode-session-%d", c.GetInt("id")))).String()
+	userSession := userSessionUUID(c.GetInt("id"))
 	if !usesCodexFingerprint(info) {
 		// 部分上游（如 ioll.pp.ua）要求 x-opencode-session 头做会话路由，缺失时报 400。
 		// Codex 指纹请求不带它：真实 Codex CLI 不会发送该头。
@@ -64,6 +70,13 @@ func applyUpstreamClientFingerprint(c *gin.Context, info *common.RelayInfo, req 
 				req.Header.Set(name, value)
 			}
 		}
+	}
+	// OpenCode 系 SDK 会显式携带 x-opencode-session 做会话路由（如 ioll.pp.ua 一类
+	// 中继缺失它直接 400 并触发熔断）。真 Codex CLI 从不发送该头，因此转发客户端
+	// 显式值不影响 Codex 指纹形态；header_override 里配的 {opencode_session} 占位符
+	// 则覆盖没有该头的客户端。
+	if value := clientHeaders.Get("x-opencode-session"); value != "" && req.Header.Get("x-opencode-session") == "" {
+		req.Header.Set("x-opencode-session", value)
 	}
 	if req.Header.Get("originator") == "" {
 		req.Header.Set("originator", codexFingerprintOriginator)

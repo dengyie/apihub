@@ -1161,6 +1161,7 @@
     "Click to view image": "クリックして画像を表示",
     "Client": "クライアント",
     "Client header value": "クライアントヘッダー値",
+    "Per-user deterministic session UUID for OpenCode session routing": "OpenCodeセッションルーティング用のユーザーごとの決定論的セッションUUID",
     "Client headers override the gateway defaults and may cause upstream errors": "クライアントのヘッダーがゲートウェイの既定ヘッダーを上書きし、上流でエラーになる可能性があります",
     "Client ID": "クライアントID",
     "Client information such as User-Agent and IP is exposed to the upstream": "User-Agent や IP などのクライアント情報が上流に公開されます",

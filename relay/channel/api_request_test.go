@@ -213,6 +213,53 @@ func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.
 	require.Empty(t, upstreamReq.Header.Get("X-Codex-Beta-Features"))
 }
 
+func TestProcessHeaderOverride_OpencodeSessionPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	newInfo := func() *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			IsChannelTest: false,
+			ChannelMeta: &relaycommon.ChannelMeta{
+				HeadersOverride: map[string]any{
+					"x-opencode-session": opencodeSessionPlaceholder,
+				},
+			},
+		}
+	}
+	ctxFor := func(userID int) *gin.Context {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		ctx.Set("id", userID)
+		return ctx
+	}
+
+	headers, err := processHeaderOverride(newInfo(), ctxFor(7))
+	require.NoError(t, err)
+	first := headers["x-opencode-session"]
+	require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, first)
+
+	// 同一用户确定性：再次解析得到相同 UUID，保证上游会话粘性。
+	headersAgain, err := processHeaderOverride(newInfo(), ctxFor(7))
+	require.NoError(t, err)
+	require.Equal(t, first, headersAgain["x-opencode-session"])
+
+	// 不同用户得到不同 UUID。
+	headersOther, err := processHeaderOverride(newInfo(), ctxFor(8))
+	require.NoError(t, err)
+	require.NotEqual(t, first, headersOther["x-opencode-session"])
+
+	// 与指纹分支的 session_id 同源：同用户同值，渠道内会话标识一致。
+	fpInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.5",
+		ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI},
+	}
+	upstreamReq, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	require.NoError(t, err)
+	applyUpstreamClientFingerprint(ctxFor(7), fpInfo, upstreamReq)
+	require.Equal(t, first, upstreamReq.Header.Get("session_id"))
+}
+
 func TestIsClientCanceled(t *testing.T) {
 	t.Parallel()
 
@@ -583,6 +630,22 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 				"X-Codex-Beta-Features": codexFingerprintBetaFeatures,
 			},
 			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:         "opencode sdk client keeps its explicit session header on gpt requests",
+			channelType:  constant.ChannelTypeOpenAI,
+			model:        "gpt-5.5",
+			clientHeaders: map[string]string{
+				"User-Agent":         "OpenCode/1.0",
+				"x-opencode-session": "client-opencode-session",
+			},
+			want: map[string]string{
+				"User-Agent":            codexFingerprintUserAgent,
+				"originator":            codexFingerprintOriginator,
+				"OpenAI-Beta":           codexFingerprintOpenAIBeta,
+				"X-Codex-Beta-Features": codexFingerprintBetaFeatures,
+				"x-opencode-session":    "client-opencode-session",
+			},
 		},
 		{
 			name:           "header override keeps priority",

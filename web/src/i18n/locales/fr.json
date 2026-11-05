@@ -1157,6 +1157,7 @@
     "Click to view image": "Cliquer pour voir l’image",
     "Client": "Client",
     "Client header value": "Valeur d'en-tête client",
+    "Per-user deterministic session UUID for OpenCode session routing": "UUID de session déterministe par utilisateur pour le routage de session OpenCode",
     "Client headers override the gateway defaults and may cause upstream errors": "Les en-têtes du client remplacent ceux de la passerelle et peuvent provoquer des erreurs en amont",
     "Client ID": "ID client",
     "Client information such as User-Agent and IP is exposed to the upstream": "Les informations du client, comme le User-Agent et l'IP, sont exposées à l'amont",

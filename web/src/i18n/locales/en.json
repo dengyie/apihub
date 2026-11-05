@@ -1161,6 +1161,7 @@
     "Click to view image": "Click to view image",
     "Client": "Client",
     "Client header value": "Client header value",
+    "Per-user deterministic session UUID for OpenCode session routing": "Per-user deterministic session UUID for OpenCode session routing",
     "Client headers override the gateway defaults and may cause upstream errors": "Client headers override the gateway defaults and may cause upstream errors",
     "Client ID": "Client ID",
     "Client information such as User-Agent and IP is exposed to the upstream": "Client information such as User-Agent and IP is exposed to the upstream",

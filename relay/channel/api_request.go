@@ -75,6 +75,12 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 
 const clientHeaderPlaceholderPrefix = "{client_header:"
 
+// opencodeSessionPlaceholder 展开为按用户生成的确定性会话 UUID（同 userSessionUUID）。
+// 用途：OpenCode 系上游（如 ioll.pp.ua）要求 x-opencode-session 做会话路由，而
+// gpt-* 指纹请求默认不带该头；需要它的渠道在 header_override 里配一条
+// {"x-opencode-session": "{opencode_session}"} 即可恢复按用户粘性的会话路由。
+const opencodeSessionPlaceholder = "{opencode_session}"
+
 const (
 	headerPassthroughAllKey        = "*"
 	headerPassthroughRegexPrefix   = "re:"
@@ -185,6 +191,13 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 		return clientHeaderValue, true, nil
 	}
 
+	if trimmed == opencodeSessionPlaceholder {
+		if c == nil {
+			return "", false, fmt.Errorf("missing request context for %s placeholder", opencodeSessionPlaceholder)
+		}
+		return userSessionUUID(c.GetInt("id")), true, nil
+	}
+
 	if strings.Contains(template, "{api_key}") {
 		template = strings.ReplaceAll(template, "{api_key}", apiKey)
 	}
@@ -198,6 +211,7 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 // Supported placeholders:
 //   - {api_key}: resolved to the channel API key
 //   - {client_header:<name>}: resolved to the incoming request header value
+//   - {opencode_session}: resolved to the deterministic per-user session UUID
 //
 // Header passthrough rules (keys only; values are ignored):
 //   - "*": passthrough all incoming headers by name (excluding unsafe headers)
