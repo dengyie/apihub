@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -365,7 +364,7 @@ func getFetchModelsResponseBody(method string, requestURL string, channel *model
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
+	body, err := common.ReadUpstreamBody(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("读取上游响应失败: %w", err)
 	}
@@ -399,7 +398,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		key := strings.TrimSpace(strings.Split(channel.Key, "\n")[0])
 		models, err := ollama.FetchOllamaModels(baseURL, key)
 		if err != nil {
-			return nil, err
+			return nil, sanitizeFetchModelsError(err, key)
 		}
 		return normalizeModelNames(lo.Map(models, func(item ollama.OllamaModel, _ int) string {
 			return item.Name
@@ -414,7 +413,7 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		key = strings.TrimSpace(key)
 		models, err := gemini.FetchGeminiModels(baseURL, key, channel.GetSetting().Proxy)
 		if err != nil {
-			return nil, err
+			return nil, sanitizeFetchModelsError(err, key)
 		}
 		return normalizeModelNames(models), nil
 	}
@@ -522,7 +521,12 @@ func fetchAdvancedCustomUpstreamModelIDs(channel *model.Channel, baseURL string)
 	if err != nil {
 		return nil, sanitizeFetchModelsError(err, key)
 	}
-	return parseOpenAIModelIDs(body)
+	// 解析失败的文案现在带上游响应片段，同样可能回显密钥，必须走同一条脱敏路径。
+	models, err := parseOpenAIModelIDs(body)
+	if err != nil {
+		return nil, sanitizeFetchModelsError(err, key)
+	}
+	return models, nil
 }
 
 func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.ChannelOtherSettings, updateModels bool) error {

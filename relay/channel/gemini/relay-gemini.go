@@ -625,7 +625,7 @@ func FetchGeminiModels(baseURL, apiKey, proxyURL string) ([]string, error) {
 			return nil, fmt.Errorf("请求失败: %v", err)
 		}
 
-		body, err := io.ReadAll(response.Body)
+		body, err := common.ReadUpstreamBody(response.Body)
 		response.Body.Close()
 		cancel()
 		if err != nil {

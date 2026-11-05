@@ -5,10 +5,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
 )
+
+// MaxUpstreamBodyBytes 限制一次性缓冲的上游响应体大小。
+//
+// 模型发现类的请求把响应整体读进内存再解析，而错误响应现在也要读出来才能给出
+// 可读原因——于是一个异常大的拦截页会被完整缓冲。上限取得比任何真实模型列表都
+// 宽，只用来挡住异常体量。
+const MaxUpstreamBodyBytes = 8 << 20
+
+// ReadUpstreamBody 读到上限即停，超出上限按错误返回，避免把超大响应读进内存。
+func ReadUpstreamBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, MaxUpstreamBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxUpstreamBodyBytes {
+		return nil, fmt.Errorf("上游响应超过 %d 字节上限", MaxUpstreamBodyBytes)
+	}
+	return data, nil
+}
 
 var (
 	titleTagRegex = regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`)

@@ -351,7 +351,7 @@ func FetchOllamaModels(baseURL, apiKey string) ([]OllamaModel, error) {
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
+	body, err := common.ReadUpstreamBody(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %v", err)
 	}

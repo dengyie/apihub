@@ -699,3 +699,45 @@ func TestDetectAllChannelUpstreamModelUpdatesRejectsExistingActiveTask(t *testin
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有模型更新任务正在运行或等待中")
 }
+
+// 模型列表现在先整体读进内存再判状态码，所以一个异常大的错误响应（WAF 拦截页、
+// 反代默认页）会被完整缓冲。上限只用来挡住这种异常体量：正常模型列表远小于它。
+func TestGetFetchModelsResponseBodyRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), common.MaxUpstreamBodyBytes+1024))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "ordinary-key",
+		BaseURL: &baseURL,
+	}
+
+	_, err := getFetchModelsResponseBody(http.MethodGet, server.URL, channel, http.Header{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "上限")
+}
+
+// 上限之内的错误页仍然要给出可读原因，而不是被上限逻辑吞掉。
+func TestGetFetchModelsResponseBodyExplainsHtmlWithinLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`<html><head><title>站点未备案</title></head></html>`))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "ordinary-key",
+		BaseURL: &baseURL,
+	}
+
+	_, err := getFetchModelsResponseBody(http.MethodGet, server.URL, channel, http.Header{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "站点未备案")
+}
