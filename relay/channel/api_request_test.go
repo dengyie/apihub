@@ -595,16 +595,17 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 		"X-Codex-Window-Id": "w1",
 	}
 	tests := []struct {
-		name           string
-		channelType    int
-		channelBaseURL string
-		model          string
-		relayFormat    types.RelayFormat
-		clientHeaders  map[string]string
-		upstreamPreset map[string]string
-		want           map[string]string
-		wantPresent    []string
-		wantAbsent     []string
+		name             string
+		channelType      int
+		channelBaseURL   string
+		model            string
+		relayFormat      types.RelayFormat
+		finalRelayFormat types.RelayFormat
+		clientHeaders    map[string]string
+		upstreamPreset   map[string]string
+		want             map[string]string
+		wantPresent      []string
+		wantAbsent       []string
 	}{
 		{
 			name:          "codex client headers pass through even without affinity",
@@ -681,13 +682,13 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			want: map[string]string{
 				"User-Agent":                  claudeFingerprintUserAgent,
 				"anthropic-client-platform":   claudeFingerprintClientPlatform,
-				"anthropic-version":           claudeFingerprintAnthropicVersion,
+				"anthropic-version":           constant.AnthropicVersionDefault,
 				"X-Stainless-Lang":            claudeFingerprintStainlessLang,
 				"X-Stainless-Package-Version": claudeFingerprintStainlessPkgVer,
 				"X-Stainless-OS":              claudeFingerprintStainlessOS,
 				"X-Stainless-Arch":            claudeFingerprintStainlessArch,
 				"X-Stainless-Runtime":         claudeFingerprintStainlessRuntime,
-				"X-Stainless-Runtime-Version": claudeFingerprintStainlessRuntmVer,
+				"X-Stainless-Runtime-Version": claudeFingerprintStainlessRuntimeVer,
 				"X-App":                       claudeFingerprintApp,
 				"X-Session-UUID":              UserSessionUUID(7),
 			},
@@ -711,7 +712,7 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 				"Anthropic-Beta":              "context-1m-2025-08-07",
 				"X-Stainless-Retry-Count":     "0",
 				"anthropic-client-platform":   claudeFingerprintClientPlatform,
-				"anthropic-version":           claudeFingerprintAnthropicVersion,
+				"anthropic-version":           constant.AnthropicVersionDefault,
 				"X-Session-UUID":              UserSessionUUID(7),
 			},
 			wantAbsent: []string{"x-opencode-session"},
@@ -726,7 +727,7 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			want: map[string]string{
 				"User-Agent":                claudeFingerprintUserAgent,
 				"anthropic-client-platform": claudeFingerprintClientPlatform,
-				"anthropic-version":         claudeFingerprintAnthropicVersion,
+				"anthropic-version":         constant.AnthropicVersionDefault,
 				"X-Session-UUID":            UserSessionUUID(7),
 			},
 			wantPresent: []string{"X-Client-Request-Id"},
@@ -750,6 +751,64 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			upstreamPreset: map[string]string{"User-Agent": "override-ua"},
 			want:           map[string]string{"User-Agent": "override-ua", "anthropic-client-platform": claudeFingerprintClientPlatform},
 		},
+		{
+			name:           "non claude code client beta and version are forwarded on claude envelope",
+			channelType:    constant.ChannelTypeVolcEngine,
+			channelBaseURL: "doubao-coding-plan",
+			model:          "deepseek-v4-flash",
+			relayFormat:    types.RelayFormatClaude,
+			clientHeaders: map[string]string{
+				"User-Agent":        "OpenAI/Python 1.99.0",
+				"anthropic-beta":    "interleaved-thinking-2025-05-14",
+				"anthropic-version": "2023-06-01",
+			},
+			want: map[string]string{
+				"anthropic-beta":    "interleaved-thinking-2025-05-14",
+				"anthropic-version": "2023-06-01",
+				"User-Agent":        claudeFingerprintUserAgent,
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:        "claude code client identified by platform header alone passes its stainless values through",
+			channelType: constant.ChannelTypeAnthropic,
+			model:       "claude-sonnet-5",
+			relayFormat: types.RelayFormatClaude,
+			clientHeaders: map[string]string{
+				"anthropic-client-platform":   "claude_code_cli",
+				"X-Stainless-Package-Version": "0.41.0",
+			},
+			want: map[string]string{
+				"anthropic-client-platform":   "claude_code_cli",
+				"X-Stainless-Package-Version": "0.41.0",
+				"User-Agent":                  claudeFingerprintUserAgent,
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:           "volcengine without special base keeps opencode session only",
+			channelType:    constant.ChannelTypeVolcEngine,
+			channelBaseURL: "https://ark.cn-beijing.volces.com",
+			model:          "deepseek-v4-flash",
+			relayFormat:    types.RelayFormatClaude,
+			clientHeaders:  map[string]string{"User-Agent": "curl/8.7.1"},
+			want:           map[string]string{"x-opencode-session": UserSessionUUID(7)},
+			wantAbsent:     []string{"anthropic-client-platform", "User-Agent"},
+		},
+		{
+			name:             "openai request converted to claude envelope gets fingerprint",
+			channelType:      constant.ChannelTypeAnthropic,
+			model:            "claude-sonnet-5",
+			relayFormat:      types.RelayFormatOpenAI,
+			finalRelayFormat: types.RelayFormatClaude,
+			clientHeaders:    map[string]string{"User-Agent": "OpenAI/Python 1.99.0"},
+			want: map[string]string{
+				"User-Agent":                claudeFingerprintUserAgent,
+				"anthropic-client-platform": claudeFingerprintClientPlatform,
+				"anthropic-version":         constant.AnthropicVersionDefault,
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -765,9 +824,10 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 			info := &relaycommon.RelayInfo{
-				OriginModelName: tt.model,
-				RelayFormat:     tt.relayFormat,
-				ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: tt.channelType, ChannelBaseUrl: tt.channelBaseURL},
+				OriginModelName:         tt.model,
+				RelayFormat:             tt.relayFormat,
+				FinalRequestRelayFormat: tt.finalRelayFormat,
+				ChannelMeta:             &relaycommon.ChannelMeta{ChannelType: tt.channelType, ChannelBaseUrl: tt.channelBaseURL},
 			}
 
 			applyUpstreamClientFingerprint(c, info, req)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/relay/channel"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/dto"
@@ -108,7 +109,7 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	req.Set("x-api-key", info.ApiKey)
 	anthropicVersion := c.Request.Header.Get("anthropic-version")
 	if anthropicVersion == "" {
-		anthropicVersion = "2023-06-01"
+		anthropicVersion = constant.AnthropicVersionDefault
 	}
 	req.Set("anthropic-version", anthropicVersion)
 	CommonClaudeHeadersOperation(c, req, info)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/dengyie/apihub/constant"
 	"github.com/dengyie/apihub/relay/channel"
 	"github.com/dengyie/apihub/relay/channel/claude"
 	"github.com/dengyie/apihub/relay/channel/gemini"
@@ -46,7 +47,7 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 		if req.Get("anthropic-version") == "" {
 			anthropicVersion := c.Request.Header.Get("anthropic-version")
 			if anthropicVersion == "" {
-				anthropicVersion = "2023-06-01"
+				anthropicVersion = constant.AnthropicVersionDefault
 			}
 			req.Set("anthropic-version", anthropicVersion)
 		}

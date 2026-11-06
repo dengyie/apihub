@@ -493,7 +493,7 @@ func applyClaudeHeaders(c *gin.Context, header *http.Header, info *relaycommon.R
 		anthropicVersion = c.Request.Header.Get("anthropic-version")
 	}
 	if anthropicVersion == "" {
-		anthropicVersion = "2023-06-01"
+		anthropicVersion = constant.AnthropicVersionDefault
 	}
 	header.Set("anthropic-version", anthropicVersion)
 	if c != nil {

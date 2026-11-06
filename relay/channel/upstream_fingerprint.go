@@ -31,16 +31,15 @@ const (
 // 透传其指纹头；其余客户端补一套默认指纹。头集合与版本对齐知识库
 // [[Claude 客户端协议伪装与指纹规范]]（CLI 2.1.284 + Stainless SDK 0.39.0），版本升级只改这里。
 const (
-	claudeFingerprintUserAgent         = "claude-code/2.1.284 (Darwin 24.6.0; arm64)"
-	claudeFingerprintClientPlatform    = "claude_code_cli"
-	claudeFingerprintAnthropicVersion  = "2023-06-01"
-	claudeFingerprintStainlessLang     = "js"
-	claudeFingerprintStainlessPkgVer   = "0.39.0"
-	claudeFingerprintStainlessOS       = "MacOS"
-	claudeFingerprintStainlessArch     = "arm64"
-	claudeFingerprintStainlessRuntime  = "node"
-	claudeFingerprintStainlessRuntmVer = "v22.14.0"
-	claudeFingerprintApp               = "cli"
+	claudeFingerprintUserAgent           = "claude-code/2.1.284 (Darwin 24.6.0; arm64)"
+	claudeFingerprintClientPlatform      = "claude_code_cli"
+	claudeFingerprintStainlessLang       = "js"
+	claudeFingerprintStainlessPkgVer     = "0.39.0"
+	claudeFingerprintStainlessOS         = "MacOS"
+	claudeFingerprintStainlessArch       = "arm64"
+	claudeFingerprintStainlessRuntime    = "node"
+	claudeFingerprintStainlessRuntimeVer = "v22.14.0"
+	claudeFingerprintApp                 = "cli"
 )
 
 // 官方 UA 校验正则（伪装规范同款）：claude-cli/<ver> (...) 或 claude-code/<ver> (...)。
@@ -72,11 +71,17 @@ func UserSessionUUID(userID int) string {
 // the Anthropic /v1/messages envelope — native Anthropic channels and the
 // coding-plan special bases (doubao/glm/kimi) whose adaptors delegate to the
 // claude adaptor. Channels that convert the claude envelope away (e.g. OpenAI
-// type=1) are deliberately excluded, mirroring the codex branch's type gate.
-// Keyed on the envelope rather than the model name so upstream aliases served
-// over /v1/messages (e.g. historical cc-format models) are covered too.
+// type=1) are deliberately excluded by the channel whitelist, mirroring the
+// codex branch's type gate. The envelope is resolved via
+// GetFinalRequestRelayFormat so both native claude-format requests and requests
+// converted into the claude envelope (openai/responses inbound on an Anthropic
+// channel; also historical cc-format aliases served over /v1/messages) are
+// covered, while requests whose upstream envelope stays openai-shaped are not.
 func usesClaudeFingerprint(info *common.RelayInfo) bool {
-	if info == nil || info.ChannelMeta == nil || info.RelayFormat != types.RelayFormatClaude {
+	if info == nil || info.ChannelMeta == nil {
+		return false
+	}
+	if info.GetFinalRequestRelayFormat() != types.RelayFormatClaude {
 		return false
 	}
 	if info.ChannelType == constant.ChannelTypeAnthropic {
@@ -104,13 +109,21 @@ func isClaudeCodeClient(clientHeaders http.Header) bool {
 // already set (adaptor defaults, channel tests) always win. Real Claude Code
 // clients get their own fingerprint forwarded first; the defaults then fill the
 // remaining gaps so upstream never sees a bare Go client. anthropic-beta is
-// intentionally not defaulted: the claude adaptor already forwards the client's
-// value, and injecting context-1m would change official-API billing above 200k
-// input — add it per-channel via header_override when an upstream demands it.
+// intentionally never defaulted — injecting context-1m would change official-API
+// billing above 200k input; add it per-channel via header_override when an
+// upstream demands it. Values the client DID send are forwarded for every
+// claude-envelope request (below): SetupApiRequestHeader does not carry
+// anthropic-beta/anthropic-version to the coding-plan special bases, so without
+// this the SDK clients' feature betas would silently vanish there.
 func applyClaudeCodeFingerprint(c *gin.Context, req *http.Request, userSession string) {
 	var clientHeaders http.Header
 	if c.Request != nil {
 		clientHeaders = c.Request.Header
+	}
+	setIfEmpty := func(name, value string) {
+		if req.Header.Get(name) == "" {
+			req.Header.Set(name, value)
+		}
 	}
 	if isClaudeCodeClient(clientHeaders) {
 		for _, name := range operation_setting.ClaudeCliPassThroughHeaders() {
@@ -121,21 +134,26 @@ func applyClaudeCodeFingerprint(c *gin.Context, req *http.Request, userSession s
 				req.Header.Set(name, value)
 			}
 		}
-	}
-	setIfEmpty := func(name, value string) {
-		if req.Header.Get(name) == "" {
-			req.Header.Set(name, value)
+	} else if clientHeaders != nil {
+		// 协议头客户端选什么就转发什么（fill-only，不默认注入）：与 claude 适配器
+		// 路径的 CommonClaudeHeadersOperation 语义对齐——该路径对所有客户端转发
+		// anthropic-beta，special-base 路径此前会静默丢弃它。
+		if value := clientHeaders.Get("anthropic-beta"); value != "" {
+			setIfEmpty("anthropic-beta", value)
+		}
+		if value := clientHeaders.Get("anthropic-version"); value != "" {
+			setIfEmpty("anthropic-version", value)
 		}
 	}
 	setIfEmpty("User-Agent", claudeFingerprintUserAgent)
 	setIfEmpty("anthropic-client-platform", claudeFingerprintClientPlatform)
-	setIfEmpty("anthropic-version", claudeFingerprintAnthropicVersion)
+	setIfEmpty("anthropic-version", constant.AnthropicVersionDefault)
 	setIfEmpty("X-Stainless-Lang", claudeFingerprintStainlessLang)
 	setIfEmpty("X-Stainless-Package-Version", claudeFingerprintStainlessPkgVer)
 	setIfEmpty("X-Stainless-OS", claudeFingerprintStainlessOS)
 	setIfEmpty("X-Stainless-Arch", claudeFingerprintStainlessArch)
 	setIfEmpty("X-Stainless-Runtime", claudeFingerprintStainlessRuntime)
-	setIfEmpty("X-Stainless-Runtime-Version", claudeFingerprintStainlessRuntmVer)
+	setIfEmpty("X-Stainless-Runtime-Version", claudeFingerprintStainlessRuntimeVer)
 	setIfEmpty("X-App", claudeFingerprintApp)
 	// X-Client-Request-Id 按官方 SDK 语义逐请求刷新；X-Session-UUID 按用户稳定派生，
 	// 避免跨渠道共享同一会话标识触发风控（知识库 2026-10-15 伪装渠道审计教训）。
