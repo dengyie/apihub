@@ -92,6 +92,14 @@ var claudeCliPassThroughHeaders = []string{
 	"Anthropic-Version",
 }
 
+// ClaudeCliPassThroughHeaders returns a copy of the request headers that make
+// up a Claude Code CLI client fingerprint. Shared by the channel-affinity
+// pass_headers rule (real client forwarding) and the claude fingerprint default
+// filler in relay/channel.
+func ClaudeCliPassThroughHeaders() []string {
+	return append([]string(nil), claudeCliPassThroughHeaders...)
+}
+
 func buildPassHeaderTemplate(headers []string) map[string]any {
 	clonedHeaders := make([]string, 0, len(headers))
 	clonedHeaders = append(clonedHeaders, headers...)

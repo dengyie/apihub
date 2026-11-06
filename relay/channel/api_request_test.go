@@ -534,57 +534,57 @@ func TestApplyChannelTestHeaders(t *testing.T) {
 
 		applyChannelTestHeaders(c, info, req)
 
-			assert.Equal(t, "codex-cli/0.44.0", req.Header.Get("User-Agent"))
-			assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
-			assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
-			assert.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
-			assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
-		})
+		assert.Equal(t, "codex-cli/0.44.0", req.Header.Get("User-Agent"))
+		assert.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+		assert.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+		assert.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+		assert.Equal(t, "text/event-stream", req.Header.Get("Accept"))
+	})
 
-		t.Run("Non-codex test does not set originator", func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(recorder)
-			c.Set(channelTestUserAgentKey, "claude-code/2.0.0")
-
-			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
-			require.NoError(t, err)
-
-			info := &relaycommon.RelayInfo{
-				IsChannelTest: true,
-				RelayMode:     relayconstant.RelayModeChatCompletions,
-			}
-
-			applyChannelTestHeaders(c, info, req)
-
-			assert.Equal(t, "claude-code/2.0.0", req.Header.Get("User-Agent"))
-			assert.Empty(t, req.Header.Get("originator"))
-			assert.Empty(t, req.Header.Get("OpenAI-Beta"))
-			assert.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
-		})
-	}
-
-	func TestSetupApiRequestHeader_ForwardsCodexHeaders(t *testing.T) {
+	t.Run("Non-codex test does not set originator", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
-		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-		c.Request.Header.Set("Content-Type", "application/json")
-		c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
-		c.Request.Header.Set("originator", "codex_cli_rs")
-		c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+		c.Set(channelTestUserAgentKey, "claude-code/2.0.0")
+
+		req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+		require.NoError(t, err)
 
 		info := &relaycommon.RelayInfo{
-			IsStream:  true,
-			RelayMode: relayconstant.RelayModeResponses,
+			IsChannelTest: true,
+			RelayMode:     relayconstant.RelayModeChatCompletions,
 		}
 
-		headers := http.Header{}
-		SetupApiRequestHeader(info, c, &headers)
+		applyChannelTestHeaders(c, info, req)
 
-		assert.Equal(t, "application/json", headers.Get("Content-Type"))
-		assert.Equal(t, "text/event-stream", headers.Get("Accept"))
-		assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
-		assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
-		assert.Equal(t, "remote_compaction_v2", headers.Get("X-Codex-Beta-Features"))
+		assert.Equal(t, "claude-code/2.0.0", req.Header.Get("User-Agent"))
+		assert.Empty(t, req.Header.Get("originator"))
+		assert.Empty(t, req.Header.Get("OpenAI-Beta"))
+		assert.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
+	})
+}
+
+func TestSetupApiRequestHeader_ForwardsCodexHeaders(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("OpenAI-Beta", "responses=experimental")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+
+	info := &relaycommon.RelayInfo{
+		IsStream:  true,
+		RelayMode: relayconstant.RelayModeResponses,
+	}
+
+	headers := http.Header{}
+	SetupApiRequestHeader(info, c, &headers)
+
+	assert.Equal(t, "application/json", headers.Get("Content-Type"))
+	assert.Equal(t, "text/event-stream", headers.Get("Accept"))
+	assert.Equal(t, "responses=experimental", headers.Get("OpenAI-Beta"))
+	assert.Equal(t, "codex_cli_rs", headers.Get("originator"))
+	assert.Equal(t, "remote_compaction_v2", headers.Get("X-Codex-Beta-Features"))
 }
 
 func TestApplyUpstreamClientFingerprint(t *testing.T) {
@@ -597,10 +597,13 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 	tests := []struct {
 		name           string
 		channelType    int
+		channelBaseURL string
 		model          string
+		relayFormat    types.RelayFormat
 		clientHeaders  map[string]string
 		upstreamPreset map[string]string
 		want           map[string]string
+		wantPresent    []string
 		wantAbsent     []string
 	}{
 		{
@@ -632,9 +635,9 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			wantAbsent: []string{"x-opencode-session"},
 		},
 		{
-			name:         "opencode sdk client keeps its explicit session header on gpt requests",
-			channelType:  constant.ChannelTypeOpenAI,
-			model:        "gpt-5.5",
+			name:        "opencode sdk client keeps its explicit session header on gpt requests",
+			channelType: constant.ChannelTypeOpenAI,
+			model:       "gpt-5.5",
 			clientHeaders: map[string]string{
 				"User-Agent":         "OpenCode/1.0",
 				"x-opencode-session": "client-opencode-session",
@@ -669,6 +672,84 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			clientHeaders: codexClient,
 			wantAbsent:    []string{"originator", "session_id"},
 		},
+		{
+			name:          "claude protocol request gets default claude code fingerprint",
+			channelType:   constant.ChannelTypeAnthropic,
+			model:         "claude-sonnet-5",
+			relayFormat:   types.RelayFormatClaude,
+			clientHeaders: map[string]string{"User-Agent": "OpenAI/Python 1.99.0"},
+			want: map[string]string{
+				"User-Agent":                  claudeFingerprintUserAgent,
+				"anthropic-client-platform":   claudeFingerprintClientPlatform,
+				"anthropic-version":           claudeFingerprintAnthropicVersion,
+				"X-Stainless-Lang":            claudeFingerprintStainlessLang,
+				"X-Stainless-Package-Version": claudeFingerprintStainlessPkgVer,
+				"X-Stainless-OS":              claudeFingerprintStainlessOS,
+				"X-Stainless-Arch":            claudeFingerprintStainlessArch,
+				"X-Stainless-Runtime":         claudeFingerprintStainlessRuntime,
+				"X-Stainless-Runtime-Version": claudeFingerprintStainlessRuntmVer,
+				"X-App":                       claudeFingerprintApp,
+				"X-Session-UUID":              UserSessionUUID(7),
+			},
+			wantPresent: []string{"X-Client-Request-Id"},
+			wantAbsent:  []string{"x-opencode-session", "anthropic-beta"},
+		},
+		{
+			name:        "real claude code client headers pass through on top of defaults",
+			channelType: constant.ChannelTypeAnthropic,
+			model:       "claude-sonnet-5",
+			relayFormat: types.RelayFormatClaude,
+			clientHeaders: map[string]string{
+				"User-Agent":                  "claude-cli/2.1.290 (Darwin 25.0.0; arm64)",
+				"X-Stainless-Package-Version": "0.41.0",
+				"Anthropic-Beta":              "context-1m-2025-08-07",
+				"X-Stainless-Retry-Count":     "0",
+			},
+			want: map[string]string{
+				"User-Agent":                  "claude-cli/2.1.290 (Darwin 25.0.0; arm64)",
+				"X-Stainless-Package-Version": "0.41.0",
+				"Anthropic-Beta":              "context-1m-2025-08-07",
+				"X-Stainless-Retry-Count":     "0",
+				"anthropic-client-platform":   claudeFingerprintClientPlatform,
+				"anthropic-version":           claudeFingerprintAnthropicVersion,
+				"X-Session-UUID":              UserSessionUUID(7),
+			},
+			wantAbsent: []string{"x-opencode-session"},
+		},
+		{
+			name:           "coding plan special base gets claude fingerprint and anthropic-version",
+			channelType:    constant.ChannelTypeVolcEngine,
+			channelBaseURL: "doubao-coding-plan",
+			model:          "deepseek-v4-flash",
+			relayFormat:    types.RelayFormatClaude,
+			clientHeaders:  map[string]string{"User-Agent": "curl/8.7.1"},
+			want: map[string]string{
+				"User-Agent":                claudeFingerprintUserAgent,
+				"anthropic-client-platform": claudeFingerprintClientPlatform,
+				"anthropic-version":         claudeFingerprintAnthropicVersion,
+				"X-Session-UUID":            UserSessionUUID(7),
+			},
+			wantPresent: []string{"X-Client-Request-Id"},
+			wantAbsent:  []string{"x-opencode-session"},
+		},
+		{
+			name:          "claude envelope on openai channel keeps opencode session only",
+			channelType:   constant.ChannelTypeOpenAI,
+			model:         "claude-sonnet-4",
+			relayFormat:   types.RelayFormatClaude,
+			clientHeaders: map[string]string{"User-Agent": "OpenAI/Python 1.99.0"},
+			want:          map[string]string{"x-opencode-session": UserSessionUUID(7)},
+			wantAbsent:    []string{"anthropic-client-platform", "User-Agent"},
+		},
+		{
+			name:           "claude fingerprint header override keeps priority",
+			channelType:    constant.ChannelTypeAnthropic,
+			model:          "claude-sonnet-5",
+			relayFormat:    types.RelayFormatClaude,
+			clientHeaders:  map[string]string{},
+			upstreamPreset: map[string]string{"User-Agent": "override-ua"},
+			want:           map[string]string{"User-Agent": "override-ua", "anthropic-client-platform": claudeFingerprintClientPlatform},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -685,7 +766,8 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			}
 			info := &relaycommon.RelayInfo{
 				OriginModelName: tt.model,
-				ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: tt.channelType},
+				RelayFormat:     tt.relayFormat,
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelType: tt.channelType, ChannelBaseUrl: tt.channelBaseURL},
 			}
 
 			applyUpstreamClientFingerprint(c, info, req)
@@ -693,10 +775,16 @@ func TestApplyUpstreamClientFingerprint(t *testing.T) {
 			for k, v := range tt.want {
 				assert.Equal(t, v, req.Header.Get(k), k)
 			}
+			for _, k := range tt.wantPresent {
+				assert.NotEmpty(t, req.Header.Get(k), k)
+			}
 			for _, k := range tt.wantAbsent {
 				assert.Empty(t, req.Header.Get(k), k)
 			}
-			if usesCodexFingerprint(info) {
+			if usesClaudeFingerprint(info) {
+				assert.Empty(t, req.Header.Get("x-opencode-session"))
+				assert.NotEmpty(t, req.Header.Get("X-Session-UUID"))
+			} else if usesCodexFingerprint(info) {
 				assert.NotEmpty(t, req.Header.Get("session_id"))
 			} else {
 				assert.NotEmpty(t, req.Header.Get("x-opencode-session"))
