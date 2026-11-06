@@ -25,6 +25,15 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 
 ## Internationalization (i18n)
 
+### Deployment — GitHub CI only (user mandate 2026-11-06)
+
+**All production deploys go through GitHub Actions. Never deploy by hand.**
+
+- `push` to `main` triggers `.github/workflows/deploy.yml` (CI gate → build release → zero-downtime handover on tebi, via `scripts/deploy.sh` on the runner). `workflow_dispatch` exists for bootstrap/emergency use only.
+- After merging or committing to `main`, just push. Do NOT scp binaries, do NOT ssh in to run `scripts-deploy.sh`, do NOT build locally for deployment. The 17:31 double-deploy on 2026-11-06 happened exactly because a manual deploy followed a push that already triggers CI.
+- Manual `scripts/deploy.sh` on the host is reserved for `--rollback` and the bootstrap path; anything else duplicates CI and produces second-class artifacts (local embedded-frontend builds vs CI's split web bundle).
+- CI deploys take ~10 minutes (gate must pass first). Do not poll the deploy; check the workflow run only if the user asks or a failure notification arrives.
+
 ### Backend (`i18n/`)
 - Library: `nicksnyder/go-i18n/v2`
 - Languages: en, zh
