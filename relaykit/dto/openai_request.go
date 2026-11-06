@@ -11,6 +11,7 @@ import (
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ResponseFormat struct {
@@ -1301,6 +1302,62 @@ func (r *OpenAIResponsesRequest) StripReasoningInput() bool {
 	}
 
 	if marshaled, err := kitutil.Marshal(filtered); err == nil {
+		r.Input = marshaled
+		return true
+	}
+	return false
+}
+
+// EnsureInputItemIDs fills missing `id` fields on function_call and reasoning
+// items of the Responses input array. 部分 Rust serde 上游（如 zmx.xyz.hr）对 input
+// 做严格反序列化：不带 id 的 function_call/reasoning item 无法匹配 untagged enum
+// ResponseInput 的任何变体，整包 400 json_parse_error（实测确认）。真实客户端
+// （Codex / ZCode）会话回放里常出现无 id 的历史工具项，这里补上确定性 id：
+// 同一 call_id / 内容位置映射到同一 id，重试与多次请求之间保持稳定。
+// Returns true if any items were modified.
+func (r *OpenAIResponsesRequest) EnsureInputItemIDs() bool {
+	if len(r.Input) == 0 || kitutil.GetJsonType(r.Input) != "array" {
+		return false
+	}
+
+	var rawItems []json.RawMessage
+	if err := kitutil.Unmarshal(r.Input, &rawItems); err != nil {
+		return false
+	}
+
+	changed := false
+	for i, rawItem := range rawItems {
+		itemType := strings.TrimSpace(gjson.GetBytes(rawItem, "type").String())
+		if itemType != "function_call" && itemType != "reasoning" {
+			continue
+		}
+		if gjson.GetBytes(rawItem, "id").Exists() {
+			continue
+		}
+		// Deterministic id: stable per item type + call_id (function_call) or
+		// array position (reasoning, which carries no call_id).
+		var idSource string
+		if itemType == "function_call" {
+			idSource = "fc_" + gjson.GetBytes(rawItem, "call_id").String()
+		} else {
+			idSource = fmt.Sprintf("rs_input_%d", i)
+		}
+		if idSource == "fc_" {
+			idSource = fmt.Sprintf("fc_input_%d", i)
+		}
+		patched, err := sjson.SetBytes(rawItem, "id", idSource)
+		if err != nil {
+			continue
+		}
+		rawItems[i] = patched
+		changed = true
+	}
+
+	if !changed {
+		return false
+	}
+
+	if marshaled, err := kitutil.Marshal(rawItems); err == nil {
 		r.Input = marshaled
 		return true
 	}

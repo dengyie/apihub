@@ -148,6 +148,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	if shouldStripReasoning {
 		responsesReq.StripReasoningInput()
 	}
+	responsesReq.EnsureInputItemIDs()
 	responsesReq.EnsureCodexFields()
 	ensureResponsesPromptCacheKey(c, responsesReq)
 

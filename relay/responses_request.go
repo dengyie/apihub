@@ -76,6 +76,7 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		return adaptor, body, io.NopCloser(body), nil
 	}
 
+	request.EnsureInputItemIDs()
 	request.EnsureCodexFields()
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
