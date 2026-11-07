@@ -48,6 +48,8 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 		request, err = GetAndValidateEmbeddingRequest(c, relayMode)
 	case types.RelayFormatRerank:
 		request, err = GetAndValidateRerankRequest(c)
+	case types.RelayFormatSystemOne:
+		request, err = GetAndValidateSystemOneRequest(c)
 	case types.RelayFormatOpenAIAudio:
 		request, err = GetAndValidAudioRequest(c, relayMode)
 	case types.RelayFormatOpenAIRealtime:
@@ -95,6 +97,23 @@ func GetAndValidateRerankRequest(c *gin.Context) (*dto.RerankRequest, error) {
 		return nil, types.NewError(fmt.Errorf("documents is empty"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 	return rerankRequest, nil
+}
+
+func GetAndValidateSystemOneRequest(c *gin.Context) (*dto.SystemOneRequest, error) {
+	var systemOneRequest *dto.SystemOneRequest
+	err := common.UnmarshalBodyReusable(c, &systemOneRequest)
+	if err != nil {
+		logger.LogError(c, fmt.Sprintf("getAndValidateSystemOneRequest failed: %s", err.Error()))
+		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+
+	if systemOneRequest.Model == "" {
+		return nil, types.NewError(fmt.Errorf("model is required"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	if len(systemOneRequest.Questions) == 0 {
+		return nil, types.NewError(fmt.Errorf("questions is required"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	return systemOneRequest, nil
 }
 
 func GetAndValidateEmbeddingRequest(c *gin.Context, relayMode int) (*dto.EmbeddingRequest, error) {

@@ -315,4 +315,3 @@ func TestResponseOutboundModelRewrittenToOriginModel(t *testing.T) {
 		assert.NotContains(t, w.Body.String(), "qwen3.8-27b-coder-plus-step1940")
 	})
 }
-

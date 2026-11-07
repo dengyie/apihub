@@ -14,6 +14,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SystemOneConverter is the optional extension interface for adaptors that
+// speak the System One typed-decision protocol (jev family). The systemone
+// relay helper type-asserts the adaptor to it, so adaptors that do not serve
+// the protocol need no stub method.
+type SystemOneConverter interface {
+	ConvertSystemOneRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.SystemOneRequest) (any, error)
+}
+
 type Adaptor interface {
 	// Init IsStream bool
 	Init(info *relaycommon.RelayInfo)

@@ -22,6 +22,7 @@ import (
 	"github.com/dengyie/apihub/relay/channel/deepseek"
 	"github.com/dengyie/apihub/relay/channel/dify"
 	"github.com/dengyie/apihub/relay/channel/gemini"
+	"github.com/dengyie/apihub/relay/channel/jev"
 	"github.com/dengyie/apihub/relay/channel/jimeng"
 	"github.com/dengyie/apihub/relay/channel/jina"
 	"github.com/dengyie/apihub/relay/channel/minimax"
@@ -100,6 +101,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &baidu_v2.Adaptor{}
 	case constant.APITypeBivia:
 		return &bivia.Adaptor{}
+	case constant.APITypeJev:
+		return &jev.Adaptor{}
 	case constant.APITypeOpenRouter:
 		return &openai.Adaptor{}
 	case constant.APITypeXinference:

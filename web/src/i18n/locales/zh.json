@@ -1352,6 +1352,7 @@
     "Connect to 360 model services": "接入 360 模型服务",
     "Connect to Alibaba Cloud Bailian model services": "接入阿里云百炼模型服务",
     "Connect to Articul8 Bivia typed decision APIs through chat completions": "通过 chat completions 接入 Articul8 Bivia 类型化决策 API",
+    "Relay System One typed-decision APIs (jev family) with native passthrough": "以原生透传方式接入 System One 类型化决策 API（jev 系）",
     "Connect to Cohere model services": "接入 Cohere 模型服务",
     "Connect to Coze bots": "接入 Coze 智能体",
     "Connect to DeepSeek model services": "接入 DeepSeek 模型服务",
