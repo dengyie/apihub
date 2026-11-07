@@ -141,19 +141,33 @@ func parseDecisionResponse(resp *http.Response) (*biviaDecisionResult, *types.Ne
 	if err := common.Unmarshal(responseBody, &decision); err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	if decision.Status != "answered" && decision.Status != "abstained" {
+	// /extract omits the status field entirely: its per-field verdicts live in
+	// values[].found and the call never abstains as one unit, so synthesize
+	// answered for it.
+	status := fromPtr(decision.Status)
+	if status == "" && decision.Type == "extract" && len(decision.Values) > 0 {
+		status = "answered"
+	}
+	if status != "answered" && status != "abstained" {
 		return nil, types.NewError(
-			fmt.Errorf("bivia returned unexpected status %q", decision.Status),
+			fmt.Errorf("bivia returned unexpected status %q", status),
 			types.ErrorCodeBadResponseBody,
 		)
 	}
 
+	// The client envelope keeps one uniform contract: value always carries the
+	// answer, so the extract values map is forwarded under value.
+	answer := decision.Value
+	if len(answer) == 0 {
+		answer = decision.Values
+	}
+
 	payload, err := common.Marshal(biviaDecision{
 		Type:          decision.Type,
-		Value:         decision.Value,
+		Value:         answer,
 		Probability:   decision.Probability,
 		Distribution:  decision.Distribution,
-		Status:        decision.Status,
+		Status:        status,
 		AbstainReason: fromPtr(decision.AbstainReason),
 		Mode:          decision.Mode,
 		Model:         decision.Model,

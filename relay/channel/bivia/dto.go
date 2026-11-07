@@ -35,12 +35,15 @@ type biviaInstruction struct {
 
 // biviaResponse is the native decision envelope. Value stays raw because its
 // JSON type depends on the decision kind (string, number, array, object).
+// /extract diverges from the other endpoints: it reports per-field verdicts in
+// values (with found flags) and omits the status/probability fields entirely.
 type biviaResponse struct {
 	Type           string             `json:"type"`
 	Value          json.RawMessage    `json:"value"`
+	Values         json.RawMessage    `json:"values"`
 	Probability    float64            `json:"probability"`
 	Distribution   map[string]float64 `json:"distribution"`
-	Status         string             `json:"status"`
+	Status         *string            `json:"status"`
 	AbstainReason  *string            `json:"abstain_reason"`
 	Mode           string             `json:"mode"`
 	Evidence       json.RawMessage    `json:"evidence"`

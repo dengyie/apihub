@@ -139,6 +139,20 @@ func TestParseDecisionResponseUsage(t *testing.T) {
 		assert.Contains(t, result.content, `"abstain_reason":"low_confidence"`)
 	})
 
+	t.Run("extract envelope without status maps values under uniform value", func(t *testing.T) {
+		resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
+			`{"type":"extract","values":{"termination notice period":{"value":"60 days written notice","found":true}},"grounded":true,"input_tokens":22,"image_tokens":0,"billable_tokens":1000}`,
+		))}
+		result, apiErr := parseDecisionResponse(resp)
+		require.Nil(t, apiErr)
+		assert.Contains(t, result.content, `"status":"answered"`)
+		assert.Contains(t, result.content, `"value":{"termination notice period"`)
+		assert.NotContains(t, result.content, `"probability"`)
+		assert.Equal(t, 22, result.usage.PromptTokens)
+		assert.Equal(t, 978, result.usage.CompletionTokens)
+		assert.Equal(t, 1000, result.usage.TotalTokens)
+	})
+
 	t.Run("unexpected status is an upstream error", func(t *testing.T) {
 		resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
 			`{"type":"boolean","status":"exploded"}`,
