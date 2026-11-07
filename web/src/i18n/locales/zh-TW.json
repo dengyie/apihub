@@ -1350,6 +1350,7 @@
     "Connect through OpenAI, Claude, Gemini, and other compatible API routes": "透過 OpenAI、Claude、Gemini 以及其他兼容 API 路由接入",
     "Connect to 360 model services": "接入 360 模型服務",
     "Connect to Alibaba Cloud Bailian model services": "接入阿里雲百煉模型服務",
+    "Connect to Articul8 Bivia typed decision APIs through chat completions": "透過 chat completions 接入 Articul8 Bivia 類型化決策 API",
     "Connect to Cohere model services": "接入 Cohere 模型服務",
     "Connect to Coze bots": "接入 Coze 智慧體",
     "Connect to DeepSeek model services": "接入 DeepSeek 模型服務",

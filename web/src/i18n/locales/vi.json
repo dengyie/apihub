@@ -1344,6 +1344,7 @@
     "Connect through OpenAI, Claude, Gemini, and other compatible API routes": "Kết nối qua OpenAI, Claude, Gemini và các tuyến API tương thích khác",
     "Connect to 360 model services": "Kết nối với dịch vụ mô hình 360",
     "Connect to Alibaba Cloud Bailian model services": "Kết nối với dịch vụ mô hình Alibaba Cloud Bailian",
+    "Connect to Articul8 Bivia typed decision APIs through chat completions": "Kết nối với các API quyết định có kiểu dữ liệu của Articul8 Bivia thông qua chat completions",
     "Connect to Cohere model services": "Kết nối với dịch vụ mô hình Cohere",
     "Connect to Coze bots": "Kết nối với các bot Coze",
     "Connect to DeepSeek model services": "Kết nối với dịch vụ mô hình DeepSeek",

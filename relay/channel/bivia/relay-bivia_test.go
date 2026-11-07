@@ -1,14 +1,17 @@
 package bivia
 
 import (
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/dto"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -160,4 +163,43 @@ func TestParseDecisionResponseUsage(t *testing.T) {
 		_, apiErr := parseDecisionResponse(resp)
 		require.NotNil(t, apiErr)
 	})
+}
+
+type failingBody struct{ closed *bool }
+
+func (b failingBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (b failingBody) Close() error             { *b.closed = true; return nil }
+
+func TestParseDecisionResponseClosesBodyOnReadError(t *testing.T) {
+	closed := false
+	resp := &http.Response{StatusCode: http.StatusOK, Body: failingBody{closed: &closed}}
+	result, apiErr := parseDecisionResponse(resp)
+	require.NotNil(t, apiErr)
+	require.Nil(t, result)
+	assert.True(t, closed, "response body must be closed on read error")
+}
+
+// TestBiviaStreamHandler pins the client-visible SSE contract: Bivia has no
+// incremental stream of its own, so the adaptor must emit exactly one content
+// chunk carrying the decision envelope, one stop chunk, and the [DONE] marker.
+func TestBiviaStreamHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	body := `{"type":"boolean","value":"yes","probability":0.99,"status":"answered","mode":"fast","model":"dec-1","input_tokens":64,"billable_tokens":1000}`
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+
+	usage, apiErr := biviaStreamHandler(c, testInfo("bivia-boolean"), resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 64, usage.PromptTokens)
+	assert.Equal(t, 936, usage.CompletionTokens)
+	assert.Equal(t, 1000, usage.TotalTokens)
+
+	out := recorder.Body.String()
+	assert.Contains(t, out, `"chat.completion.chunk"`)
+	assert.Contains(t, out, `"finish_reason":"stop"`)
+	assert.Contains(t, out, "data: [DONE]")
 }

@@ -51,7 +51,9 @@ func parseInstruction(text string) *biviaInstruction {
 // convertBiviaRequest maps an OpenAI chat request onto Bivia's typed decision
 // contract. If any message content is a JSON object with a "question" key it
 // is the structured instruction; otherwise the last user message is the
-// question and every other message becomes the decision state.
+// question and every other message becomes the decision state. Multiple
+// structured instructions: the last one wins, earlier ones do not enter the
+// state.
 func convertBiviaRequest(info *relaycommon.RelayInfo, request dto.GeneralOpenAIRequest) (*biviaRequest, error) {
 	endpoint, err := endpointForModel(info.UpstreamModelName)
 	if err != nil {
@@ -80,16 +82,9 @@ func convertBiviaRequest(info *relaycommon.RelayInfo, request dto.GeneralOpenAIR
 
 	biviaReq := &biviaRequest{}
 	if instruction != nil {
-		biviaReq.Question = instruction.Question
-		biviaReq.State = instruction.State
-		biviaReq.Outcomes = instruction.Outcomes
-		biviaReq.Choices = instruction.Choices
-		biviaReq.Options = instruction.Options
-		biviaReq.Range = instruction.Range
-		biviaReq.Buckets = instruction.Buckets
-		biviaReq.Fields = instruction.Fields
-		biviaReq.Mode = instruction.Mode
-		biviaReq.AllowAbstain = instruction.AllowAbstain
+		// biviaInstruction is a defined type over biviaRequest: one assignment
+		// keeps the client instruction and the upstream wire shape identical.
+		*biviaReq = biviaRequest(*instruction)
 	} else {
 		biviaReq.Question = lastUser
 		biviaReq.State = strings.Join(contextParts, "\n\n")
@@ -133,6 +128,7 @@ type biviaDecisionResult struct {
 func parseDecisionResponse(resp *http.Response) (*biviaDecisionResult, *types.NewAPIError) {
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		service.CloseResponseBodyGracefully(resp)
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	service.CloseResponseBodyGracefully(resp)

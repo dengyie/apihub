@@ -1349,6 +1349,7 @@
     "Connect through OpenAI, Claude, Gemini, and other compatible API routes": "OpenAI、Claude、Gemini、その他の互換APIルートから接続",
     "Connect to 360 model services": "360 のモデルサービスに接続",
     "Connect to Alibaba Cloud Bailian model services": "Alibaba Cloud Bailian のモデルサービスに接続",
+    "Connect to Articul8 Bivia typed decision APIs through chat completions": "chat completions 経由で Articul8 Bivia の型付きデシジョン API に接続する",
     "Connect to Cohere model services": "Cohere のモデルサービスに接続",
     "Connect to Coze bots": "Coze のボットに接続",
     "Connect to DeepSeek model services": "DeepSeek のモデルサービスに接続",

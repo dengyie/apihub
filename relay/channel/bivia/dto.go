@@ -18,20 +18,12 @@ type biviaRequest struct {
 	AllowAbstain *bool     `json:"allow_abstain,omitempty"`
 }
 
-// biviaInstruction is the structured decision instruction clients embed as a
-// JSON object (with a "question" key) inside any message content.
-type biviaInstruction struct {
-	Question     string    `json:"question"`
-	State        string    `json:"state,omitempty"`
-	Outcomes     []string  `json:"outcomes,omitempty"`
-	Choices      []string  `json:"choices,omitempty"`
-	Options      []string  `json:"options,omitempty"`
-	Range        []float64 `json:"range,omitempty"`
-	Buckets      *int      `json:"buckets,omitempty"`
-	Fields       []string  `json:"fields,omitempty"`
-	Mode         string    `json:"mode,omitempty"`
-	AllowAbstain *bool     `json:"allow_abstain,omitempty"`
-}
+// biviaInstruction is the client-facing structured decision instruction: a
+// JSON object with a "question" key embedded in message content. It is a
+// defined type sharing biviaRequest's shape on purpose — the two roles speak
+// the same wire fields, so a new field can never be added to one and silently
+// dropped from the other.
+type biviaInstruction biviaRequest
 
 // biviaResponse is the native decision envelope. Value stays raw because its
 // JSON type depends on the decision kind (string, number, array, object).
