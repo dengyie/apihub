@@ -13,6 +13,7 @@ import (
 	"github.com/dengyie/apihub/relay/channel/aws"
 	"github.com/dengyie/apihub/relay/channel/baidu"
 	"github.com/dengyie/apihub/relay/channel/baidu_v2"
+	"github.com/dengyie/apihub/relay/channel/bivia"
 	"github.com/dengyie/apihub/relay/channel/claude"
 	"github.com/dengyie/apihub/relay/channel/cloudflare"
 	"github.com/dengyie/apihub/relay/channel/codex"
@@ -97,6 +98,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &volcengine.Adaptor{}
 	case constant.APITypeBaiduV2:
 		return &baidu_v2.Adaptor{}
+	case constant.APITypeBivia:
+		return &bivia.Adaptor{}
 	case constant.APITypeOpenRouter:
 		return &openai.Adaptor{}
 	case constant.APITypeXinference:
